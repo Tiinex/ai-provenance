@@ -1,0 +1,101 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "ensure windows main-host ai provenance dev extension link",
+			"type": "shell",
+			"command": "powershell",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"scripts/ensure-windows-main-host-dev-extension-link.ps1"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "build ai provenance vscode extension",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "ides/vscode", "run", "build"],
+			"group": "build",
+			"problemMatcher": ["$tsc"]
+		},
+		{
+			"label": "test ai provenance vscode extension",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "ides/vscode", "run", "test"],
+			"group": "test",
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "package ai provenance vscode extension",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "ides/vscode", "run", "package:vsix"],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "release check ai provenance vscode extension",
+			"dependsOrder": "sequence",
+			"dependsOn": [
+				"test ai provenance vscode extension",
+				"package ai provenance vscode extension"
+			],
+			"problemMatcher": []
+		},
+		{
+			"label": "release patch ai provenance vscode extension",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "ides/vscode", "run", "release:patch"],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "release minor ai provenance vscode extension",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "ides/vscode", "run", "release:minor"],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "release major ai provenance vscode extension",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "ides/vscode", "run", "release:major"],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "watch ai provenance vscode extension",
+			"type": "shell",
+			"command": "npm",
+			"args": ["--prefix", "ides/vscode", "run", "watch"],
+			"isBackground": true,
+			"problemMatcher": ["$tsc-watch"],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		}
+	]
+}

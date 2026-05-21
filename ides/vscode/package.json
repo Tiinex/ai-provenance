@@ -1,0 +1,424 @@
+{
+  "name": "ai-provenance-vscode",
+  "displayName": "Tiinex AI Provenance",
+  "description": "VS Code extension surface for Tiinex provenance tooling.",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Tiinex/ai-provenance.git"
+  },
+  "homepage": "https://github.com/Tiinex/ai-provenance",
+  "bugs": {
+    "url": "https://github.com/Tiinex/ai-provenance/issues"
+  },
+  "icon": "assets/logo-transparent.png",
+  "publisher": "tiinex",
+  "engines": {
+    "vscode": "^1.99.0",
+    "node": ">=20"
+  },
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguageModelTool:list_traceable_agents",
+    "onLanguageModelTool:view_traceable_subagent",
+    "onLanguageModelTool:run_traceable_subagent"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "provenance",
+    "traceable",
+    "evidence",
+    "vscode"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "languageModelTools": [
+      {
+        "name": "list_traceable_agents",
+        "displayName": "List Traceable Agents",
+        "userDescription": "List workspace-supported traceable agent display names and basic metadata.",
+        "modelDescription": "List the currently supported traceable agent artifacts discoverable from workspace .github/agents folders. Use this before run_traceable_subagent when you need the exact display names the current workspace runtime can resolve without traversing repo files manually. This is read-only and returns a bounded markdown list. It reflects the current traceable runtime surface, not every host-private custom agent source that the native dropdown may know about.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "listTraceableAgents",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Optional display-name or stem filter for narrowing the returned traceable agents."
+            },
+            "limit": {
+              "type": "number",
+              "description": "Maximum number of traceable agents to include."
+            }
+          }
+        }
+      },
+      {
+        "name": "run_traceable_subagent",
+        "displayName": "Run Traceable Subagent",
+        "userDescription": "Run an experimental trace-first child lane with explicit request, budget, and tool-ledger output.",
+        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run keeps userInput separate from parentTask, returns a compact runtime tool ledger plus child trace, blocks self-reentry for run_traceable_subagent, and treats native runSubagent delegation as opaque rather than fully trace-supported. Prefer non-leading parent framing: use userInput as the source wording or material to inspect rather than the desired answer shape, and let parentTask carry the bounded investigative contract without smuggling in the target conclusion. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "runTraceableSubagent",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "userInput": {
+              "type": "string",
+              "description": "The original or near-original user wording or source material for the task being delegated. Keep this distinct from parentTask and do not rely on it as the desired answer shape."
+            },
+            "parentTask": {
+              "type": "string",
+              "description": "The exact bounded investigative task that the parent wants the child lane to perform. Prefer non-leading wording that preserves inquiry without baking in the target conclusion."
+            },
+            "agentRole": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Optional agent role label or machine-facing agent stem to resolve to a workspace .agent.md artifact. When provided, the runtime grounds the child from that artifact's frontmatter and body."
+                },
+                "filePath": {
+                  "type": "string",
+                  "description": "Optional absolute or workspace-relative .agent.md path to use instead of resolving by role name."
+                }
+              }
+            },
+            "parentExpectations": {
+              "type": "object",
+              "properties": {
+                "expectedSteps": {
+                  "type": "array",
+                  "description": "Optional expected investigative steps the parent wants before trusting a strong conclusion. Use this for process checks rather than desired answers.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "expectedToolFamilies": {
+                  "type": "array",
+                  "description": "Optional tool families or specific tools the parent expects to appear in the trace as process evidence, not as proof that a particular conclusion is correct.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "disallowStrongConclusionWithoutEvidence": {
+                  "type": "boolean",
+                  "description": "When true, the child should avoid strong completion tone without grounded evidence."
+                }
+              }
+            },
+            "carriedContext": {
+              "type": "object",
+              "properties": {
+                "priorTurnsSummary": {
+                  "type": "string",
+                  "description": "Optional bounded summary of prior turns carried into the child run."
+                },
+                "fileContext": {
+                  "type": "array",
+                  "description": "Optional file paths or file-context labels carried into the child run.",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "reductions": {
+                  "type": "array",
+                  "description": "Optional compacted reductions or constraints that should remain explicit to the child.",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "wrapperPolicy": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Optional explicit lane name for the runtime wrapper."
+                },
+                "closureMode": {
+                  "type": "string",
+                  "description": "Closure contract for the child lane output.",
+                  "enum": [
+                    "open",
+                    "bounded-summary",
+                    "explicit-final"
+                  ]
+                }
+              }
+            },
+            "budgetPolicy": {
+              "type": "object",
+              "properties": {
+                "maxIterations": {
+                  "type": "number",
+                  "description": "Maximum number of model iterations for the child lane."
+                },
+                "maxToolCalls": {
+                  "type": "number",
+                  "description": "Maximum number of runtime-observed tool calls before the lane must stop or report notRun."
+                }
+              }
+            },
+            "modelSelector": {
+              "type": "object",
+              "properties": {
+                "vendor": {
+                  "type": "string",
+                  "description": "Optional model vendor to pair with an exact model id for the child run."
+                },
+                "family": {
+                  "type": "string",
+                  "description": "Optional model family to pair with an exact model id for the child run."
+                },
+                "id": {
+                  "type": "string",
+                  "description": "Exact model id selector for the child run. If agentRole resolves to a model-bearing agent artifact, that role model wins when it can be translated deterministically. Otherwise, if this field is omitted, the runtime stops instead of auto-selecting a model implicitly."
+                },
+                "version": {
+                  "type": "string",
+                  "description": "Optional model version to pair with an exact model id for the child run."
+                }
+              }
+            },
+            "allowedToolNames": {
+              "type": "array",
+              "description": "Optional tool allowlist for the child lane. Entries may use host runtime tool names or prompt-reference aliases such as tiinex.ai-vscode-tools/listAgentSessions. When omitted, the lane uses the host tool list minus its default blocked set.",
+              "items": {
+                "type": "string"
+              }
+            },
+            "blockedToolNames": {
+              "type": "array",
+              "description": "Optional extra tool names to block for this run in addition to the default self/mutation blocklist. Entries may use host runtime tool names or prompt-reference aliases.",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "userInput",
+            "parentTask"
+          ]
+        }
+      },
+      {
+        "name": "view_traceable_subagent",
+        "displayName": "View Traceable Subagent",
+        "userDescription": "Inspect a stored TRACEABLE evidence artifact with bounded output and optional reconstructed-view reveal.",
+        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, request summary, outcome, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "viewTraceableSubagent",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "evidenceFilePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to a `.trace.md` evidence artifact containing an embedded Traceable State block."
+            },
+            "reveal": {
+              "type": "boolean",
+              "description": "When true, request opening the reconstructed TRACEABLE evidence view in an editor tab on the provenance surface."
+            },
+            "outputMode": {
+              "type": "string",
+              "description": "Optional parent-facing output mode to reuse when `surface` is omitted or set to `rendered-output`.",
+              "enum": [
+                "summary-with-evidence-path",
+                "full-markdown-with-evidence-path",
+                "evidence-path-only"
+              ]
+            },
+            "surface": {
+              "type": "string",
+              "description": "Bounded evidence surface to render.",
+              "enum": [
+                "rendered-output",
+                "request-summary",
+                "summary",
+                "outcome",
+                "tool-ledger",
+                "status-history",
+                "tool-summary",
+                "file-summary",
+                "state-json"
+              ]
+            },
+            "maxItems": {
+              "type": "number",
+              "description": "Maximum number of bounded items to include for list-like surfaces."
+            },
+            "offset": {
+              "type": "number",
+              "description": "Optional zero-based start offset for paging list-like surfaces such as request-summary, tool-ledger, status-history, tool-summary, and file-summary."
+            },
+            "includeSupportArtifacts": {
+              "type": "boolean",
+              "description": "When rendering reconstructed TRACEABLE markdown, include support-artifact references such as debug logs when available."
+            }
+          },
+          "required": [
+            "evidenceFilePath"
+          ]
+        }
+      }
+    ],
+    "commands": [
+      {
+        "command": "tiinex.aiProvenance.openOverview",
+        "title": "Tiinex: Open AI Provenance Overview"
+      },
+      {
+        "command": "tiinex.aiProvenance.inspectTraceableEvidence",
+        "title": "Tiinex: Inspect TRACEABLE Evidence"
+      },
+      {
+        "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
+        "title": "Tiinex: Open Reconstructed Traceable View",
+        "shortTitle": "Open Traceable View",
+        "icon": {
+          "light": "assets/logo-transparent.png",
+          "dark": "assets/logo-transparent.png"
+        }
+      },
+      {
+        "command": "tiinex.aiProvenance.reopenTraceableEvidenceSource",
+        "title": "Reopen as Source File",
+        "shortTitle": "Source",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "tiinex.aiProvenance.reopenTraceableEvidencePreview",
+        "title": "Reopen as Markdown Preview",
+        "shortTitle": "Preview",
+        "icon": "$(open-preview)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && activeWebviewPanelId != markdown.preview && activeCustomEditorId != vscode.markdown.preview.editor",
+          "group": "navigation@-1000"
+        },
+        {
+          "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
+          "when": "activeWebviewPanelId == markdown.preview || activeCustomEditorId == vscode.markdown.preview.editor",
+          "group": "navigation@-1000"
+        },
+        {
+          "command": "tiinex.aiProvenance.reopenTraceableEvidencePreview",
+          "when": "activeWebviewPanelId == tiinexTraceableEvidenceEditor",
+          "group": "navigation@-975"
+        },
+        {
+          "command": "tiinex.aiProvenance.reopenTraceableEvidenceSource",
+          "when": "activeWebviewPanelId == tiinexTraceableEvidenceEditor",
+          "group": "navigation@-950"
+        }
+      ]
+    },
+    "views": {
+      "tiinexAiProvenanceTraceablePanel": [
+        {
+          "type": "webview",
+          "id": "tiinex.aiProvenance.traceableStatus",
+          "name": "Traceable",
+          "visibility": "hidden",
+          "when": "tiinex.aiProvenance.traceablePanelVisible"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "tiinexAiProvenanceTraceablePanel",
+          "title": "Traceable",
+          "icon": "assets/logo-transparent.png"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tiinex — AI — Provenance",
+      "properties": {
+        "tiinex.aiProvenance.traceableAutoReveal": {
+          "type": "string",
+          "enum": [
+            "yes",
+            "no",
+            "always"
+          ],
+          "default": "yes",
+          "description": "Control whether TRACEABLE opens automatically when run_traceable_subagent starts. `yes` honors the request flag `reveal: true`, `no` suppresses automatic opening, and `always` opens the TRACEABLE panel for every run regardless of the request flag."
+        },
+        "tiinex.aiProvenance.traceableAutoHide": {
+          "type": "string",
+          "enum": [
+            "yes",
+            "no"
+          ],
+          "default": "yes",
+          "description": "Control whether TRACEABLE hides automatically when the transient status-bar run clears. `yes` hides the panel together with the transient status surface unless you explicitly reopened TRACEABLE to keep it open, and `no` leaves the panel open until you close it manually."
+        },
+        "tiinex.aiProvenance.traceablePreferredModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Ordered TRACEABLE fallback model declarations to try when a run does not provide modelSelector.id and the resolved agent role does not pin a supported model. Use the same human-readable declaration syntax as agent frontmatter model/models, for example `GPT-5 mini (copilot)` or `GPT-5.4 mini (copilot)`."
+        },
+        "tiinex.aiProvenance.traceableBlockedModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "TRACEABLE model declarations to block from role-driven or settings-driven automatic selection. This does not override an explicit caller-provided modelSelector.id. Use the same human-readable declaration syntax as agent frontmatter model/models."
+        },
+        "tiinex.aiProvenance.evidenceMaxItems": {
+          "type": "number",
+          "default": 10,
+          "description": "Default bounded item count for TRACEABLE evidence list surfaces."
+        },
+        "tiinex.aiProvenance.includeSupportArtifacts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include support-artifact references such as debug logs in reconstructed TRACEABLE markdown when available."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "npm run typecheck && node scripts/build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node tests/test.mjs",
+    "package:vsix": "npx --yes @vscode/vsce package",
+    "publish:vsce": "npx --yes @vscode/vsce publish",
+    "release:check": "npm run test && npm run package:vsix",
+    "release:patch": "npm version patch -m \"release: %s\"",
+    "release:minor": "npm version minor -m \"release: %s\"",
+    "release:major": "npm version major -m \"release: %s\"",
+    "preversion": "npm run test",
+    "watch": "node scripts/build.mjs --watch"
+  },
+  "devDependencies": {
+    "@vscode/codicons": "^0.0.45",
+    "@types/node": "^22.15.3",
+    "@types/vscode": "^1.99.0",
+    "esbuild": "^0.25.4",
+    "typescript": "^5.8.3"
+  }
+}

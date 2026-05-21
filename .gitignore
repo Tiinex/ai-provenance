@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.vsix
+
+ides/*/node_modules/
+ides/*/dist/
+ides/*/*.vsix
+
+.venv/
+.venv*/
+TEMP-*.md
+.tmp*
+*.out

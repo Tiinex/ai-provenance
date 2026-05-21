@@ -1,0 +1,6 @@
+src/**
+tests/**
+scripts/**
+tsconfig.json
+package-lock.json
+*.ts
