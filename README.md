@@ -78,17 +78,51 @@ Current operating posture:
 
 The current provenance-tooling bar is not just "it sometimes works". The working bar is that successful bounded runs should become more common than surprising or failed outcomes on the maintained validation set, and that unexpected results should drive the next debugging pass rather than being hand-waved away.
 
+Keep this tree live. When a requirement splits into clearer slices, add child checkboxes beneath it instead of replacing the parent with vague prose.
+
 Definition of done for the current provenance lane:
 
-- [ ] successful bounded runs occur more often than failed or surprising runs across the maintained validation set for the current host and runtime surface
-- [ ] unexpected outcomes are investigated with an explicit repro, a local hypothesis, a cheap discriminating check, and a recorded outcome rather than being treated as noise
-- [ ] validation covers multiple operating modes instead of one happy path, including role-grounded runs, model-grounded runs, evidence-first recovery reads, and runs with and without meaningful tool use
-- [ ] validation covers a broad slice of native tooling on the current host so the lane is not only proven against synthetic or repo-private tool patterns
-- [ ] validation covers multiple input shapes, including straightforward inputs, ambiguous inputs, epistemic inputs, non-leading inputs, and inputs that try to smuggle in leading framing
-- [ ] the current guards measurably help the child stay non-leading and epistemically bounded instead of merely adding extra wording around the same failure modes
-- [ ] optional evidence export and evidence reading remain trustworthy enough that a returned `.trace.md` artifact can be inspected as a primary debugging and recovery surface when the lane requested `exportToFolder` or the user explicitly chose export
-- [ ] the repo can name which outcomes are currently supported, which are intentionally fail-closed, and which still remain open rather than collapsing all three into one success claim
-- [ ] the provenance lane is stable enough to be used alongside `feedback` tooling without requiring the operator to guess whether a result came from real evidence, weak guard behavior, or runtime drift
+- [ ] Success rate is stronger than failure rate on the maintained validation set for the current host and runtime surface.
+	- [ ] Define and keep a maintained validation set instead of relying on ad hoc memory.
+	- [ ] Track which outcomes count as success, surprise, fail-closed, and failure.
+	- [ ] Successful bounded runs occur more often than failed or surprising runs across that maintained set.
+- [ ] Unexpected outcomes are handled through explicit hypothesis-driven debugging.
+	- [ ] Each surprising run gets an explicit repro, not just a recollection.
+	- [ ] Each repro gets one local falsifiable hypothesis.
+	- [ ] Each hypothesis gets one cheap discriminating check.
+	- [ ] Each debugging pass records the outcome clearly enough that the same surprise does not have to be rediscovered from scratch.
+- [ ] Validation covers multiple operating modes instead of one happy path.
+	- [ ] Role-grounded runs are exercised.
+	- [ ] Model-grounded runs are exercised.
+	- [ ] Evidence-first recovery reads are exercised.
+	- [ ] Runs with meaningful tool use are exercised.
+	- [ ] Runs with little or no meaningful tool use are exercised.
+- [ ] Validation covers a broad slice of native tooling on the current host.
+	- [ ] The lane is not only proven against synthetic or repo-private tool patterns.
+	- [ ] Native tooling coverage is broad enough that failures can be attributed to specific gaps rather than unknown host behavior.
+- [ ] Validation covers multiple input shapes rather than only straightforward prompts.
+	- [ ] Straightforward inputs are exercised.
+	- [ ] Ambiguous inputs are exercised.
+	- [ ] Epistemic inputs are exercised.
+	- [ ] Non-leading inputs are exercised.
+	- [ ] Inputs that try to smuggle in leading framing are exercised.
+- [ ] The current guards measurably improve non-leading and epistemic behavior.
+	- [ ] The child stays non-leading more reliably because of the guards, not just because of easy inputs.
+	- [ ] The child stays epistemically bounded more reliably because of the guards, not just because of verbose wrapper wording.
+	- [ ] Guard regressions are detectable through maintained validation rather than only anecdotal operator feel.
+- [ ] Optional evidence export and evidence reading remain trustworthy recovery surfaces.
+	- [ ] Export behavior stays truthful: `.trace.md` is produced only when the lane requested `exportToFolder` or the user explicitly chose export.
+	- [ ] When export exists, the returned `.trace.md` artifact can be inspected as a primary debugging and recovery surface.
+	- [ ] Evidence reading remains useful enough that rerunning the child is not the only practical way to understand what happened.
+- [ ] The repo can name support boundaries truthfully.
+	- [ ] Supported outcomes are named explicitly.
+	- [ ] Intentionally fail-closed outcomes are named explicitly.
+	- [ ] Open or still-uncertain outcomes are named explicitly.
+	- [ ] Docs and tests do not collapse supported, fail-closed, and open states into one success claim.
+- [ ] The provenance lane is stable enough to be used alongside `feedback` tooling.
+	- [ ] Operators do not have to guess whether a result came from real evidence, weak guard behavior, or runtime drift.
+	- [ ] The provenance surface is predictable enough that `feedback` can depend on it as a bounded evidence-reading lane.
+	- [ ] Integration pressure from `feedback` reveals concrete gaps instead of forcing vague workflow folklore.
 
 ## License
 
