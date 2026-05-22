@@ -101,6 +101,41 @@
               "type": "string",
               "description": "The exact bounded investigative task that the parent wants the child lane to perform. Prefer non-leading wording that preserves inquiry without baking in the target conclusion."
             },
+            "outputMode": {
+              "type": "string",
+              "description": "Optional parent-facing output mode for the child run. When omitted, the runtime uses its normal bounded summary behavior, or summary-with-evidence-path when exportToFolder is present.",
+              "enum": [
+                "summary-with-evidence-path",
+                "full-markdown-with-evidence-path",
+                "evidence-path-only"
+              ]
+            },
+            "exportToFolder": {
+              "type": "string",
+              "description": "Optional absolute or workspace-relative folder path for tool-triggered evidence export. When provided, the run can write a `.trace.md` artifact there instead of requiring the interactive Export button."
+            },
+            "inputMode": {
+              "type": "string",
+              "description": "Optional posture mode for the child lane.",
+              "enum": [
+                "OPERATIVE",
+                "EPISTEMIC",
+                "NON_LEADING_EPISTEMIC"
+              ]
+            },
+            "validationMode": {
+              "type": "string",
+              "description": "Optional validation strictness for non-leading or epistemic input shaping.",
+              "enum": [
+                "NONE",
+                "WARN",
+                "ERROR"
+              ]
+            },
+            "reveal": {
+              "type": "boolean",
+              "description": "When true, request opening the TRACEABLE panel or evidence surface according to the current provenance reveal settings."
+            },
             "agentRole": {
               "type": "object",
               "properties": {

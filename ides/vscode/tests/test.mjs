@@ -20,6 +20,12 @@ async function main() {
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "list_traceable_models"), "Provenance traceable model catalog contribution is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "run_traceable_subagent"), "Provenance runtime LM tool contribution is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "view_traceable_subagent"), "Provenance LM tool contribution is missing.");
+  const runTraceableTool = packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "run_traceable_subagent");
+  assert.ok(runTraceableTool?.inputSchema?.properties?.exportToFolder, "run_traceable_subagent is missing the public exportToFolder input schema property.");
+  assert.ok(runTraceableTool?.inputSchema?.properties?.outputMode, "run_traceable_subagent is missing the public outputMode input schema property.");
+  assert.ok(runTraceableTool?.inputSchema?.properties?.inputMode, "run_traceable_subagent is missing the public inputMode input schema property.");
+  assert.ok(runTraceableTool?.inputSchema?.properties?.validationMode, "run_traceable_subagent is missing the public validationMode input schema property.");
+  assert.ok(runTraceableTool?.inputSchema?.properties?.reveal, "run_traceable_subagent is missing the public reveal input schema property.");
   assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "run_traceable_subagent")?.modelDescription?.includes("Canonical usage:"), "run_traceable_subagent is missing canonical usage guidance in the public tool description.");
   assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "list_traceable_models")?.modelDescription?.includes("sendableOnly: true"), "list_traceable_models is missing exact preflight guidance in the public tool description.");
   assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "view_traceable_subagent")?.modelDescription?.includes("Prefer this over rerunning the same child lane"), "view_traceable_subagent is missing inspect-before-rerun guidance in the public tool description.");
@@ -80,6 +86,8 @@ async function main() {
   assert.ok(runtimeSource.includes("Explicit modelSelector.id is blocked by tiinex.aiProvenance.traceableBlockedModels"), "Traceable runtime source is missing explicit blocked-model rejection.");
   assert.ok(runtimeSource.includes("Math.random() * (index + 1)"), "Traceable runtime source is missing selector shuffling for preferred and role model pools.");
   assert.ok(runtimeSource.includes("value === true"), "Traceable runtime source is missing boolean completion-claim normalization for child JSON payloads.");
+  assert.ok(runtimeSource.includes("stopReason === \"budget_exhausted\" || stopReason === \"insufficient_grounding\""), "Traceable runtime source is missing completion-claim reconciliation for budget or grounding stops.");
+  assert.ok(runtimeSource.includes("function normalizeFinalSummaryValue"), "Traceable runtime source is missing tolerant finalSummary normalization for child JSON payloads.");
   assert.ok(runtimeSource.includes("no further reads needed"), "Traceable runtime source is missing natural-language completed stop-reason normalization for child JSON payloads.");
   assert.ok(runtimeSource.includes("sufficient per contract"), "Traceable runtime source is missing completed stop-reason normalization for minimal-read contract phrasing.");
   assert.ok(runtimeSource.includes("\\bcomplete(?:d)?\\b"), "Traceable runtime source is missing the broader completed stop-reason normalization that accepts natural-language child summaries.");
@@ -92,6 +100,7 @@ async function main() {
   assert.ok(contractSource.includes("resolveTraceableParentFrame"), "Traceable contract source is missing parent-frame resolution.");
   assert.ok(contractSource.includes("extractTraceableSubagentPayload"), "Traceable contract source is missing payload extraction.");
   assert.ok(contractSource.includes("normalizeParsedPayload"), "Traceable contract source is missing payload normalization.");
+  assert.ok(contractSource.includes("function normalizeFinalSummaryValue"), "Traceable contract source is missing tolerant finalSummary normalization.");
   assert.ok(contractSource.includes("resolveTraceStatus"), "Traceable contract source is missing trace-status resolution.");
   assert.ok(contractSource.includes("buildUnparseableChildPayloadFallback"), "Traceable contract source is missing unparseable-payload fallback construction.");
   assert.ok(contractSource.includes("collectTraceableInputValidationIssues"), "Traceable contract source is missing input validation helpers.");

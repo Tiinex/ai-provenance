@@ -1440,34 +1440,80 @@ function normalizeStopReasonValue(value: unknown): TraceableStopReason | undefin
 }
 
 function normalizeCompletionClaimValue(value: unknown, stopReason: TraceableStopReason | undefined): TraceableCompletionClaim | undefined {
+  const reconcileWithStopReason = (claim: TraceableCompletionClaim | undefined): TraceableCompletionClaim | undefined => {
+    if (!claim || !stopReason) {
+      return claim;
+    }
+    if (stopReason === "completed") {
+      return claim;
+    }
+    if (stopReason === "budget_exhausted" || stopReason === "insufficient_grounding") {
+      return claim === "complete" ? "partial" : claim;
+    }
+    if (stopReason === "tool_blocked" || stopReason === "awaiting_input" || stopReason === "policy_stop") {
+      return claim === "complete" ? "unresolved" : claim;
+    }
+    return claim;
+  };
+
   if (value === true) {
-    return stopReason === "insufficient_grounding" ? "partial" : "complete";
+    return reconcileWithStopReason(stopReason === "insufficient_grounding" ? "partial" : "complete");
   }
   if (value === false) {
-    return "unresolved";
+    return reconcileWithStopReason("unresolved");
   }
   const rawCompletionClaim = typeof value === "string" ? value.trim() : "";
   if (rawCompletionClaim === "complete"
     || rawCompletionClaim === "partial"
     || rawCompletionClaim === "unresolved") {
-    return rawCompletionClaim;
+    return reconcileWithStopReason(rawCompletionClaim);
   }
   if (!rawCompletionClaim) {
     return undefined;
   }
   const normalized = rawCompletionClaim.toLowerCase();
   if (normalized === "partial_evidence_only" || /\bpartial\b|\bpartial evidence\b/u.test(normalized)) {
-    return "partial";
+    return reconcileWithStopReason("partial");
   }
   if (/\bunresolved\b|\bnot verified\b|\bnot confirmed\b|\binsufficient\b/u.test(normalized)) {
-    return "unresolved";
+    return reconcileWithStopReason("unresolved");
   }
   if (/\bconfirmed\b|\bcomplete\b|\bcompleted\b|\bgrounded\b|\bderived\b|\bverified\b|\bsucceeded\b|\bsuccessful\b|\bsuccess\b/u.test(normalized)) {
-    return "complete";
+    return reconcileWithStopReason("complete");
   }
-  return stopReason === "completed"
+  return reconcileWithStopReason(stopReason === "completed"
     ? "complete"
-    : "unresolved";
+    : "unresolved");
+}
+
+function normalizeFinalSummaryValue(value: unknown): string {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => normalizeFinalSummaryValue(entry))
+      .filter((entry) => entry.length > 0)
+      .map((entry) => `- ${entry}`)
+      .join("\n");
+  }
+  if (!isRecord(value)) {
+    return "";
+  }
+
+  return Object.entries(value)
+    .flatMap(([key, entry]) => {
+      const label = key.replace(/[_-]+/g, " ").toUpperCase();
+      const normalizedEntry = normalizeFinalSummaryValue(entry);
+      if (!normalizedEntry) {
+        return [];
+      }
+      if (Array.isArray(entry) || isRecord(entry)) {
+        return [label, normalizedEntry];
+      }
+      return [`${label}: ${normalizedEntry}`];
+    })
+    .join("\n");
 }
 
 function normalizeParsedPayload(value: unknown): TraceableSubagentChildPayload | undefined {
@@ -1479,7 +1525,7 @@ function normalizeParsedPayload(value: unknown): TraceableSubagentChildPayload |
     ? "completed"
     : undefined);
   const completionClaim = normalizeCompletionClaimValue(value.completionClaim, stopReason);
-  const finalSummary = typeof value.finalSummary === "string" ? value.finalSummary.trim() : "";
+  const finalSummary = normalizeFinalSummaryValue(value.finalSummary);
   if (!stopReason || !completionClaim || !finalSummary) {
     return undefined;
   }
