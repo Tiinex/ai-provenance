@@ -671,6 +671,7 @@ function renderTraceableAgentCatalogMarkdown(
     "",
     "- Scope: workspace-supported `.github/agents/*.agent.md` runtime artifacts.",
     "- Purpose: provide exact display names for `run_traceable_subagent` without manual workspace traversal.",
+    "- Recommended flow: find one exact role here, then pass `agentRole.name` or `agentRole.filePath` into `run_traceable_subagent` instead of guessing a role label.",
     `- Total matching agents: ${filteredEntries.length}`
   ];
   if (normalizedQuery) {
@@ -807,6 +808,7 @@ function renderTraceableModelCatalogMarkdown(
     "",
     "- Scope: runtime-discoverable models from `selectChatModels({})`.",
     "- Purpose: preflight exact model ids for `run_traceable_subagent` without waiting for model-selection failure.",
+    "- Recommended flow: use `sendableOnly: true` when practical, copy an exact returned id only when you need explicit model control, and treat `Policy: blocked` as non-selectable for `run_traceable_subagent`.",
     `- Total matching models: ${filteredEntries.length}`
   ];
   if (normalizedQuery) {
@@ -817,6 +819,7 @@ function renderTraceableModelCatalogMarkdown(
   }
   lines.push(`- Preferred matches: ${annotatedEntries.filter((entry) => entry.preferred).length}`);
   lines.push(`- Blocked matches: ${annotatedEntries.filter((entry) => entry.blocked).length}`);
+  lines.push("- Typical next step: after choosing an allowed exact id here, run a narrow `run_traceable_subagent` lane and inspect the returned evidence file with `view_traceable_subagent` before rerunning.");
   if (limitedEntries.length === 0) {
     lines.push("", "No matching traceable models found in the current runtime surface.");
     return `${lines.join("\n")}\n`;

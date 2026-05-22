@@ -62,7 +62,7 @@
         "name": "list_traceable_models",
         "displayName": "List Traceable Models",
         "userDescription": "List runtime-discoverable models that traceable subagent selection can currently see.",
-        "modelDescription": "List the language models visible to the current VS Code language-model runtime using the same broad model discovery surface that traceable-subagent recovery uses. This is read-only and bounded. Use it to preflight exact model ids before calling run_traceable_subagent instead of waiting for a model-selection failure.",
+        "modelDescription": "List the language models visible to the current VS Code language-model runtime using the same broad model discovery surface that traceable-subagent recovery uses. This is read-only and bounded. Use it to preflight exact model ids before calling run_traceable_subagent instead of waiting for a model-selection failure. Canonical usage: first call this with `sendableOnly: true` and an optional narrow `query`, then copy the exact returned model id into `run_traceable_subagent.modelSelector.id` only when you need explicit model control. If a returned entry is marked blocked in the catalog output, do not pass it back into run_traceable_subagent.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "listTraceableModels",
         "inputSchema": {
@@ -87,7 +87,7 @@
         "name": "run_traceable_subagent",
         "displayName": "Run Traceable Subagent",
         "userDescription": "Run an experimental trace-first child lane with explicit request, budget, and tool-ledger output.",
-        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run keeps userInput separate from parentTask, returns a compact runtime tool ledger plus child trace, blocks self-reentry for run_traceable_subagent, and treats native runSubagent delegation as opaque rather than fully trace-supported. Prefer non-leading parent framing: use userInput as the source wording or material to inspect rather than the desired answer shape, and let parentTask carry the bounded investigative contract without smuggling in the target conclusion. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration.",
+        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run keeps userInput separate from parentTask, returns a compact runtime tool ledger plus child trace, blocks self-reentry for run_traceable_subagent, and treats native runSubagent delegation as opaque rather than fully trace-supported. Prefer non-leading parent framing: use userInput as the source wording or material to inspect rather than the desired answer shape, and let parentTask carry the bounded investigative contract without smuggling in the target conclusion. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration. Canonical usage: keep `userInput` close to the source wording, keep `parentTask` as the bounded contract, set a small `budgetPolicy`, and restrict `allowedToolNames` to only the tool families the slice actually needs. Typical flow: use `list_traceable_agents` to find an exact role or `list_traceable_models` to preflight an explicit model, run a narrow lane, then inspect the returned evidence file with `view_traceable_subagent` instead of rerunning the child immediately.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "runTraceableSubagent",
         "inputSchema": {
@@ -237,7 +237,7 @@
         "name": "view_traceable_subagent",
         "displayName": "View Traceable Subagent",
         "userDescription": "Inspect a stored TRACEABLE evidence artifact with bounded output and optional reconstructed-view reveal.",
-        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, request summary, outcome, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely.",
+        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, request summary, outcome, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by run_traceable_subagent, start with `surface: \"summary\"` or `surface: \"outcome\"`, then inspect `tool-ledger` or `state-json` only when you need debugging detail. Prefer this over rerunning the same child lane when evidence already exists.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "viewTraceableSubagent",
         "inputSchema": {
@@ -377,7 +377,7 @@
       ]
     },
     "configuration": {
-      "title": "Tiinex — AI — Provenance",
+      "title": "Tiinex AI Provenance",
       "properties": {
         "tiinex.aiProvenance.traceableAutoReveal": {
           "type": "string",

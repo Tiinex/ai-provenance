@@ -32,6 +32,19 @@ What it exposes in VS Code:
 - settings namespace: `tiinex.aiProvenance.*`
 - TRACEABLE panel/status shell under the provenance namespace
 
+Canonical tool usage:
+
+- `list_traceable_agents`: use this first when you want a grounded role-backed run; copy the exact returned display name or file path into `run_traceable_subagent.agentRole` instead of guessing a role label.
+- `list_traceable_models`: use this first when you need explicit model control; prefer `sendableOnly: true`, narrow with `query` when useful, and treat entries marked `Policy: blocked` as non-selectable for `run_traceable_subagent`.
+- `run_traceable_subagent`: keep `userInput` close to the source wording, keep `parentTask` as the bounded contract, keep `budgetPolicy` small, and restrict `allowedToolNames` to the minimum slice needed.
+- `view_traceable_subagent`: after a run returns an evidence file, inspect that artifact before rerunning the child lane; start with `summary` or `outcome`, then use `tool-ledger` or `state-json` only when deeper debugging is needed.
+
+Canonical examples:
+
+- Role-grounded preflight flow: `list_traceable_agents` -> `run_traceable_subagent` with `agentRole` -> `view_traceable_subagent` on the returned evidence file.
+- Model-grounded preflight flow: `list_traceable_models` -> copy one allowed exact model id -> `run_traceable_subagent` with `modelSelector.id` -> `view_traceable_subagent` on the returned evidence file.
+- Recovery flow: if a run already produced `.trace.md`, inspect it with `view_traceable_subagent` before launching another lane.
+
 Release flow:
 
 - `npm test`

@@ -20,6 +20,9 @@ async function main() {
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "list_traceable_models"), "Provenance traceable model catalog contribution is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "run_traceable_subagent"), "Provenance runtime LM tool contribution is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "view_traceable_subagent"), "Provenance LM tool contribution is missing.");
+  assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "run_traceable_subagent")?.modelDescription?.includes("Canonical usage:"), "run_traceable_subagent is missing canonical usage guidance in the public tool description.");
+  assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "list_traceable_models")?.modelDescription?.includes("sendableOnly: true"), "list_traceable_models is missing exact preflight guidance in the public tool description.");
+  assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "view_traceable_subagent")?.modelDescription?.includes("Prefer this over rerunning the same child lane"), "view_traceable_subagent is missing inspect-before-rerun guidance in the public tool description.");
   assert.ok(packageJson.contributes?.configuration?.properties?.["tiinex.aiProvenance.evidenceMaxItems"], "Provenance namespaced settings are missing.");
   assert.ok(packageJson.contributes?.configuration?.properties?.["tiinex.aiProvenance.traceableAutoReveal"], "Provenance TRACEABLE auto-reveal setting is missing.");
   assert.ok(packageJson.contributes?.configuration?.properties?.["tiinex.aiProvenance.traceableAutoHide"], "Provenance TRACEABLE auto-hide setting is missing.");
@@ -43,6 +46,8 @@ async function main() {
   assert.ok(bundle.includes("list_traceable_models"), "Built bundle is missing the provenance traceable model catalog tool wiring.");
   assert.ok(bundle.includes("Preferred matches"), "Built bundle is missing the traceable model policy summary rendering.");
   assert.ok(bundle.includes("Policy:"), "Built bundle is missing per-model policy flag rendering.");
+  assert.ok(bundle.includes("Recommended flow:"), "Built bundle is missing embedded workflow guidance for traceable catalog tools.");
+  assert.ok(bundle.includes("Typical next step:"), "Built bundle is missing the canonical next-step guidance for the traceable model catalog.");
   assert.ok(bundle.includes("openTraceableSubagentStatusDetail"), "Built bundle is missing the provenance TRACEABLE panel reveal command.");
   assert.ok(bundle.includes("tiinex.aiProvenance.traceableStatus"), "Built bundle is missing the provenance TRACEABLE panel view id.");
   assert.ok(bundle.includes("Tool Ledger"), "Built bundle is missing the TRACEABLE evidence surface picker labels.");
