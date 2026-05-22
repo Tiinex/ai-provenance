@@ -479,10 +479,19 @@ export function normalizeStopReasonValue(value: unknown): TraceableStopReason | 
   if (/\binsufficient\b|\bnot enough\b|\bpartial evidence\b|\bunresolved\b/u.test(normalized)) {
     return "insufficient_grounding";
   }
+  if (/\bas requested\b|\bno further reads needed\b|\bbounded-read-complete\b|\bfound and reported\b|\breported as requested\b|\bminimal read sufficient\b|\bread sufficient\b|\bsufficient per contract\b/u.test(normalized)) {
+    return "completed";
+  }
   return undefined;
 }
 
 export function normalizeCompletionClaimValue(value: unknown, stopReason: TraceableStopReason | undefined): TraceableCompletionClaim | undefined {
+  if (value === true) {
+    return stopReason === "insufficient_grounding" ? "partial" : "complete";
+  }
+  if (value === false) {
+    return "unresolved";
+  }
   const rawCompletionClaim = typeof value === "string" ? value.trim() : "";
   if (rawCompletionClaim === "complete"
     || rawCompletionClaim === "partial"
@@ -503,7 +512,7 @@ export function normalizeCompletionClaimValue(value: unknown, stopReason: Tracea
     return "complete";
   }
   return stopReason === "completed"
-    ? "partial"
+    ? "complete"
     : "unresolved";
 }
 

@@ -11,6 +11,7 @@ import {
 import {
   listTraceableAgentCatalogEntries,
   listTraceableAgentCatalogLintFindings,
+  listTraceableModelCatalogEntries,
   runTraceableSubagent,
   renderTraceableSubagentMarkdown,
   type TraceableSubagentInput,
@@ -47,6 +48,12 @@ type TraceableAutoHideMode = "yes" | "no";
 interface ListTraceableAgentsInput {
   query?: string;
   limit?: number;
+}
+
+interface ListTraceableModelsInput {
+  query?: string;
+  limit?: number;
+  sendableOnly?: boolean;
 }
 
 const traceableSubagentToolMutex = new QueuedMutex();
@@ -728,6 +735,108 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
+function parseConfiguredStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .flatMap((entry) => typeof entry === "string" ? [entry.trim()] : [])
+    .filter(Boolean);
+}
+
+function normalizeModelPolicyLabel(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[^A-Za-z0-9.\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .toLowerCase();
+}
+
+function readTraceableModelPolicySettings(): { preferred: Set<string>; blocked: Set<string> } {
+  const config = vscode.workspace.getConfiguration("tiinex.aiProvenance");
+  return {
+    preferred: new Set(parseConfiguredStringList(config.get("traceablePreferredModels", [])).map((value) => normalizeModelPolicyLabel(value))),
+    blocked: new Set(parseConfiguredStringList(config.get("traceableBlockedModels", [])).map((value) => normalizeModelPolicyLabel(value)))
+  };
+}
+
+function buildTraceableModelPolicyAliases(entry: Awaited<ReturnType<typeof listTraceableModelCatalogEntries>>[number]): string[] {
+  const aliases = [
+    entry.vendor && entry.id ? `${entry.vendor}/${entry.id}` : undefined,
+    entry.vendor && entry.id ? `${entry.id}-${entry.vendor}` : undefined,
+    entry.vendor && entry.family ? `${entry.vendor}/${entry.family}` : undefined,
+    entry.vendor && entry.family ? `${entry.family}-${entry.vendor}` : undefined
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => normalizeModelPolicyLabel(value));
+  return [...new Set(aliases)];
+}
+
+function renderTraceableModelCatalogMarkdown(
+  entries: Awaited<ReturnType<typeof listTraceableModelCatalogEntries>>,
+  input: ListTraceableModelsInput
+): string {
+  const policy = readTraceableModelPolicySettings();
+  const normalizedQuery = input.query?.trim().toLowerCase() ?? "";
+  const filteredEntries = entries.filter((entry) => {
+    if (input.sendableOnly && !entry.sendable) {
+      return false;
+    }
+    if (!normalizedQuery) {
+      return true;
+    }
+    const haystack = [entry.id, entry.vendor, entry.family, entry.version]
+      .filter((value): value is string => typeof value === "string" && value.length > 0)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(normalizedQuery);
+  });
+  const annotatedEntries = filteredEntries.map((entry) => {
+    const aliases = buildTraceableModelPolicyAliases(entry);
+    return {
+      entry,
+      preferred: aliases.some((alias) => policy.preferred.has(alias)),
+      blocked: aliases.some((alias) => policy.blocked.has(alias))
+    };
+  });
+  const limitedEntries = annotatedEntries.slice(0, input.limit ?? 20);
+  const lines = [
+    "# Traceable Model Catalog",
+    "",
+    "- Scope: runtime-discoverable models from `selectChatModels({})`.",
+    "- Purpose: preflight exact model ids for `run_traceable_subagent` without waiting for model-selection failure.",
+    `- Total matching models: ${filteredEntries.length}`
+  ];
+  if (normalizedQuery) {
+    lines.push(`- Query: ${input.query?.trim()}`);
+  }
+  if (input.sendableOnly) {
+    lines.push("- Filter: sendable-only");
+  }
+  lines.push(`- Preferred matches: ${annotatedEntries.filter((entry) => entry.preferred).length}`);
+  lines.push(`- Blocked matches: ${annotatedEntries.filter((entry) => entry.blocked).length}`);
+  if (limitedEntries.length === 0) {
+    lines.push("", "No matching traceable models found in the current runtime surface.");
+    return `${lines.join("\n")}\n`;
+  }
+  lines.push("");
+  for (const { entry, preferred, blocked } of limitedEntries) {
+    const policyLabels = [blocked ? "blocked" : undefined, preferred ? "preferred" : undefined].filter(Boolean);
+    lines.push(`- ${entry.id ?? "(missing id)"}`);
+    lines.push(`  - Vendor: ${entry.vendor ?? "-"}`);
+    lines.push(`  - Family: ${entry.family ?? "-"}`);
+    lines.push(`  - Version: ${entry.version ?? "-"}`);
+    lines.push(`  - Sendable: ${entry.sendable ? "yes" : "no"}`);
+    lines.push(`  - Policy: ${policyLabels.join(", ") || "-"}`);
+  }
+  if (limitedEntries.length < filteredEntries.length) {
+    lines.push("", `Showing ${limitedEntries.length}/${filteredEntries.length} matching models.`);
+  }
+  return `${lines.join("\n")}\n`;
+}
+
 async function resolveTraceableEvidenceFilePath(evidenceFilePath: string): Promise<string> {
   const normalized = evidenceFilePath.trim();
   if (!normalized) {
@@ -1197,6 +1306,19 @@ export function activate(context: vscode.ExtensionContext): void {
         return textResult(renderTraceableAgentCatalogMarkdownWithLint(
           await listTraceableAgentCatalogEntries(),
           await listTraceableAgentCatalogLintFindings(),
+          options.input
+        ));
+      }
+    }),
+    vscode.lm.registerTool("list_traceable_models", {
+      prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<ListTraceableModelsInput>): vscode.PreparedToolInvocation {
+        return {
+          invocationMessage: `List traceable models${options.input.query ? ` matching ${JSON.stringify(options.input.query)}` : ""}`
+        };
+      },
+      async invoke(options: vscode.LanguageModelToolInvocationOptions<ListTraceableModelsInput>): Promise<vscode.LanguageModelToolResult> {
+        return textResult(renderTraceableModelCatalogMarkdown(
+          await listTraceableModelCatalogEntries(context.languageModelAccessInformation),
           options.input
         ));
       }

@@ -57,6 +57,50 @@ async function allocateEvidenceFilePath(folderPath: string, roleSlug: string): P
   };
 }
 
+function parseAllocatedEvidenceFileName(fileName: string | undefined): { index: string; slug: string } | undefined {
+  if (!fileName) {
+    return undefined;
+  }
+  const match = /^(\d+)-(.+)\.trace\.md$/iu.exec(fileName.trim());
+  if (!match?.[1] || !match[2]) {
+    return undefined;
+  }
+  return {
+    index: match[1],
+    slug: match[2]
+  };
+}
+
+async function renameEvidenceFileForSnapshot(
+  snapshot: TraceableSubagentDetailSnapshot,
+  exportState: TraceableSubagentEvidenceFileState
+): Promise<TraceableSubagentEvidenceFileState> {
+  const currentFileName = exportState.fileName?.trim();
+  const currentFilePath = exportState.filePath?.trim();
+  if (!currentFileName || !currentFilePath) {
+    return exportState;
+  }
+  const parsed = parseAllocatedEvidenceFileName(currentFileName);
+  if (!parsed) {
+    return exportState;
+  }
+  const desiredSlug = getEvidenceRoleSlug(snapshot);
+  if (!desiredSlug || parsed.slug === desiredSlug) {
+    return exportState;
+  }
+  const nextFileName = `${parsed.index}-${desiredSlug}.trace.md`;
+  const nextFilePath = path.join(path.dirname(currentFilePath), nextFileName);
+  if (nextFilePath === currentFilePath) {
+    return exportState;
+  }
+  await fs.rename(currentFilePath, nextFilePath);
+  return {
+    ...exportState,
+    fileName: nextFileName,
+    filePath: nextFilePath
+  };
+}
+
 function summarizeRequestSummary(snapshot: TraceableSubagentDetailSnapshot, pathRenderOptions: TraceableMarkdownPathRenderOptions): string[] {
   if (snapshot.requestSummary.length === 0) {
     return ["- No request summary captured yet."];
@@ -506,18 +550,24 @@ export class TraceableSubagentEvidenceController {
       return result;
     }
     const outputMode = this.exportState.outputMode ?? result.outputMode ?? "summary-with-evidence-path";
+    const renamedState = await renameEvidenceFileForSnapshot(this.snapshot, this.exportState);
+    this.exportState = renamedState;
     const readyState: TraceableSubagentEvidenceFileState = {
-      ...this.exportState,
+      ...renamedState,
       status: "ready",
       outputMode
     };
+    const readyFilePath = readyState.filePath;
+    if (!readyFilePath) {
+      throw new Error("TRACEABLE evidence export lost its file path before finalizing the evidence file.");
+    }
     const linkedSummaryMarkdown = renderTraceableSubagentMarkdown(result, {
-      ...buildPathRenderOptions(this.exportState.filePath),
+      ...buildPathRenderOptions(readyFilePath),
       includeSupportArtifacts: false
     });
     const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, readyState, outputMode, linkedSummaryMarkdown, result);
     try {
-      await this.writeEvidenceFile(this.exportState.filePath, evidenceMarkdown);
+      await this.writeEvidenceFile(readyFilePath, evidenceMarkdown);
       this.exportState = readyState;
       this.lastResultMarkdown = linkedSummaryMarkdown;
       return {
@@ -549,19 +599,25 @@ export class TraceableSubagentEvidenceController {
     if (this.snapshot.status.phase === "running") {
       return { ...this.exportState };
     }
+    const renamedState = await renameEvidenceFileForSnapshot(this.snapshot, state);
+    this.exportState = renamedState;
     const readyState: TraceableSubagentEvidenceFileState = {
-      ...state,
+      ...renamedState,
       status: "ready"
     };
+    const readyFilePath = readyState.filePath;
+    if (!readyFilePath) {
+      throw new Error("TRACEABLE evidence export lost its file path before finishing the snapshot export.");
+    }
     const renderedResultMarkdown = this.lastResult
       ? renderTraceableSubagentMarkdown(this.lastResult, {
-        ...buildPathRenderOptions(state.filePath),
+        ...buildPathRenderOptions(readyFilePath),
         includeSupportArtifacts: false
       })
       : this.lastResultMarkdown;
     const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, readyState, state.outputMode ?? "summary-with-evidence-path", renderedResultMarkdown, this.lastResult);
     try {
-      await this.writeEvidenceFile(state.filePath, evidenceMarkdown);
+      await this.writeEvidenceFile(readyFilePath, evidenceMarkdown);
       this.exportState = readyState;
       this.lastResultMarkdown = renderedResultMarkdown ?? evidenceMarkdown;
       return { ...this.exportState };
@@ -608,7 +664,8 @@ export class TraceableSubagentEvidenceController {
     if (!this.exportState.filePath) {
       return;
     }
-    const exportState = { ...this.exportState };
+    const exportState = await renameEvidenceFileForSnapshot(this.snapshot, this.exportState);
+    this.exportState = exportState;
     const outputMode = exportState.outputMode ?? "summary-with-evidence-path";
     const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, exportState, outputMode, this.lastResultMarkdown, this.lastResult);
     this.writeQueue = this.writeQueue.then(async () => {

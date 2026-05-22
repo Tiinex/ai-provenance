@@ -396,6 +396,14 @@ export interface TraceableModelCatalogEntry {
   sendable: boolean;
 }
 
+export interface TraceableModelCatalogEntry {
+  vendor?: string;
+  family?: string;
+  id?: string;
+  version?: string;
+  sendable: boolean;
+}
+
 export interface TraceableMarkdownPathRenderOptions {
   mode?: "plain" | "relative-markdown" | "absolute-file-uri-markdown";
   baseDir?: string;
@@ -466,10 +474,76 @@ function normalizeHumanModelLabel(value: string): string {
 }
 
 const SUPPORTED_AGENT_MODEL_DECLARATIONS = new Map<string, TraceableModelSelector>([
+  ["gpt-5-mini", { vendor: "copilot", id: "gpt-5-mini" }],
   ["gpt-5-mini-copilot", { vendor: "copilot", id: "gpt-5-mini" }],
-  ["gpt-5.4-mini-copilot", { vendor: "copilot", id: "gpt-5.4" }],
+  ["gpt-5.4-mini", { vendor: "copilot", id: "gpt-5.4-mini" }],
+  ["gpt-5.4-mini-copilot", { vendor: "copilot", id: "gpt-5.4-mini" }],
+  ["gpt-4.1", { vendor: "copilot", id: "gpt-4.1" }],
+  ["gpt-4.1-copilot", { vendor: "copilot", id: "gpt-4.1" }],
+  ["claude-haiku-4.5", { vendor: "copilot", id: "claude-haiku-4.5" }],
+  ["claude-haiku-4.5-copilot", { vendor: "copilot", id: "claude-haiku-4.5" }],
+  ["claude-opus-4.7", { vendor: "copilot", id: "claude-opus-4.7" }],
+  ["claude-opus-4.7-copilot", { vendor: "copilot", id: "claude-opus-4.7" }],
+  ["claude-sonnet-4.5", { vendor: "copilot", id: "claude-sonnet-4.5" }],
+  ["claude-sonnet-4.5-copilot", { vendor: "copilot", id: "claude-sonnet-4.5" }],
+  ["claude-sonnet-4.6", { vendor: "copilot", id: "claude-sonnet-4.6" }],
+  ["claude-sonnet-4.6-copilot", { vendor: "copilot", id: "claude-sonnet-4.6" }],
+  ["gemini-2.5-pro", { vendor: "copilot", id: "gemini-2.5-pro" }],
+  ["gemini-2.5-pro-copilot", { vendor: "copilot", id: "gemini-2.5-pro" }],
+  ["gemini-3-flash-preview", { vendor: "copilot", id: "gemini-3-flash-preview" }],
+  ["gemini-3-flash-preview-copilot", { vendor: "copilot", id: "gemini-3-flash-preview" }],
+  ["gemini-3.1-pro-preview", { vendor: "copilot", id: "gemini-3.1-pro-preview" }],
+  ["gemini-3.1-pro-preview-copilot", { vendor: "copilot", id: "gemini-3.1-pro-preview" }],
+  ["gemini-3.5-flash", { vendor: "copilot", id: "gemini-3.5-flash" }],
+  ["gemini-3.5-flash-copilot", { vendor: "copilot", id: "gemini-3.5-flash" }],
+  ["gpt-5.2", { vendor: "copilot", id: "gpt-5.2" }],
+  ["gpt-5.2-copilot", { vendor: "copilot", id: "gpt-5.2" }],
+  ["gpt-5.2-codex", { vendor: "copilot", id: "gpt-5.2-codex" }],
+  ["gpt-5.2-codex-copilot", { vendor: "copilot", id: "gpt-5.2-codex" }],
+  ["gpt-5.3-codex", { vendor: "copilot", id: "gpt-5.3-codex" }],
+  ["gpt-5.3-codex-copilot", { vendor: "copilot", id: "gpt-5.3-codex" }],
+  ["gpt-5.4", { vendor: "copilot", id: "gpt-5.4" }],
+  ["gpt-5.4-copilot", { vendor: "copilot", id: "gpt-5.4" }],
+  ["gpt-5.5", { vendor: "copilot", id: "gpt-5.5" }],
+  ["gpt-5.5-copilot", { vendor: "copilot", id: "gpt-5.5" }],
+  ["raptor-mini-preview", { vendor: "copilot", id: "oswe-vscode-prime" }],
+  ["raptor-mini", { vendor: "copilot", id: "oswe-vscode-prime" }],
+  ["raptor-mini-preview-copilot", { vendor: "copilot", id: "oswe-vscode-prime" }],
+  ["raptor-mini-copilot", { vendor: "copilot", id: "oswe-vscode-prime" }],
   ["copilot/gpt-5-mini", { vendor: "copilot", id: "gpt-5-mini" }],
-  ["copilot/gpt-5.4", { vendor: "copilot", id: "gpt-5.4" }]
+  ["copilotgpt-5-mini", { vendor: "copilot", id: "gpt-5-mini" }],
+  ["copilot/gpt-5.4-mini", { vendor: "copilot", id: "gpt-5.4-mini" }],
+  ["copilotgpt-5.4-mini", { vendor: "copilot", id: "gpt-5.4-mini" }],
+  ["copilot/gpt-4.1", { vendor: "copilot", id: "gpt-4.1" }],
+  ["copilotgpt-4.1", { vendor: "copilot", id: "gpt-4.1" }],
+  ["copilot/claude-haiku-4.5", { vendor: "copilot", id: "claude-haiku-4.5" }],
+  ["copilotclaude-haiku-4.5", { vendor: "copilot", id: "claude-haiku-4.5" }],
+  ["copilot/claude-opus-4.7", { vendor: "copilot", id: "claude-opus-4.7" }],
+  ["copilotclaude-opus-4.7", { vendor: "copilot", id: "claude-opus-4.7" }],
+  ["copilot/claude-sonnet-4.5", { vendor: "copilot", id: "claude-sonnet-4.5" }],
+  ["copilotclaude-sonnet-4.5", { vendor: "copilot", id: "claude-sonnet-4.5" }],
+  ["copilot/claude-sonnet-4.6", { vendor: "copilot", id: "claude-sonnet-4.6" }],
+  ["copilotclaude-sonnet-4.6", { vendor: "copilot", id: "claude-sonnet-4.6" }],
+  ["copilot/gemini-2.5-pro", { vendor: "copilot", id: "gemini-2.5-pro" }],
+  ["copilotgemini-2.5-pro", { vendor: "copilot", id: "gemini-2.5-pro" }],
+  ["copilot/gemini-3-flash-preview", { vendor: "copilot", id: "gemini-3-flash-preview" }],
+  ["copilotgemini-3-flash-preview", { vendor: "copilot", id: "gemini-3-flash-preview" }],
+  ["copilot/gemini-3.1-pro-preview", { vendor: "copilot", id: "gemini-3.1-pro-preview" }],
+  ["copilotgemini-3.1-pro-preview", { vendor: "copilot", id: "gemini-3.1-pro-preview" }],
+  ["copilot/gemini-3.5-flash", { vendor: "copilot", id: "gemini-3.5-flash" }],
+  ["copilotgemini-3.5-flash", { vendor: "copilot", id: "gemini-3.5-flash" }],
+  ["copilot/gpt-5.2", { vendor: "copilot", id: "gpt-5.2" }],
+  ["copilotgpt-5.2", { vendor: "copilot", id: "gpt-5.2" }],
+  ["copilot/gpt-5.2-codex", { vendor: "copilot", id: "gpt-5.2-codex" }],
+  ["copilotgpt-5.2-codex", { vendor: "copilot", id: "gpt-5.2-codex" }],
+  ["copilot/gpt-5.3-codex", { vendor: "copilot", id: "gpt-5.3-codex" }],
+  ["copilotgpt-5.3-codex", { vendor: "copilot", id: "gpt-5.3-codex" }],
+  ["copilot/gpt-5.4", { vendor: "copilot", id: "gpt-5.4" }],
+  ["copilotgpt-5.4", { vendor: "copilot", id: "gpt-5.4" }],
+  ["copilot/gpt-5.5", { vendor: "copilot", id: "gpt-5.5" }],
+  ["copilotgpt-5.5", { vendor: "copilot", id: "gpt-5.5" }],
+  ["copilot/oswe-vscode-prime", { vendor: "copilot", id: "oswe-vscode-prime" }],
+  ["copilotoswe-vscode-prime", { vendor: "copilot", id: "oswe-vscode-prime" }]
 ]);
 
 const TRACEABLE_AGENT_ALLOWED_FRONTMATTER_FIELDS = new Set([
@@ -861,6 +935,40 @@ function inferModelSelectorsFromDeclarations(modelDeclarations: readonly string[
     selectors.push(selector);
   }
   return selectors;
+}
+
+function shuffleTraceableModelSelectors(selectors: readonly TraceableModelSelector[]): TraceableModelSelector[] {
+  const shuffled = [...selectors];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled;
+}
+
+function buildNormalizedModelSelectorAliases(selector: Pick<TraceableModelSelector, "vendor" | "family" | "id">): string[] {
+  const vendor = selector.vendor?.trim();
+  const family = selector.family?.trim();
+  const id = selector.id?.trim();
+  const aliases = [
+    vendor && id ? `${vendor}/${id}` : undefined,
+    vendor && id ? `${id}-${vendor}` : undefined,
+    vendor && family ? `${vendor}/${family}` : undefined,
+    vendor && family ? `${family}-${vendor}` : undefined
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => normalizeHumanModelLabel(value));
+  return uniqueStrings(aliases);
+}
+
+function isBlockedTraceableModelSelector(
+  selector: Pick<TraceableModelSelector, "vendor" | "family" | "id">,
+  blockedDeclarations: ReadonlySet<string>
+): boolean {
+  if (blockedDeclarations.size === 0) {
+    return false;
+  }
+  return buildNormalizedModelSelectorAliases(selector).some((alias) => blockedDeclarations.has(alias));
 }
 
 function getTraceableModelPolicyDeclarations(): {
@@ -1325,10 +1433,19 @@ function normalizeStopReasonValue(value: unknown): TraceableStopReason | undefin
   if (/\binsufficient\b|\bnot enough\b|\bpartial evidence\b|\bunresolved\b/u.test(normalized)) {
     return "insufficient_grounding";
   }
+  if (/\bas requested\b|\bno further reads needed\b|\bbounded-read-complete\b|\bfound and reported\b|\breported as requested\b|\bminimal read sufficient\b|\bread sufficient\b|\bsufficient per contract\b/u.test(normalized)) {
+    return "completed";
+  }
   return undefined;
 }
 
 function normalizeCompletionClaimValue(value: unknown, stopReason: TraceableStopReason | undefined): TraceableCompletionClaim | undefined {
+  if (value === true) {
+    return stopReason === "insufficient_grounding" ? "partial" : "complete";
+  }
+  if (value === false) {
+    return "unresolved";
+  }
   const rawCompletionClaim = typeof value === "string" ? value.trim() : "";
   if (rawCompletionClaim === "complete"
     || rawCompletionClaim === "partial"
@@ -1349,7 +1466,7 @@ function normalizeCompletionClaimValue(value: unknown, stopReason: TraceableStop
     return "complete";
   }
   return stopReason === "completed"
-    ? "partial"
+    ? "complete"
     : "unresolved";
 }
 
@@ -1948,16 +2065,20 @@ function buildTraceableSubagentModelSelectorsFromSources(
   resolvedAgentArtifact?: ResolvedTraceableAgentArtifact
 ): vscode.LanguageModelChatSelector[] {
   const policy = getTraceableModelPolicyDeclarations();
-  if (hasExactModelSelector(resolvedAgentArtifact?.modelSelector)) {
+  const explicitSelectors = buildTraceableSubagentModelSelectors(input);
+  if (explicitSelectors.length > 0) {
+    return explicitSelectors;
+  }
+  if (resolvedAgentArtifact && resolvedAgentArtifact.modelDeclarations.length > 0) {
     const allowedRoleDeclarations = filterBlockedModelDeclarations(resolvedAgentArtifact.modelDeclarations, policy.blocked);
-    return inferModelSelectorsFromDeclarations(allowedRoleDeclarations);
+    return shuffleTraceableModelSelectors(inferModelSelectorsFromDeclarations(allowedRoleDeclarations));
   }
   const configuredDeclarations = filterBlockedModelDeclarations(policy.preferred, policy.blocked);
   const configuredSelectors = inferModelSelectorsFromDeclarations(configuredDeclarations);
   if (configuredSelectors.length > 0) {
-    return configuredSelectors;
+    return shuffleTraceableModelSelectors(configuredSelectors);
   }
-  return buildTraceableSubagentModelSelectors(input);
+  return [];
 }
 
 export function selectTraceableSubagentTools<T extends ToolLike>(availableTools: readonly T[], input: TraceableToolSelectionInput): T[] {
@@ -2185,6 +2306,25 @@ export async function runTraceableSubagent(
     });
   }
 
+  const policy = getTraceableModelPolicyDeclarations();
+  const explicitSelectors = buildTraceableSubagentModelSelectors(input);
+  if (explicitSelectors.some((selector) => isBlockedTraceableModelSelector(selector, policy.blocked))) {
+    return finalizeResult(fallbackResult(
+      input,
+      [],
+      `Explicit modelSelector.id is blocked by tiinex.aiProvenance.traceableBlockedModels. selector=${summarizeJson(explicitSelectors[0], 180)}; blockedDeclarations=${summarizeJson([...policy.blocked], 220)}`,
+      "policy_stop",
+      "unresolved",
+      {
+        allowedToolNames: selectedToolNames,
+        validationIssues
+      }
+    ), "blocked_explicit_model_selector", {
+      explicitSelectors,
+      blockedDeclarations: [...policy.blocked]
+    });
+  }
+
   const selectors = buildTraceableSubagentModelSelectorsFromSources(input, resolvedAgentArtifact);
 
   const budgetPolicy = normalizeBudgetPolicy(input);
@@ -2249,7 +2389,7 @@ export async function runTraceableSubagent(
         availableModels = availableForSelector;
         sendableModels = sendableForSelector;
         matchedSelector = selector;
-        model = sendableForSelector[0];
+        model = sendableForSelector[Math.floor(Math.random() * sendableForSelector.length)];
         break;
       }
       if (availableForSelector.length > 0 || sendableForSelector.length > 0 || selector === selectors[selectors.length - 1]) {
