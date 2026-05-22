@@ -18,10 +18,10 @@ Current repo state:
 
 - `ides/vscode` is a real VS Code extension package with test, VSIX packaging, and release scripts
 - the provenance-side LM tool surface now includes `list_traceable_agents`, `list_traceable_models`, `view_traceable_subagent`, and `run_traceable_subagent`
-- `.trace.md` evidence parsing, bounded evidence inspection, reconstructed viewer UX, and evidence export now live on the provenance side
-- the current Windows host has been revalidated for bounded `run_traceable_subagent` use together with evidence export and evidence viewing
+- `.trace.md` evidence parsing, bounded evidence inspection, reconstructed viewer UX, and optional evidence export now live on the provenance side
+- the current Windows host has been revalidated for bounded `run_traceable_subagent` use together with optional evidence export and evidence viewing
 
-The strongest provenance-oriented value in the current toolchain is now here: bounded request/result semantics, `.trace.md` evidence generation and inspection, and a receiver-safe path between raw markdown source and reconstructed TRACEABLE evidence reading.
+The strongest provenance-oriented value in the current toolchain is now here: bounded request/result semantics, optional `.trace.md` evidence generation plus inspection, and a receiver-safe path between raw markdown source and reconstructed TRACEABLE evidence reading.
 
 ## Intended Scope
 
@@ -73,6 +73,22 @@ Current operating posture:
 - keep docs, tests, and evidence UX aligned with the live provenance-side runtime
 - keep `ai-vscode-tools` truthful about the narrower Local-chat/store boundary that remains there
 - keep topic-oriented feedback tooling experimental in the `feedback` repo rather than moving it here
+
+## Definition Of Done
+
+The current provenance-tooling bar is not just "it sometimes works". The working bar is that successful bounded runs should become more common than surprising or failed outcomes on the maintained validation set, and that unexpected results should drive the next debugging pass rather than being hand-waved away.
+
+Definition of done for the current provenance lane:
+
+- [ ] successful bounded runs occur more often than failed or surprising runs across the maintained validation set for the current host and runtime surface
+- [ ] unexpected outcomes are investigated with an explicit repro, a local hypothesis, a cheap discriminating check, and a recorded outcome rather than being treated as noise
+- [ ] validation covers multiple operating modes instead of one happy path, including role-grounded runs, model-grounded runs, evidence-first recovery reads, and runs with and without meaningful tool use
+- [ ] validation covers a broad slice of native tooling on the current host so the lane is not only proven against synthetic or repo-private tool patterns
+- [ ] validation covers multiple input shapes, including straightforward inputs, ambiguous inputs, epistemic inputs, non-leading inputs, and inputs that try to smuggle in leading framing
+- [ ] the current guards measurably help the child stay non-leading and epistemically bounded instead of merely adding extra wording around the same failure modes
+- [ ] optional evidence export and evidence reading remain trustworthy enough that a returned `.trace.md` artifact can be inspected as a primary debugging and recovery surface when the lane requested `exportToFolder` or the user explicitly chose export
+- [ ] the repo can name which outcomes are currently supported, which are intentionally fail-closed, and which still remain open rather than collapsing all three into one success claim
+- [ ] the provenance lane is stable enough to be used alongside `feedback` tooling without requiring the operator to guess whether a result came from real evidence, weak guard behavior, or runtime drift
 
 ## License
 

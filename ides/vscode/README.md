@@ -19,7 +19,7 @@ The important operator detail is that chat usually exposes the prompt-reference 
 This package is built for bounded provenance-first TRACEABLE work.
 
 - It helps you preflight roles and models before a run.
-- It writes and reopens `.trace.md` evidence artifacts.
+- It can export and reopen `.trace.md` evidence artifacts when the lane requests `exportToFolder` or when the user explicitly chooses export.
 - It is designed for narrow investigation slices, not broad autonomous orchestration.
 - In chat, the first-class invocation surface is usually `#` plus the prompt reference name.
 
@@ -38,7 +38,7 @@ Current included surface:
 - `Tiinex: Open Reconstructed Traceable View` opens a provenance-owned reconstructed viewer for a `.trace.md` artifact and can reopen back into source or markdown preview
 - `list_traceable_agents` exposes the bounded workspace-supported traceable agent catalog from the provenance side
 - `list_traceable_models` exposes the bounded runtime-discoverable traceable model catalog from the provenance side
-- `run_traceable_subagent` runs the provenance-owned TRACEABLE child-lane runtime with evidence export support
+- `run_traceable_subagent` runs the provenance-owned TRACEABLE child-lane runtime with optional evidence export support
 - current bounded surfaces: rendered-output, request-summary, summary, outcome, tool-ledger, status-history, tool-summary, file-summary, and state-json
 - a separate provenance LM tool namespace is now present through `list_traceable_agents`, `list_traceable_models`, `view_traceable_subagent`, and `run_traceable_subagent`
 - provenance-specific settings now live under `tiinex.aiProvenance.*`
@@ -64,7 +64,7 @@ Canonical examples:
 
 - Role-grounded preflight flow: `#listTraceableAgents` -> `#runTraceableSubagent` with `agentRole` -> `#viewTraceableSubagent` on the returned evidence file.
 - Model-grounded preflight flow: `#listTraceableModels` -> copy one allowed exact model id -> `#runTraceableSubagent` with `modelSelector.id` -> `#viewTraceableSubagent` on the returned evidence file.
-- Recovery flow: if a run already produced `.trace.md`, inspect it with `#viewTraceableSubagent` before launching another lane.
+- Recovery flow: if a run already produced `.trace.md` through `exportToFolder` or explicit export, inspect it with `#viewTraceableSubagent` before launching another lane.
 
 Local development loop:
 
