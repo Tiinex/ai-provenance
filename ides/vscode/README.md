@@ -4,6 +4,29 @@ This package is the VS Code-specific extension surface for the `ai-provenance` r
 
 It intentionally lives under `ides/vscode` because the repo itself is broader than one IDE.
 
+## Quick Start
+
+If you want to validate the package locally:
+
+1. Open `ai-provenance/ides/vscode` in a terminal.
+2. Run `npm install`.
+3. Run `npm test`.
+4. Run `npm run package:vsix` if you want a local installable VSIX.
+
+If you install the extension in VS Code, the shortest useful first flow is:
+
+1. call `list_traceable_agents` or `list_traceable_models`
+2. run one narrow `run_traceable_subagent` lane
+3. inspect the returned evidence file with `view_traceable_subagent`
+
+## What To Expect
+
+This package is built for bounded provenance-first TRACEABLE work.
+
+- It helps you preflight roles and models before a run.
+- It writes and reopens `.trace.md` evidence artifacts.
+- It is designed for narrow investigation slices, not broad autonomous orchestration.
+
 Current status:
 
 - buildable as a real VS Code extension
@@ -44,6 +67,12 @@ Canonical examples:
 - Role-grounded preflight flow: `list_traceable_agents` -> `run_traceable_subagent` with `agentRole` -> `view_traceable_subagent` on the returned evidence file.
 - Model-grounded preflight flow: `list_traceable_models` -> copy one allowed exact model id -> `run_traceable_subagent` with `modelSelector.id` -> `view_traceable_subagent` on the returned evidence file.
 - Recovery flow: if a run already produced `.trace.md`, inspect it with `view_traceable_subagent` before launching another lane.
+
+Local development loop:
+
+- `npm test` builds and runs the current validation slice
+- `npm run package:vsix` produces a local VSIX for install testing
+- `npm run release:check` is the release gate used before publishing
 
 Release flow:
 
