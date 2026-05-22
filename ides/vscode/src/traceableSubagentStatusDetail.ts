@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import path from "node:path";
 import type {
+  TraceableCarryForwardState,
+  TraceableCarryStateDisposition,
   TraceableSubagentEvidenceFileState,
   TraceableSubagentRequestSummaryItem,
   TraceableSubagentStatusHeader,
@@ -31,6 +33,12 @@ export interface TraceableSubagentDetailSnapshot {
   header: Required<TraceableSubagentStatusHeader>;
   status: TraceableSubagentDetailStatusState;
   evidenceFile?: TraceableSubagentEvidenceFileState;
+  resultSummary?: {
+    finalSummary?: string;
+    carryStateDisposition?: TraceableCarryStateDisposition;
+    activeCarryForward?: TraceableCarryForwardState;
+    recoverableCarryState?: TraceableCarryForwardState;
+  };
   requestSummary: TraceableSubagentRequestSummaryItem[];
   statusHistory: TraceableSubagentStatusHistoryEvent[];
   recentTools: TraceableSubagentToolStatusEvent[];
@@ -207,6 +215,7 @@ export class TraceableSubagentStatusDetailController implements vscode.TextDocum
       message: "idle"
     },
     evidenceFile: { status: "idle" },
+    resultSummary: undefined,
     requestSummary: [],
     statusHistory: [],
     recentTools: [],

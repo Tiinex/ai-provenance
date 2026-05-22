@@ -55,6 +55,13 @@ type PanelActivityEntry =
     text: string;
   }
   | {
+    kind: "handoff";
+    id: string;
+    occurredAt: string;
+    note: string;
+    detail?: string;
+  }
+  | {
     kind: "tool";
     id: string;
     occurredAt: string;
@@ -703,6 +710,20 @@ function renderRequestSummaryBadge(item: PanelRequestSummaryItem, snapshot?: Tra
   if (normalizedLabel === "model") {
     return renderHeaderBadge(item.label, item.value, "activity-request-badge header-badge-model", item.title);
   }
+  if (normalizedLabel === "parent trace") {
+    const parentTracePath = item.title?.trim() || item.value.trim();
+    const openPayload = parentTracePath && /[\\/]|\.trace\.md$/i.test(parentTracePath)
+      ? { type: "openFile", filePath: parentTracePath }
+      : undefined;
+    return renderHeaderBadge(
+      item.label,
+      item.value,
+      "activity-request-badge",
+      item.title,
+      undefined,
+      openPayload
+    );
+  }
   if (normalizedLabel === "role" && snapshot) {
     const isHuman = snapshot.header.humanRole;
     const isResolved = snapshot.header.agentResolved;
@@ -942,15 +963,79 @@ function buildActivityEntries(snapshot: TraceableSubagentDetailSnapshot): PanelA
     });
   }
 
+  const handoff = buildCarryHandoffActivity(snapshot);
+  if (handoff) {
+    activities.push(handoff);
+  }
+
   return activities.sort((left, right) => {
     const leftOccurredAtMs = parsePanelTimestampMs(left.occurredAt) ?? Number.MAX_SAFE_INTEGER;
     const rightOccurredAtMs = parsePanelTimestampMs(right.occurredAt) ?? Number.MAX_SAFE_INTEGER;
     if (leftOccurredAtMs !== rightOccurredAtMs) {
       return leftOccurredAtMs - rightOccurredAtMs;
     }
-    const order = { request: 0, status: 1, tool: 2, output: 3 } as const;
+    const order = { request: 0, status: 1, tool: 2, output: 3, handoff: 4 } as const;
     return order[left.kind] - order[right.kind];
   });
+}
+
+function buildCarryHandoffActivity(snapshot: TraceableSubagentDetailSnapshot): Extract<PanelActivityEntry, { kind: "handoff" }> | undefined {
+  const result = snapshot.resultSummary;
+  if (!result) {
+    return undefined;
+  }
+  const activeCarryForward = result.activeCarryForward;
+  const recoverableCarryState = result.recoverableCarryState;
+  const disposition = result.carryStateDisposition
+    ?? (activeCarryForward ? "active" : recoverableCarryState ? "recoverable" : undefined);
+  if (!disposition && !activeCarryForward && !recoverableCarryState) {
+    return undefined;
+  }
+  const noteParts: string[] = [];
+  switch (disposition) {
+    case "active":
+      noteParts.push("Next trace inherits active carry-forward.");
+      break;
+    case "recoverable":
+      noteParts.push("Carry state was preserved for inspection, not auto-inheritance.");
+      break;
+    case "consumed":
+      noteParts.push("Carry state was consumed in this run.");
+      break;
+    case "expired":
+      noteParts.push("Carry state expired at this boundary.");
+      break;
+    case "none":
+      noteParts.push("No carry state remains after this run.");
+      break;
+  }
+  const summaryState = activeCarryForward ?? recoverableCarryState;
+  if (summaryState?.nextSuggestedStart?.trim()) {
+    noteParts.push(`Next start: ${summaryState.nextSuggestedStart.trim()}`);
+  }
+  const detailParts: string[] = [];
+  if (Array.isArray(activeCarryForward?.remainingGoals) && activeCarryForward.remainingGoals.length > 0) {
+    detailParts.push(`Remaining goals: ${activeCarryForward.remainingGoals.join(" | ")}`);
+  }
+  if (Array.isArray(activeCarryForward?.openQuestions) && activeCarryForward.openQuestions.length > 0) {
+    detailParts.push(`Open questions: ${activeCarryForward.openQuestions.join(" | ")}`);
+  }
+  if (Array.isArray(activeCarryForward?.constraints) && activeCarryForward.constraints.length > 0) {
+    detailParts.push(`Constraints: ${activeCarryForward.constraints.join(" | ")}`);
+  }
+  if (Array.isArray(summaryState?.relevantFileAnchors) && summaryState.relevantFileAnchors.length > 0) {
+    detailParts.push(`File anchors: ${summaryState.relevantFileAnchors.join(", ")}`);
+  }
+  if (Array.isArray(summaryState?.relevantArtifactAnchors) && summaryState.relevantArtifactAnchors.length > 0) {
+    detailParts.push(`Artifact anchors: ${summaryState.relevantArtifactAnchors.join(", ")}`);
+  }
+  return {
+    kind: "handoff",
+    id: "carry-handoff",
+    occurredAt: snapshot.updatedAt,
+    note: noteParts.join(" "),
+    detail: detailParts.join("\n") || undefined
+  };
 }
 
 function renderActivityDuration(
@@ -1141,14 +1226,9 @@ function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "reque
   const { task, userInput, prominentMetadata, secondaryMetadata } = splitRequestSummary(entry.requestSummary, entry.snapshot);
   const noteText = task?.value?.trim() || "Compact launch parameters for this trace lane.";
   const noteTitleAttribute = task?.title ? ` title="${escapeHtml(task.title)}"` : "";
-  const prominentMetadataMarkup = prominentMetadata.length > 0
-    ? `<div class="event-chips event-request-primary-chips">${renderRequestSummaryChips(prominentMetadata, entry.snapshot)}</div>`
-    : "";
-  const secondaryMetadataMarkup = secondaryMetadata.length > 0
-    ? `<div class="event-chips event-request-secondary-chips">${renderRequestSummaryChips(secondaryMetadata, entry.snapshot)}</div>`
-    : "";
-  const metadataMarkup = prominentMetadataMarkup || secondaryMetadataMarkup
-    ? `<div class="event-request-chip-stack">${[prominentMetadataMarkup, secondaryMetadataMarkup].filter(Boolean).join("")}</div>`
+  const orderedMetadata = [...prominentMetadata, ...secondaryMetadata];
+  const metadataInlineMarkup = orderedMetadata.length > 0
+    ? `<div class="event-chips event-request-inline-chips">${renderRequestSummaryChips(orderedMetadata, entry.snapshot)}</div>`
     : "";
   const metadataDetailSections = [...prominentMetadata, ...secondaryMetadata]
     .map((item) => {
@@ -1168,17 +1248,34 @@ function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "reque
     : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
   return [
     `<li class="event-row event-request" title="Traceable input"${expandableAttributes}>`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon">${renderCodicon("mail")}</span><span class="event-label">Input</span>${summaryMarkup}</div><div class="event-note"${noteTitleAttribute}>${escapeHtml(noteText)}</div>${detailSections ? `<div class="event-request-detail">${detailSections}</div>` : ""}</div>`,
-    metadataMarkup,
+    `<div class="event-body"><div class="event-main"><span class="event-icon">${renderCodicon("mail")}</span><span class="event-label">Input</span>${summaryMarkup}${metadataInlineMarkup}</div><div class="event-note"${noteTitleAttribute}>${escapeHtml(noteText)}</div>${detailSections ? `<div class="event-request-detail">${detailSections}</div>` : ""}</div>`,
     `</li>`
   ].join("");
 }
 
 function renderOutputActivity(entry: Extract<PanelActivityEntry, { kind: "output" }>): string {
+  const noteText = entry.text.trim();
+  const expandable = noteText.length > 0;
+  const expandableAttributes = expandable ? ' data-output-expandable="true" tabindex="0" role="button" aria-expanded="false"' : "";
+  const summaryMarkup = noteText
+    ? `<span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(noteText)}</span>${expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : ""}</span>`
+    : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
   return [
-    `<li class="event-row event-output" title="Final output returned to the parent lane">`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon">↩</span><span class="event-label">Output</span></div><div class="event-note">${escapeHtml(entry.text)}</div></div>`,
+    `<li class="event-row event-output" title="Final output returned to the parent lane"${expandableAttributes}>`,
+    `<div class="event-body"><div class="event-main"><span class="event-icon">↩</span><span class="event-label">Output</span>${summaryMarkup}</div><div class="event-note">${escapeHtml(noteText)}</div>${expandable ? `<div class="event-output-detail">${escapeHtml(noteText)}</div>` : ""}</div>`,
     renderActivityMeta(undefined, "", []),
+    `</li>`
+  ].join("");
+}
+
+function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "handoff" }>): string {
+  const detailMarkup = entry.detail?.trim()
+    ? `<div class="event-handoff-detail">${escapeHtml(entry.detail.trim())}</div>`
+    : "";
+  return [
+    `<li class="event-row event-handoff" title="Carry state left behind for the next trace lane">`,
+    `<div class="event-body"><div class="event-main"><span class="event-icon">⇢</span><span class="event-label">Handoff</span></div><div class="event-note">${escapeHtml(entry.note)}</div>${detailMarkup}</div>`,
+    renderActivityMeta(entry.occurredAt, "", []),
     `</li>`
   ].join("");
 }
@@ -1214,6 +1311,9 @@ function renderActivityRow(entry: PanelRenderedEntry): string {
   }
   if (entry.kind === "output") {
     return renderOutputActivity(entry);
+  }
+  if (entry.kind === "handoff") {
+    return renderHandoffActivity(entry);
   }
   return renderToolActivity(entry);
 }
@@ -2398,6 +2498,16 @@ export function renderTraceableSubagentPanelHtml(
       outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
       outline-offset: 2px;
     }
+    .event-output[data-output-expandable="true"] {
+      cursor: pointer;
+    }
+    .event-output[data-output-expandable="true"]:hover {
+      background: color-mix(in srgb, var(--chip-bg) 42%, transparent);
+    }
+    .event-output[data-output-expandable="true"]:focus-visible {
+      outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+      outline-offset: 2px;
+    }
     .event-request-detail {
       display: none;
       gap: 8px;
@@ -2420,6 +2530,51 @@ export function renderTraceableSubagentPanelHtml(
       transform: rotate(90deg);
       color: color-mix(in srgb, var(--accent) 78%, var(--fg));
     }
+    .event-output .event-note {
+      color: color-mix(in srgb, var(--fg) 84%, var(--muted));
+      font-size: 12px;
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 1;
+    }
+    .event-output-detail {
+      display: none;
+      padding-left: 20px;
+      margin-top: 6px;
+      color: color-mix(in srgb, var(--fg) 88%, var(--muted));
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .event-output.output-expanded .event-note {
+      display: none;
+    }
+    .event-output.output-expanded .event-summary-preview {
+      display: none;
+    }
+    .event-output.output-expanded .event-output-detail {
+      display: block;
+    }
+    .event-output.output-expanded .event-expand-indicator {
+      transform: rotate(90deg);
+      color: color-mix(in srgb, var(--accent) 78%, var(--fg));
+    }
+    .event-handoff .event-label {
+      color: color-mix(in srgb, var(--accent-soft) 82%, var(--fg));
+      letter-spacing: 0.02em;
+    }
+    .event-handoff .event-note {
+      color: color-mix(in srgb, var(--fg) 86%, var(--muted));
+      white-space: normal;
+      -webkit-line-clamp: unset;
+    }
+    .event-handoff-detail {
+      margin-top: 6px;
+      padding-left: 20px;
+      color: color-mix(in srgb, var(--fg) 82%, var(--muted));
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
     .event-request-detail-section {
       display: grid;
       gap: 3px;
@@ -2437,23 +2592,27 @@ export function renderTraceableSubagentPanelHtml(
     }
     .event-request {
       align-items: start;
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .event-request .event-main {
+      flex-wrap: wrap;
+      align-items: flex-start;
+      row-gap: 6px;
+    }
+    .event-request .event-summary-inline {
+      flex: 1 1 20rem;
     }
     .event-request .event-label {
       color: color-mix(in srgb, var(--accent) 78%, var(--fg));
       letter-spacing: 0.02em;
     }
-    .event-request-chip-stack {
-      display: grid;
-      gap: 6px;
-      justify-items: end;
-      min-width: 0;
-    }
-    .event-request-primary-chips,
-    .event-request-secondary-chips {
+    .event-request-inline-chips {
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      justify-content: flex-end;
+      align-items: center;
+      min-width: 0;
+      flex: 1 1 18rem;
     }
     .status-group-item {
       list-style: none;
@@ -2685,6 +2844,7 @@ export function renderTraceableSubagentPanelHtml(
           ${hideToolbarControls
             ? ""
             : `${evidenceState.liveIndicator ? `<span class="toolbar-live-indicator" title="Evidence export is actively updating"></span>` : ""}
+          ${snapshot.status.phase === "running" ? `<button class="toolbar-button" data-message='{"type":"stopRun"}' title="Request stop for the active TRACEABLE run">Stop</button>` : ""}
           ${evidenceState.showExport ? `<button class="toolbar-button" data-message='{"type":"exportMarkdown"}' title="Export raw markdown evidence">Export</button>` : ""}
           ${evidenceState.showView && evidenceState.filePath
             ? `<button class="${evidenceState.buttonClass}" data-message='${escapeHtml(JSON.stringify({ type: "openFile", filePath: evidenceState.filePath }))}' title="${escapeHtml(evidenceState.buttonTitle)}">View</button>`
@@ -2711,6 +2871,7 @@ export function renderTraceableSubagentPanelHtml(
       scrollTop: 0,
       toolsetDisclosureOpen: false,
       requestExpanded: false,
+      outputExpanded: false,
       namespaceOpenById: {},
       statusGroupOpenById: {},
       runId: ''
@@ -2724,6 +2885,7 @@ export function renderTraceableSubagentPanelHtml(
             scrollTop: typeof state.scrollTop === 'number' ? state.scrollTop : 0,
             toolsetDisclosureOpen: state.toolsetDisclosureOpen === true,
             requestExpanded: state.requestExpanded === true,
+            outputExpanded: state.outputExpanded === true,
             namespaceOpenById: state.namespaceOpenById && typeof state.namespaceOpenById === 'object'
               ? Object.fromEntries(Object.entries(state.namespaceOpenById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
               : {},
@@ -2742,6 +2904,7 @@ export function renderTraceableSubagentPanelHtml(
     const statusGroups = Array.from(document.querySelectorAll('.status-group[data-status-group-id]'));
     const timerNodes = Array.from(document.querySelectorAll('[data-timer-kind]'));
     const requestRow = document.querySelector('.event-request[data-request-expandable="true"]');
+    const outputRow = document.querySelector('.event-output[data-output-expandable="true"]');
 
     const persistPanelState = (nextState) => {
       panelState = { ...panelState, ...nextState };
@@ -2981,6 +3144,37 @@ export function renderTraceableSubagentPanelHtml(
       });
     }
 
+    const applyOutputExpansion = () => {
+      if (!(outputRow instanceof HTMLElement)) {
+        return;
+      }
+      outputRow.classList.toggle('output-expanded', panelState.outputExpanded === true);
+      outputRow.setAttribute('aria-expanded', panelState.outputExpanded === true ? 'true' : 'false');
+    };
+
+    applyOutputExpansion();
+
+    if (outputRow instanceof HTMLElement) {
+      const toggleOutputExpansion = () => {
+        persistPanelState({ outputExpanded: panelState.outputExpanded !== true });
+        applyOutputExpansion();
+      };
+      outputRow.addEventListener('click', (event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement && target.closest('[data-message], button, a')) {
+          return;
+        }
+        toggleOutputExpansion();
+      });
+      outputRow.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+          return;
+        }
+        event.preventDefault();
+        toggleOutputExpansion();
+      });
+    }
+
     const getScrollingRoot = () => document.scrollingElement || document.documentElement || document.body;
 
     const isNearBottom = () => {
@@ -3120,6 +3314,7 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     private readonly extensionUri: vscode.Uri,
     private readonly onExportMarkdown: () => Promise<void>,
     private readonly onOpenFile: (filePath: string, startLine?: number, endLine?: number) => Promise<void>,
+    private readonly onStopRun: () => Promise<void>,
     private readonly onClosePanel: () => Promise<void>,
     private readonly onStayOpen: () => Promise<void>
   ) {}
@@ -3143,6 +3338,10 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
       }
       if (message.type === "exportMarkdown") {
         await this.onExportMarkdown();
+        return;
+      }
+      if (message.type === "stopRun") {
+        await this.onStopRun();
         return;
       }
       if (message.type === "closePanel") {

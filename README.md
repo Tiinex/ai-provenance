@@ -179,7 +179,8 @@ Definition of done for the current provenance lane:
 		- [ ] `V1-N` Same-lane follow-up stability slice.
 			- [ ] Scenario: complete one anchored read-only pass, then send one bounded follow-up on the same file or same evidence artifact.
 			- [ ] Expected: success if the follow-up reuses the existing grounding instead of restarting broad rereads, drifting to nearby files, or spilling raw recovery-turn text.
-			- [ ] Current blocker on May 22, 2026: the current public `run_traceable_subagent` LM tool schema does not expose same-lane continuation or session-targeting input, so this exact continuity slice is not yet reachable from the same public tool surface.
+			- [x] Code-side remediation landed on May 22, 2026: the public `run_traceable_subagent` LM tool schema now exposes artifact-backed continuation through `parentTracePath`, and the runtime/export path can create lineage-shaped child traces without mutating the parent artifact.
+			- [ ] Current blocker on May 22, 2026 after the first live observer bootstrap: the continuity slice is no longer blocked at the public contract level, but maintained live continuation measurement is still pending because the bootstrap parent run selected an unavailable `openai/gpt-5.4` child model and stopped truthfully as `tool_blocked` before a real follow-up continuation could be measured.
 		- [x] `V1-O` Non-reentrant runtime slice.
 			- [x] Scenario: try to make a traceable child lane invoke the same traceable runtime again from inside itself.
 			- [x] Expected: fail-closed if the runtime surfaces an explicit policy boundary instead of silently creating a nested trace tree.
@@ -296,6 +297,19 @@ The current v1 tree above tracks what is already proven on the maintained host s
 
 Milestone 3 is the point where `run_traceable_subagent` stops being only a one-shot bounded lane and becomes a bounded continuation surface with explicit provenance lineage.
 
+Current implementation progress:
+
+- [x] Host-surface cancellation now reaches the TRACEABLE runtime and produces explicit stop metadata in saved evidence.
+- [x] `run_traceable_subagent` now exposes artifact-backed continuation through `parentTracePath`, inherits the parent request contract by default, and carries a bounded parent outcome summary forward for the child run.
+- [x] Continued child exports now allocate next-free lineage filenames beside the parent by default and persist continuation metadata in the saved artifact.
+- [x] Observed on May 22, 2026 with the experimental VS Code live-chat tooling: the chat-side dispatch reached the provenance tool surface, opened TRACEABLE UI state, and exported a truthful parent artifact at `ai-provenance/.topics/m3-observer/01-gpt-5-4.trace.md`.
+- [x] Observed on May 22, 2026 after the model-selector canonicalization fix: a second experimental live-chat rerun selected a sendable `copilot/gpt-5-mini` child lane, executed a real `readFile` tool call against `README.md`, and exported a second truthful artifact at `ai-provenance/.topics/m3-observer/02-gpt-5-mini.trace.md`.
+- [x] Observed on May 22, 2026 after a full VS Code restart: a fresh live observer rerun again reached direct `README.md` grounding, executed `copilot_readFile` successfully, and returned a parseable TRACEABLE result in `ai-provenance/.topics/m3-observer/09-anchor.trace.md`.
+- [x] Observed on May 22, 2026 in a maintained manual stop pass after the fallback-result stop-metadata fix and reload: a live TRACEABLE run was stopped through the panel control and exported truthful cancellation evidence with `stopReason: user_cancelled`, `stopSource: traceable-panel`, and a concrete `stopRequestedAt` timestamp in `ai-vscode-tools/tests/05-gpt-5-4.trace.md`.
+- [x] A bounded TRACEABLE stop control and a maintained manual observer pass for live stop behavior now exist, so the stop lifecycle is no longer the narrow technical blocker for Milestone 3.
+- [ ] Current blocker on May 22, 2026 after the stop-proof pass: Milestone 3 still lacks a maintained real parent-child continuation proof with a visible lineage-shaped child artifact such as `01-01-...`, so continuation remains implemented in code but not yet proven as product behavior.
+- [ ] Current blocker on May 22, 2026 for continuity quality: carry-forward state and lineage observability are still too implicit. The current evidence surfaces do not yet prove that follow-up runs inherit only the bounded workstate they need, or let a human inspect parent-child relationships and carry-state status cleanly enough to judge continuation quality.
+
 - A continuation starts from one existing parent `.trace.md` artifact and creates one new child trace rather than mutating the parent.
 - The parent trace does not need to know about its children. Child lineage stays one-way so cleanup and deletion of stale traces do not require parent-side maintenance.
 - Child traces should live in the same folder as the parent by default and should take the next available lineage suffix, for example `01-anchor.trace.md` to `01-01-anchor.trace.md`, then `01-02-anchor.trace.md`, and a continuation from that child to `01-02-01-anchor.trace.md`.
@@ -314,8 +328,10 @@ Definition of done for Milestone 3:
 - [ ] A continuation creates one new child `.trace.md` artifact with explicit parent reference and no mutation of the parent artifact.
 - [ ] Child naming follows the lineage suffix rule and takes the next free slot without requiring sibling relationships to be stored anywhere else.
 - [ ] Default inheritance from the parent is strong enough that a caller can provide mostly epistemic follow-up input and still get a well-grounded continuation, while explicit overrides remain available for bounded exceptions.
-- [ ] Stop or cancellation from a bounded TRACEABLE stop control, or from the upstream host surface that launched the run, propagates into `run_traceable_subagent`, halts the child run, and leaves evidence that the user explicitly stopped it.
-- [ ] Stopped runs end truthfully and are distinguishable from normal completion in both live status and saved evidence.
+- [ ] Continuation leaves lineage observable enough that a human can tell which trace is the parent, which traces are the direct children, and where the current trace sits in the chain without reconstructing the relationship from filenames alone.
+- [ ] Continuation uses a bounded carry-forward package rather than an ever-growing compacted blob, and completed runs only leave recoverable state when there is grounded reason to preserve it.
+- [x] Stop or cancellation from a bounded TRACEABLE stop control, or from the upstream host surface that launched the run, propagates into `run_traceable_subagent`, halts the child run, and leaves evidence that the user explicitly stopped it.
+- [x] Stopped runs end truthfully and are distinguishable from normal completion in both live status and saved evidence.
 - [ ] The continuation surface is transparent enough that remaining differences from native Copilot live-chat behavior are inspectable rather than hidden behind provenance-side magic.
 - [ ] Comparative validation shows that the continuation slice is at least competitive with `runSubagent` on the same host for the measured tasks used to judge this milestone.
 

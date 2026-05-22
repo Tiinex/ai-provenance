@@ -1,8 +1,11 @@
+import { readdirSync } from "node:fs";
+import path from "node:path";
 import {
   normalizeTraceableOutputMode,
   renderTraceableSubagentMarkdown,
   type TraceableSubagentRunResult
 } from "./traceableContract";
+import { parseTraceableEvidenceFileName } from "./traceableLineage";
 import type { TraceableSubagentDetailSnapshot } from "./traceableSubagentStatusDetail";
 
 export const TRACEABLE_EVIDENCE_STATE_SCHEMA = "tiinex.traceable-state.v1";
@@ -56,11 +59,23 @@ export function parseTraceableEvidenceStateMarkdown(markdown: string): ParsedTra
   if (!snapshot || typeof snapshot !== "object") {
     return undefined;
   }
+  const parsedResult = record.result && typeof record.result === "object"
+    ? record.result as TraceableSubagentRunResult
+    : undefined;
+  const parsedSnapshot = snapshot as TraceableSubagentDetailSnapshot;
   return {
-    snapshot: snapshot as TraceableSubagentDetailSnapshot,
-    result: record.result && typeof record.result === "object"
-      ? record.result as TraceableSubagentRunResult
-      : undefined
+    snapshot: parsedResult
+      ? {
+        ...parsedSnapshot,
+        resultSummary: parsedSnapshot.resultSummary ?? {
+          finalSummary: parsedResult.finalSummary,
+          carryStateDisposition: parsedResult.carryStateDisposition,
+          activeCarryForward: parsedResult.activeCarryForward,
+          recoverableCarryState: parsedResult.recoverableCarryState
+        }
+      }
+      : parsedSnapshot,
+    result: parsedResult
   };
 }
 
@@ -78,6 +93,78 @@ function getRecord(value: unknown): Record<string, unknown> | undefined {
 
 function getArray<T = unknown>(value: unknown): T[] {
   return Array.isArray(value) ? value as T[] : [];
+}
+
+function getPositiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function resolveTraceableEvidenceReference(currentFilePath: string, reference: string | undefined): string | undefined {
+  const normalized = reference?.trim();
+  if (!normalized) {
+    return undefined;
+  }
+  return path.isAbsolute(normalized)
+    ? path.resolve(normalized)
+    : path.resolve(path.dirname(currentFilePath), normalized);
+}
+
+function listDirectChildTraceableEvidencePaths(currentFilePath: string, lineageLabel: string): string[] {
+  const parentSegments = lineageLabel.split("-").filter((segment) => segment.length > 0);
+  if (parentSegments.length === 0) {
+    return [];
+  }
+  try {
+    return readdirSync(path.dirname(currentFilePath), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name !== path.basename(currentFilePath))
+      .flatMap((entry) => {
+        const parsed = parseTraceableEvidenceFileName(entry.name);
+        return parsed ? [{ entry, parsed }] : [];
+      })
+      .filter(({ parsed }) => {
+        const candidateSegments = parsed.lineageLabel.split("-");
+        return candidateSegments.length === parentSegments.length + 1
+          && parentSegments.every((segment, index) => candidateSegments[index] === segment);
+      })
+      .sort((left, right) => left.parsed.lineageLabel.localeCompare(right.parsed.lineageLabel) || left.entry.name.localeCompare(right.entry.name))
+      .map(({ entry }) => path.join(path.dirname(currentFilePath), entry.name));
+  } catch {
+    return [];
+  }
+}
+
+function buildTraceableEvidenceLineageLines(input: {
+  filePath: string;
+  parsed: ParsedTraceableEvidenceState;
+}): string[] {
+  const result = getRecord(input.parsed.result) ?? {};
+  const parsedFileName = parseTraceableEvidenceFileName(path.basename(input.filePath));
+  const lineageLabel = getString(result.lineageLabel) ?? parsedFileName?.lineageLabel;
+  const lineageDepth = getPositiveInteger(result.lineageDepth) ?? parsedFileName?.lineageDepth;
+  const parentTracePath = resolveTraceableEvidenceReference(input.filePath, getString(result.parentTracePath));
+  const directChildren = lineageLabel ? listDirectChildTraceableEvidencePaths(input.filePath, lineageLabel) : [];
+  const continuedFromParent = getString(result.continuedFromParent) ?? (result.continuedFromParent === true ? "yes" : result.continuedFromParent === false ? "no" : undefined);
+  if (!lineageLabel && !parentTracePath && directChildren.length === 0) {
+    return [];
+  }
+  const lines = [
+    "## Lineage",
+    "",
+    `- Current Trace: ${input.filePath}`,
+    `- Continued From Parent: ${continuedFromParent ?? (parentTracePath ? "yes" : "no")}`,
+    `- Parent Trace: ${parentTracePath ?? "-"}`,
+    `- Lineage Label: ${lineageLabel ?? "-"}`,
+    `- Lineage Depth: ${lineageDepth ?? "-"}`,
+    `- Direct Children: ${directChildren.length}`
+  ];
+  if (directChildren.length > 0) {
+    lines.push("", "### Direct Children", "");
+    for (const childPath of directChildren) {
+      lines.push(`- ${childPath}`);
+    }
+  }
+  lines.push("");
+  return lines;
 }
 
 function selectLatestWindow<T>(items: T[], maxItems: number): { items: T[]; label: string } {
@@ -260,6 +347,8 @@ export function renderTraceableEvidenceSummaryMarkdown(input: {
     lines.push("## Final Summary", "", finalSummary, "");
   }
 
+  lines.push(...buildTraceableEvidenceLineageLines(input));
+
   const validationIssues = input.parsed.result?.validationIssues;
   if (Array.isArray(validationIssues) && validationIssues.length > 0) {
     lines.push("## Validation Issues", "");
@@ -338,6 +427,7 @@ export function renderTraceableEvidenceOutcomeMarkdown(input: {
     `- Model: ${getString(model.vendor) && getString(model.family) && getString(model.id) ? `${getString(model.vendor)}/${getString(model.family)}/${getString(model.id)}` : "-"}`,
     `- Evidence File Status: ${getString(getRecord(result.evidenceFile)?.status) ?? getString(evidenceFile.status) ?? "idle"}`
   );
+  lines.push("", ...buildTraceableEvidenceLineageLines(input));
   return `${lines.join("\n")}\n`;
 }
 
@@ -358,10 +448,14 @@ export function renderTraceableEvidenceTraceableMarkdown(input: {
     ].join("\n");
   }
 
-  return renderTraceableSubagentMarkdown(result, {
+  const rendered = renderTraceableSubagentMarkdown(result, {
     mode: "absolute-file-uri-markdown",
     includeSupportArtifacts: input.includeSupportArtifacts ?? true
   });
+  const lineageLines = buildTraceableEvidenceLineageLines(input);
+  return lineageLines.length > 0
+    ? `${rendered.trimEnd()}\n\n${lineageLines.join("\n")}`
+    : rendered;
 }
 
 export function renderTraceableEvidenceToolLedgerMarkdown(input: {

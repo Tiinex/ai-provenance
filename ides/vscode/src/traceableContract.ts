@@ -7,6 +7,7 @@ export type TraceableStopReason =
   | "insufficient_grounding"
   | "tool_blocked"
   | "awaiting_input"
+  | "user_cancelled"
   | "policy_stop";
 
 export type TraceableCompletionClaim = "complete" | "partial" | "unresolved";
@@ -89,6 +90,20 @@ export interface TraceableCarriedContext {
   reductions?: string[];
 }
 
+export type TraceableCarryStateDisposition = "none" | "active" | "recoverable" | "consumed" | "expired";
+
+export interface TraceableCarryForwardState {
+  remainingGoals?: string[];
+  openQuestions?: string[];
+  constraints?: string[];
+  decisionsMade?: string[];
+  nextSuggestedStart?: string;
+  relevantFileAnchors?: string[];
+  relevantArtifactAnchors?: string[];
+  keepReasons?: string[];
+  dropReasons?: string[];
+}
+
 export interface TraceableWrapperPolicy {
   name?: string;
   closureMode?: "open" | "bounded-summary" | "explicit-final";
@@ -101,6 +116,7 @@ export interface TraceableBudgetPolicy {
 
 export interface TraceableSubagentInput {
   userInput: string;
+  parentTracePath?: string;
   parentFrame?: string;
   parentTask?: string;
   outputMode?: TraceableSubagentOutputMode;
@@ -111,6 +127,7 @@ export interface TraceableSubagentInput {
   agentRole?: TraceableAgentRole;
   parentExpectations?: TraceableRequestExpectations;
   carriedContext?: TraceableCarriedContext;
+  activeCarryForward?: TraceableCarryForwardState;
   wrapperPolicy?: TraceableWrapperPolicy;
   budgetPolicy?: TraceableBudgetPolicy;
   modelSelector?: TraceableModelSelector;
@@ -189,7 +206,17 @@ export interface TraceableSubagentRunResult {
   traceStatus: TraceableStatus;
   steps: TraceableSubagentStep[];
   expectedButMissing: TraceableSubagentMissingItem[];
+  continuedFromParent?: boolean;
+  parentTracePath?: string;
+  lineageDepth?: number;
+  lineageLabel?: string;
+  activeCarryForward?: TraceableCarryForwardState;
+  recoverableCarryState?: TraceableCarryForwardState;
+  carryStateDisposition?: TraceableCarryStateDisposition;
   stopReason: TraceableStopReason;
+  stoppedBy?: "user" | "host";
+  stopSource?: "traceable-panel" | "host-cancel" | "unknown";
+  stopRequestedAt?: string;
   completionClaim: TraceableCompletionClaim;
   finalSummary: string;
   validationIssues: string[];
@@ -291,6 +318,21 @@ export function normalizedWrapperPolicy(input: TraceableSubagentInput): Required
   };
 }
 
+function getTrimmedString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function getTrimmedStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return normalized.length > 0 ? uniqueStrings(normalized) : undefined;
+}
+
 export function resolveTraceableParentFrame(input: Pick<TraceableSubagentInput, "parentFrame" | "parentTask">): string {
   return input.parentFrame?.trim() || input.parentTask?.trim() || "";
 }
@@ -313,6 +355,27 @@ export function uniqueStrings(values: string[] | undefined): string[] {
   return result;
 }
 
+function normalizeTraceableCarryForwardState(value: unknown): TraceableCarryForwardState | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const normalized: TraceableCarryForwardState = {
+    remainingGoals: getTrimmedStringArray(record.remainingGoals),
+    openQuestions: getTrimmedStringArray(record.openQuestions),
+    constraints: getTrimmedStringArray(record.constraints),
+    decisionsMade: getTrimmedStringArray(record.decisionsMade),
+    nextSuggestedStart: getTrimmedString(record.nextSuggestedStart),
+    relevantFileAnchors: getTrimmedStringArray(record.relevantFileAnchors),
+    relevantArtifactAnchors: getTrimmedStringArray(record.relevantArtifactAnchors),
+    keepReasons: getTrimmedStringArray(record.keepReasons),
+    dropReasons: getTrimmedStringArray(record.dropReasons)
+  };
+  return Object.values(normalized).some((entry) => Array.isArray(entry) ? entry.length > 0 : Boolean(entry))
+    ? normalized
+    : undefined;
+}
+
 export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentInput): Record<string, unknown> {
   const wrapperPolicy = normalizedWrapperPolicy(input);
   const budgetPolicy = normalizeBudgetPolicy(input);
@@ -321,7 +384,9 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const normalizedValidationMode = normalizeTraceableValidationMode(input.validationMode);
   const normalizedOutputMode = normalizeTraceableOutputMode(input.outputMode);
+  const normalizedActiveCarryForward = normalizeTraceableCarryForwardState(input.activeCarryForward);
   const exportToFolder = input.exportToFolder?.trim();
+  const parentTracePath = input.parentTracePath?.trim();
   const parentFrame = resolveTraceableParentFrame(input);
   const request: Record<string, unknown> = {
     userInput: input.userInput,
@@ -329,6 +394,16 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
     wrapperPolicy,
     budgetPolicy
   };
+
+  if (parentTracePath) {
+    request.parentTracePath = parentTracePath;
+  }
+  if (input.parentTask?.trim()) {
+    request.parentTask = input.parentTask.trim();
+  }
+  if (input.parentFrame?.trim()) {
+    request.parentFrame = input.parentFrame.trim();
+  }
 
   if (normalizedInputMode) {
     request.inputMode = normalizedInputMode;
@@ -350,6 +425,9 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   }
   if (input.carriedContext) {
     request.carriedContext = input.carriedContext;
+  }
+  if (normalizedActiveCarryForward) {
+    request.activeCarryForward = normalizedActiveCarryForward;
   }
   if (normalizedModelSelector.vendor || normalizedModelSelector.family || normalizedModelSelector.id || normalizedModelSelector.version) {
     request.modelSelector = normalizedModelSelector;
@@ -451,6 +529,7 @@ export function normalizeStopReasonValue(value: unknown): TraceableStopReason | 
     || value === "insufficient_grounding"
     || value === "tool_blocked"
     || value === "awaiting_input"
+    || value === "user_cancelled"
     || value === "policy_stop") {
     return value;
   }
@@ -472,6 +551,9 @@ export function normalizeStopReasonValue(value: unknown): TraceableStopReason | 
   }
   if (/\bawaiting input\b|\bneeds input\b|\binput required\b/u.test(normalized)) {
     return "awaiting_input";
+  }
+  if (/\buser\b.*\bcancel(?:led)?\b|\bcancel(?:led)? by user\b|\babort(?:ed)? by user\b|\bstopped by user\b|\bcancel(?:led)?\b|\bcanceled\b|\babort(?:ed)?\b/u.test(normalized)) {
+    return "user_cancelled";
   }
   if (/\bpolicy\b.*\bstop\b|\bstopped by policy\b/u.test(normalized)) {
     return "policy_stop";
@@ -496,7 +578,7 @@ export function normalizeCompletionClaimValue(value: unknown, stopReason: Tracea
     if (stopReason === "budget_exhausted" || stopReason === "insufficient_grounding") {
       return claim === "complete" ? "partial" : claim;
     }
-    if (stopReason === "tool_blocked" || stopReason === "awaiting_input" || stopReason === "policy_stop") {
+    if (stopReason === "tool_blocked" || stopReason === "awaiting_input" || stopReason === "user_cancelled" || stopReason === "policy_stop") {
       return claim === "complete" ? "unresolved" : claim;
     }
     return claim;
@@ -867,7 +949,7 @@ export function collectTraceableTextRewritePaths(value: unknown, paths = new Set
   const record = value as Record<string, unknown>;
   for (const [key, entry] of Object.entries(record)) {
     const normalizedKey = key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`);
-    if (typeof entry === "string" && /(?:^|_)(file_path|filepath|debug_log_path|debuglogpath|export_to_folder|exporttofolder)$/iu.test(normalizedKey)) {
+    if (typeof entry === "string" && /(?:^|_)(file_path|filepath|debug_log_path|debuglogpath|export_to_folder|exporttofolder|parent_trace_path|parenttracepath)$/iu.test(normalizedKey)) {
       const trimmed = entry.trim();
       if (trimmed) {
         paths.add(trimmed);
@@ -980,7 +1062,7 @@ export function mapPathLikeFields(value: unknown, options: TraceableMarkdownPath
   const record = value as Record<string, unknown>;
   const mapped: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(record)) {
-    if (typeof entry === "string" && /(?:^|_)(file_path|filepath|debug_log_path|debuglogpath|export_to_folder|exporttofolder)$/iu.test(key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`))) {
+    if (typeof entry === "string" && /(?:^|_)(file_path|filepath|debug_log_path|debuglogpath|export_to_folder|exporttofolder|parent_trace_path|parenttracepath)$/iu.test(key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`))) {
       mapped[key] = options?.mode === "relative-markdown"
         ? (() => {
           const relativePath = path.relative(options.baseDir ?? path.dirname(entry), entry).replace(/\\/g, "/") || path.basename(entry);
@@ -1138,6 +1220,10 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
     `- Stop Reason: ${result.stopReason}`,
     `- Completion Claim: ${result.completionClaim}`,
     `- Final Summary: ${rewrittenFinalSummary}`,
+    `- Continued From Parent: ${result.continuedFromParent ? "yes" : "no"}`,
+    `- Parent Trace: ${result.parentTracePath ? formatTraceablePathReference(result.parentTracePath, options) : "-"}`,
+    `- Lineage: ${result.lineageLabel ? `${result.lineageLabel} (depth ${result.lineageDepth ?? "-"})` : "-"}`,
+    `- Carry State: ${result.carryStateDisposition ?? (result.activeCarryForward ? "active" : result.recoverableCarryState ? "recoverable" : "-")}`,
     `- Validation Issues: ${validationIssues.length > 0 ? validationIssues.join(" | ") : "-"}`,
     `- Model: ${result.model ? `${result.model.vendor}/${result.model.family}/${result.model.id}` : "-"}`,
     `- Usage: ${usageSummary}`,
@@ -1224,6 +1310,9 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
     expectedButMissing: result.expectedButMissing,
     validationIssues,
     opaqueDelegations: result.opaqueDelegations,
+    carryStateDisposition: result.carryStateDisposition,
+    activeCarryForward: result.activeCarryForward,
+    recoverableCarryState: result.recoverableCarryState,
     stopReason: result.stopReason,
     completionClaim: result.completionClaim,
     finalSummary: rewrittenFinalSummary

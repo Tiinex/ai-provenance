@@ -18,6 +18,8 @@ Milestone 3 should include:
 - creation of one child `.trace.md` artifact without mutating the parent
 - explicit parent reference stored in the child artifact
 - default inheritance from the parent contract, with explicit overrides
+- selective carry-forward state that can preserve continuity without forcing the next run to inherit an ever-growing blob
+- minimal lineage observability in the evidence/viewer surface so a human can see parent-child relationships rather than infer them from filenames alone
 - truthful stop or cancellation propagation into the active traceable run
 - evidence and live status that distinguish user-stopped runs from normal completion
 
@@ -49,6 +51,9 @@ Use these principles to keep the implementation honest:
 - Reuse one cancellation path for both host cancel and TRACEABLE stop.
 - Do not invent provenance-side magic to hide differences from native Copilot behavior.
 - Name remaining host differences explicitly when they still exist.
+- Keep active inheritance narrow and selective; broad historical recovery should not be the same thing as automatic carry-forward.
+- Prefer explicit carry-state schemas over freeform compacting blobs.
+- Let completion end active carry by default; retain broader recoverability through inspectable artifacts rather than blind inheritance.
 
 ## Recommended V1 Decisions
 
@@ -58,6 +63,11 @@ The current code shape already suggests a few narrow v1 decisions that should re
 - Lineage metadata should be stored in both the durable artifact state and the sanitized result object for continued runs. The state block is the durable truth on disk, while the result object keeps parent-facing rendering and evidence inspection surfaces from needing to rediscover that metadata indirectly.
 - `user_cancelled` should become a real stop reason, but it should map to the existing live-status `warning` phase rather than forcing a new panel phase. The current panel and detail surfaces already understand `warning`, and a user stop is not a clean completion but also not a hard policy failure.
 - The first continuation release should require a durable parent artifact. Temporary or cache-backed continuation should remain out of scope for v1 even if it becomes desirable later.
+- Carry-state should be split into two levels in v1:
+  - `active carry-forward`: the small, selective state that a deferred child inherits by default
+  - `recoverable carry-state`: a broader but still bounded package that remains inspectable in the artifact and can be recovered later without becoming automatic inheritance
+- Completed runs should not automatically emit active carry-forward. A completed run may emit a recoverable handoff package when the model has grounded reason to think later multi-step work is likely, but that package should stay recoverable rather than auto-inherited.
+- Viewer observability should derive lineage from artifact metadata rather than mutating parents to store child lists. Parent artifacts remain the durable source of truth; the viewer computes parent, children, and sibling relationships from the saved lineage fields.
 
 ## Host API Read
 
@@ -106,11 +116,18 @@ Fields that should inherit by default when present on the parent:
 - `allowedToolNames`
 - `blockedToolNames`
 
+Active carry-forward that should inherit by default when present on the parent:
+
+- only the parent's explicit `activeCarryForward` package
+- not the parent's whole historical carry-state or raw output
+
 Fields that should not inherit blindly:
 
 - `userInput`
 - `exportToFolder` when the caller explicitly overrides it
 - any future stop or replay control fields
+- recoverable-but-inactive carry-state from older completed traces
+- prior raw output or full historical reasoning transcripts
 
 ## Proposed V1 Schema Diff
 
@@ -157,6 +174,12 @@ Additive v1 lineage fields:
 - `lineageLabel?: string`
 - `continuedFromParent?: boolean`
 
+Additive v1 carry fields:
+
+- `activeCarryForward?: TraceableCarryForwardState`
+- `recoverableCarryState?: TraceableCarryForwardState`
+- `carryStateDisposition?: "none" | "active" | "recoverable" | "consumed" | "expired"`
+
 Additive v1 stop fields:
 
 - `stoppedBy?: "user" | "host"`
@@ -167,6 +190,8 @@ Recommended meaning:
 
 - lineage fields are present only for continued child runs
 - stop fields are present only when the run actually ended through the stop path
+- active carry-forward is present only when the run intentionally leaves bounded state for default inheritance
+- recoverable carry-state may remain present for later research or recovery even when no active carry-forward remains
 
 ### Durable Traceable State Block
 
@@ -178,6 +203,9 @@ Recommended additive state fields:
 - `lineageDepth?: number`
 - `lineageLabel?: string`
 - `continuedFromParent?: boolean`
+- `activeCarryForward?: TraceableCarryForwardState`
+- `recoverableCarryState?: TraceableCarryForwardState`
+- `carryStateDisposition?: "none" | "active" | "recoverable" | "consumed" | "expired"`
 - `stoppedBy?: "user" | "host"`
 - `stopSource?: "traceable-panel" | "host-cancel" | "unknown"`
 - `stopRequestedAt?: string`
@@ -256,6 +284,12 @@ Recommended additions to both the sanitized result and the durable state record 
 - `lineageLabel`
 - `continuedFromParent: true`
 
+Recommended additions for bounded continuity state:
+
+- `activeCarryForward?: TraceableCarryForwardState`
+- `recoverableCarryState?: TraceableCarryForwardState`
+- `carryStateDisposition?: "none" | "active" | "recoverable" | "consumed" | "expired"`
+
 Recommended additions for stop-aware runs:
 
 - `stoppedBy?: "user" | "host"`
@@ -263,6 +297,31 @@ Recommended additions for stop-aware runs:
 - `stopRequestedAt?: string`
 
 If these fields can be added without changing the meaning of existing state, keep the current state schema version and treat them as additive.
+
+Recommended carry-state contract:
+
+- `activeCarryForward` is the only carry package that should auto-inherit into the immediate next child by default.
+- `recoverableCarryState` remains inspectable in the artifact but should not auto-inherit unless a future recovery path explicitly selects it.
+- The model should decide what to carry forward, but only inside a bounded schema rather than freeform summary text.
+- The schema should include both `keep` and `drop` pressure so the model names what must continue and what should be left behind.
+
+Recommended v1 carry-state fields:
+
+- `remainingGoals: string[]`
+- `openQuestions: string[]`
+- `constraints: string[]`
+- `decisionsMade: string[]`
+- `nextSuggestedStart: string`
+- `relevantFileAnchors: string[]`
+- `relevantArtifactAnchors: string[]`
+- `keepReasons: string[]`
+- `dropReasons: string[]`
+
+Recommended guardrails:
+
+- carry-state should be absent when there is no grounded reason to preserve continuity
+- carry-state should stay bounded in item count so it does not become a growing blob
+- completed runs should normally clear active carry-forward even if they leave a recoverable package behind
 
 ## Stop And Cancellation Semantics
 
@@ -310,6 +369,14 @@ Requirements:
 - no replay button in this milestone
 - stopped state should remain inspectable after the run ends
 
+Minimum lineage observability expectations for the same evidence/viewer surface:
+
+- show whether the current trace has a parent
+- show the current trace's lineage label and depth
+- show discoverable children derived from saved lineage metadata when siblings or children exist
+- show whether carry-state is `active`, `recoverable`, `consumed`, or absent
+- keep this derived and inspectable rather than mutating parents to maintain child indexes
+
 ## Validation Plan
 
 Milestone 3 should not be considered done until all of these have concrete coverage.
@@ -325,6 +392,8 @@ Runtime validation:
 - continuation from a parent artifact creates a child artifact in the expected lineage slot
 - default inheritance works when only a follow-up `userInput` is provided
 - explicit overrides beat inherited values where expected
+- deferred runs can leave bounded active carry-forward without forcing blind inheritance of the whole parent history
+- completed runs can leave at most recoverable carry-state unless a grounded policy says active carry should remain open
 - parent artifact remains unchanged
 
 Cancellation validation:
@@ -338,6 +407,12 @@ Comparative validation:
 
 - measured continuation slices are at least competitive with `runSubagent` on the same host
 - the provenance-side continuation lane is useful as a native-chat-like role-behavior probe even when hidden Copilot context injection remains outside the traced contract
+
+Observability validation:
+
+- a human can identify the current trace's parent-child relationship from the evidence or viewer without reconstructing lineage purely from filenames
+- a human can tell whether carry-state is active, merely recoverable, already consumed, or absent
+- the evidence surface makes it inspectable what was intentionally carried forward versus left behind
 
 ## M2-Parity Pass Bar
 
@@ -379,6 +454,14 @@ Recommended initial M3 slice set:
   - Scenario: continue a parent while overriding one bounded field such as `modelSelector.id`, `allowedToolNames`, or `exportToFolder`.
   - Expected: the explicit child request value wins over the inherited parent value while the rest of the parent contract remains intact.
 
+- `M3-E2` Deferred carry-forward selection.
+  - Scenario: a run defers and writes a bounded carry package for the next child.
+  - Expected: the artifact exposes explicit active carry-forward, the package remains bounded, and the next child inherits only that selected state rather than a whole historical blob.
+
+- `M3-E3` Completed-run recovery package discipline.
+  - Scenario: a run completes after meaningful multi-step work.
+  - Expected: active carry-forward is cleared by default, and any retained handoff state is marked recoverable rather than auto-inherited.
+
 - `M3-F` Host cancel propagation.
   - Scenario: launch a traceable run from a host surface and stop it through the host-owned cancellation path.
   - Expected: the runtime halts, the result ends as `user_cancelled`, and saved evidence does not pretend the run completed normally.
@@ -390,6 +473,10 @@ Recommended initial M3 slice set:
 - `M3-H` Live-status truthfulness for stopped runs.
   - Scenario: inspect a stopped run in the status bar, panel, and saved artifact.
   - Expected: the run reads as stopped or warning-shaped rather than completed or hard-failed, and the same stop truth is visible across live and saved surfaces.
+
+- `M3-H2` Lineage observability.
+  - Scenario: inspect a parent and child after one real continuation run.
+  - Expected: the viewer or evidence surface makes the relationship visible enough that a human can see the parent-child pairing and current lineage position without guessing from filenames alone.
 
 - `M3-I` Comparative continuation usefulness.
   - Scenario: compare one measured continuation-shaped task between `run_traceable_subagent` and `runSubagent` on the same host.
@@ -410,6 +497,9 @@ These are not blockers for the initial design note, but they should remain expli
 - whether lineage fields belong primarily in the top-level state record, the result object, or both
 - whether `stopSource` should distinguish host cancel from panel stop in the durable artifact or only in debug logs
 - whether user-triggered stop from a host surface should map to `stoppedBy: user` or a broader actor label
+- whether carry-state should use one schema for both active and recoverable packages or two closely related schemas with different budget caps
+- whether completed runs should be allowed to emit recoverable carry-state automatically or only under an explicit grounded policy for likely multi-step follow-up
+- whether minimal lineage observability should live only in reconstructed evidence markdown first or also in the TRACEABLE panel within the same milestone
 
 ## Recommended Implementation Order
 

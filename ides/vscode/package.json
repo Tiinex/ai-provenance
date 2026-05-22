@@ -1,5 +1,5 @@
 {
-  "name": "ai-provenance-vscode",
+  "name": "ai-provenance",
   "displayName": "Tiinex AI Provenance",
   "description": "VS Code extension surface for Tiinex provenance tooling.",
   "version": "0.1.0",
@@ -87,7 +87,7 @@
         "name": "run_traceable_subagent",
         "displayName": "Run Traceable Subagent",
         "userDescription": "Run an experimental trace-first child lane with explicit request, budget, and tool-ledger output.",
-        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run keeps userInput separate from parentTask, returns a compact runtime tool ledger plus child trace, blocks self-reentry for run_traceable_subagent, and treats native runSubagent delegation as opaque rather than fully trace-supported. Prefer non-leading parent framing: use userInput as the source wording or material to inspect rather than the desired answer shape, and let parentTask carry the bounded investigative contract without smuggling in the target conclusion. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration. Canonical usage: keep `userInput` close to the source wording, keep `parentTask` as the bounded contract, set a small `budgetPolicy`, and restrict `allowedToolNames` to only the tool families the slice actually needs. Typical flow: use `list_traceable_agents` to find an exact role or `list_traceable_models` to preflight an explicit model, run a narrow lane, then inspect the returned evidence file with `view_traceable_subagent` instead of rerunning the child immediately.",
+        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run keeps userInput separate from parentTask, returns a compact runtime tool ledger plus child trace, blocks self-reentry for run_traceable_subagent, and treats native runSubagent delegation as opaque rather than fully trace-supported. Prefer non-leading parent framing: use userInput as the source wording or material to inspect rather than the desired answer shape, and let parentTask carry the bounded investigative contract without smuggling in the target conclusion. When parentTracePath is provided, the runtime treats the run as an artifact-backed continuation: it inherits the parent request contract by default, carries a bounded parent outcome summary forward, and exports the child beside the parent unless exportToFolder is overridden. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration. Canonical usage: keep `userInput` close to the source wording, keep `parentTask` as the bounded contract, set a small `budgetPolicy`, and restrict `allowedToolNames` to only the tool families the slice actually needs. Typical flow: use `list_traceable_agents` to find an exact role or `list_traceable_models` to preflight an explicit model, run a narrow lane, then inspect the returned evidence file with `view_traceable_subagent` instead of rerunning the child immediately.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "runTraceableSubagent",
         "inputSchema": {
@@ -96,6 +96,10 @@
             "userInput": {
               "type": "string",
               "description": "The original or near-original user wording or source material for the task being delegated. Keep this distinct from parentTask and do not rely on it as the desired answer shape."
+            },
+            "parentTracePath": {
+              "type": "string",
+              "description": "Optional absolute or workspace-relative path to an existing parent .trace.md artifact. When provided, the runtime treats the run as an artifact-backed continuation, inherits the parent request contract by default, and exports the child beside the parent unless exportToFolder is overridden."
             },
             "parentTask": {
               "type": "string",
@@ -339,6 +343,10 @@
         "title": "Tiinex: Inspect TRACEABLE Evidence"
       },
       {
+        "command": "tiinex.aiProvenance.stopTraceableSubagent",
+        "title": "Tiinex: Stop TRACEABLE Run"
+      },
+      {
         "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
         "title": "Tiinex: Open Reconstructed Traceable View",
         "shortTitle": "Open Traceable View",
@@ -432,6 +440,16 @@
           ],
           "default": "yes",
           "description": "Control whether TRACEABLE hides automatically when the transient status-bar run clears. `yes` hides the panel together with the transient status surface unless you explicitly reopened TRACEABLE to keep it open, and `no` leaves the panel open until you close it manually."
+        },
+        "tiinex.aiProvenance.traceableEvidenceOpenTarget": {
+          "type": "string",
+          "enum": [
+            "traceable",
+            "markdown",
+            "source"
+          ],
+          "default": "traceable",
+          "description": "Control what the TRACEABLE View button and parent-trace openings use for `.trace.md` artifacts. `traceable` opens the reconstructed TRACEABLE evidence view, `markdown` opens the markdown preview, and `source` opens the source file directly."
         },
         "tiinex.aiProvenance.traceablePreferredModels": {
           "type": "array",

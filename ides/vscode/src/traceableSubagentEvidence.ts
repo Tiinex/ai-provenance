@@ -1,6 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import * as vscode from "vscode";
+import { allocateNextTraceableLineageLabel, buildTraceableEvidenceFileName, computeStoredParentTracePath, parseTraceableEvidenceFileName } from "./traceableLineage";
 import type {
   TraceableMarkdownPathRenderOptions,
   TraceableSubagentEvidenceFileState,
@@ -38,19 +39,29 @@ function getEvidenceRoleSlug(snapshot: TraceableSubagentDetailSnapshot): string 
   return "traceable";
 }
 
-function formatLocalEvidenceIndex(index: number): string {
-  return String(index).padStart(2, "0");
-}
-
 async function allocateEvidenceFilePath(folderPath: string, roleSlug: string): Promise<{ filePath: string; fileName: string }> {
   const entries = await fs.readdir(folderPath, { withFileTypes: true }).catch(() => []);
-  const usedIndexes = entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => /^(\d+)-.+\.trace\.md$/i.exec(entry.name)?.[1])
-    .flatMap((value) => value ? [Number.parseInt(value, 10)] : [])
-    .filter((value) => Number.isInteger(value) && value > 0);
-  const nextIndex = usedIndexes.length > 0 ? Math.max(...usedIndexes) + 1 : 1;
-  const fileName = `${formatLocalEvidenceIndex(nextIndex)}-${roleSlug}.trace.md`;
+  const fileName = buildTraceableEvidenceFileName(
+    allocateNextTraceableLineageLabel(entries.filter((entry) => entry.isFile()).map((entry) => entry.name)),
+    roleSlug
+  );
+  return {
+    fileName,
+    filePath: path.join(folderPath, fileName)
+  };
+}
+
+async function allocateContinuationEvidenceFilePath(folderPath: string, parentTracePath: string, roleSlug: string): Promise<{ filePath: string; fileName: string }> {
+  const parentParts = parseTraceableEvidenceFileName(path.basename(parentTracePath));
+  if (!parentParts) {
+    throw new Error(`TRACEABLE continuation parent ${JSON.stringify(parentTracePath)} does not use a supported lineage filename.`);
+  }
+  const entries = await fs.readdir(folderPath, { withFileTypes: true }).catch(() => []);
+  const lineageLabel = allocateNextTraceableLineageLabel(
+    entries.filter((entry) => entry.isFile()).map((entry) => entry.name),
+    parentParts.lineageLabel
+  );
+  const fileName = buildTraceableEvidenceFileName(lineageLabel, roleSlug);
   return {
     fileName,
     filePath: path.join(folderPath, fileName)
@@ -58,16 +69,13 @@ async function allocateEvidenceFilePath(folderPath: string, roleSlug: string): P
 }
 
 function parseAllocatedEvidenceFileName(fileName: string | undefined): { index: string; slug: string } | undefined {
-  if (!fileName) {
-    return undefined;
-  }
-  const match = /^(\d+)-(.+)\.trace\.md$/iu.exec(fileName.trim());
-  if (!match?.[1] || !match[2]) {
+  const parsed = parseTraceableEvidenceFileName(fileName);
+  if (!parsed) {
     return undefined;
   }
   return {
-    index: match[1],
-    slug: match[2]
+    index: parsed.lineageLabel,
+    slug: parsed.slug
   };
 }
 
@@ -88,7 +96,7 @@ async function renameEvidenceFileForSnapshot(
   if (!desiredSlug || parsed.slug === desiredSlug) {
     return exportState;
   }
-  const nextFileName = `${parsed.index}-${desiredSlug}.trace.md`;
+  const nextFileName = buildTraceableEvidenceFileName(parsed.index, desiredSlug);
   const nextFilePath = path.join(path.dirname(currentFilePath), nextFileName);
   if (nextFilePath === currentFilePath) {
     return exportState;
@@ -150,7 +158,17 @@ function buildTraceableEvidenceState(
       traceStatus: result.traceStatus,
       steps: result.steps,
       expectedButMissing: result.expectedButMissing,
+      continuedFromParent: result.continuedFromParent,
+      parentTracePath: result.parentTracePath,
+      lineageDepth: result.lineageDepth,
+      lineageLabel: result.lineageLabel,
+      activeCarryForward: result.activeCarryForward,
+      recoverableCarryState: result.recoverableCarryState,
+      carryStateDisposition: result.carryStateDisposition,
       stopReason: result.stopReason,
+      stoppedBy: result.stoppedBy,
+      stopSource: result.stopSource,
+      stopRequestedAt: result.stopRequestedAt,
       completionClaim: result.completionClaim,
       finalSummary: result.finalSummary,
       validationIssues: result.validationIssues,
@@ -526,6 +544,14 @@ export class TraceableSubagentEvidenceController {
   getSnapshot(): TraceableSubagentDetailSnapshot {
     return {
       ...this.snapshot,
+      resultSummary: this.lastResult
+        ? {
+          finalSummary: this.lastResult.finalSummary,
+          carryStateDisposition: this.lastResult.carryStateDisposition,
+          activeCarryForward: this.lastResult.activeCarryForward,
+          recoverableCarryState: this.lastResult.recoverableCarryState
+        }
+        : this.snapshot.resultSummary,
       evidenceFile: { ...this.exportState }
     };
   }
@@ -540,7 +566,7 @@ export class TraceableSubagentEvidenceController {
     if (!exportToFolder) {
       throw new Error("TRACEABLE tool-triggered export requires exportToFolder. Use the Export button for interactive folder picking.");
     }
-    return this.beginExport(requestedOutputMode, exportToFolder, "tool-input");
+    return this.beginExport(requestedOutputMode, exportToFolder, "tool-input", input.parentTracePath?.trim());
   }
 
   async finalizeRequestedExport(result: TraceableSubagentRunResult, summaryMarkdown: string): Promise<TraceableSubagentRunResult> {
@@ -561,17 +587,29 @@ export class TraceableSubagentEvidenceController {
     if (!readyFilePath) {
       throw new Error("TRACEABLE evidence export lost its file path before finalizing the evidence file.");
     }
-    const linkedSummaryMarkdown = renderTraceableSubagentMarkdown(result, {
+    const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    const exportAwareResult = result.continuedFromParent && result.parentTracePath
+      ? {
+        ...result,
+        parentTracePath: computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots),
+        request: {
+          ...result.request,
+          parentTracePath: computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots)
+        }
+      }
+      : result;
+    const linkedSummaryMarkdown = renderTraceableSubagentMarkdown(exportAwareResult, {
       ...buildPathRenderOptions(readyFilePath),
       includeSupportArtifacts: false
     });
-    const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, readyState, outputMode, linkedSummaryMarkdown, result);
+    const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, readyState, outputMode, linkedSummaryMarkdown, exportAwareResult);
     try {
       await this.writeEvidenceFile(readyFilePath, evidenceMarkdown);
       this.exportState = readyState;
+      this.lastResult = exportAwareResult;
       this.lastResultMarkdown = linkedSummaryMarkdown;
       return {
-        ...result,
+        ...exportAwareResult,
         outputMode,
         evidenceFile: { ...readyState },
         evidenceMarkdown
@@ -634,7 +672,8 @@ export class TraceableSubagentEvidenceController {
   private async beginExport(
     outputMode: TraceableSubagentOutputMode,
     preferredFolderPath: string | undefined,
-    requestedBy: "tool-input" | "ui-export"
+    requestedBy: "tool-input" | "ui-export",
+    parentTracePath?: string
   ): Promise<TraceableSubagentEvidenceFileState | undefined> {
     const currentRunId = this.snapshot.startedAt;
     if (this.activeRunId && this.activeRunId === currentRunId && this.exportState.filePath) {
@@ -645,7 +684,9 @@ export class TraceableSubagentEvidenceController {
       throw new Error("Traceable evidence export was cancelled before a destination folder was selected.");
     }
     await fs.mkdir(folderPath, { recursive: true });
-    const allocation = await allocateEvidenceFilePath(folderPath, getEvidenceRoleSlug(this.snapshot));
+    const allocation = parentTracePath?.trim()
+      ? await allocateContinuationEvidenceFilePath(folderPath, parentTracePath.trim(), getEvidenceRoleSlug(this.snapshot))
+      : await allocateEvidenceFilePath(folderPath, getEvidenceRoleSlug(this.snapshot));
     const writingState: TraceableSubagentEvidenceFileState = {
       status: this.snapshot.status.phase === "running" ? "writing" : "ready",
       filePath: allocation.filePath,

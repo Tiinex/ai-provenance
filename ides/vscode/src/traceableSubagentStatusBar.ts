@@ -484,6 +484,7 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
     this.updateDetailView?.({
       header: { ...this.currentHeader },
       status: this.toDetailStatus(this.currentStatus),
+      resultSummary: undefined,
       requestSummary: [...this.currentRequestSummary],
       statusHistory: [...this.statusHistory],
       recentTools: this.getObservedToolEvents(),

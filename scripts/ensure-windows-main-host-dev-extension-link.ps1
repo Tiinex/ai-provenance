@@ -7,8 +7,10 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $extensionRoot = Join-Path $repoRoot 'ides\vscode'
 $extensionsRoot = Join-Path $env:USERPROFILE '.vscode\extensions'
-$targetId = 'tiinex.ai-provenance-vscode'
+$targetId = 'tiinex.ai-provenance'
 $staleTargetIds = @(
+    'local.ai-provenance'
+    'tiinex.ai-provenance-vscode'
     'local.ai-provenance-vscode'
 )
 $linkPath = Join-Path $extensionsRoot $targetId

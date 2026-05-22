@@ -12,6 +12,7 @@ import {
   listTraceableAgentCatalogEntries,
   listTraceableAgentCatalogLintFindings,
   listTraceableModelCatalogEntries,
+  prepareTraceableSubagentInput,
   runTraceableSubagent,
   renderTraceableSubagentMarkdown,
   type TraceableSubagentInput,
@@ -32,6 +33,7 @@ import {
 const OPEN_OVERVIEW_COMMAND = "tiinex.aiProvenance.openOverview";
 const INSPECT_TRACEABLE_EVIDENCE_COMMAND = "tiinex.aiProvenance.inspectTraceableEvidence";
 const OPEN_TRACEABLE_SUBAGENT_STATUS_DETAIL_COMMAND = "tiinex.aiProvenance.openTraceableSubagentStatusDetail";
+const STOP_TRACEABLE_SUBAGENT_COMMAND = "tiinex.aiProvenance.stopTraceableSubagent";
 const OPEN_TRACEABLE_EVIDENCE_EDITOR_COMMAND = "tiinex.aiProvenance.openTraceableEvidenceEditor";
 const REOPEN_TRACEABLE_EVIDENCE_SOURCE_COMMAND = "tiinex.aiProvenance.reopenTraceableEvidenceSource";
 const REOPEN_TRACEABLE_EVIDENCE_PREVIEW_COMMAND = "tiinex.aiProvenance.reopenTraceableEvidencePreview";
@@ -44,6 +46,7 @@ const TRACEABLE_PANEL_FALLBACK_COMMAND = "workbench.action.terminal.focus";
 
 type TraceableAutoRevealMode = "yes" | "no" | "always";
 type TraceableAutoHideMode = "yes" | "no";
+type TraceableEvidenceOpenTarget = "traceable" | "markdown" | "source";
 
 interface ListTraceableAgentsInput {
   query?: string;
@@ -348,6 +351,13 @@ function describeTraceableOutputMode(mode: TraceableSubagentInput["outputMode"],
 
 function buildTraceableRequestSummary(input: TraceableSubagentInput): TraceableSubagentRequestSummaryItem[] {
   const summary: TraceableSubagentRequestSummaryItem[] = [];
+  if (input.parentTracePath?.trim()) {
+    summary.push({
+      label: "Parent Trace",
+      value: path.basename(input.parentTracePath.trim()),
+      title: input.parentTracePath.trim()
+    });
+  }
   const parentFrame = input.parentFrame?.trim() || input.parentTask?.trim() || "";
   summary.push({
     label: "Parent Frame",
@@ -424,6 +434,54 @@ function buildTraceableRequestSummary(input: TraceableSubagentInput): TraceableS
       title: carryTitleParts.join("\n")
     });
   }
+  const carryStateParts: string[] = [];
+  const carryStateTitleParts: string[] = [];
+  if (Array.isArray(input.activeCarryForward?.remainingGoals) && input.activeCarryForward.remainingGoals.length > 0) {
+    const goalCount = input.activeCarryForward.remainingGoals.length;
+    carryStateParts.push(`${goalCount} goal${goalCount === 1 ? "" : "s"}`);
+    carryStateTitleParts.push(`Remaining goals: ${input.activeCarryForward.remainingGoals.join(" | ")}`);
+  }
+  if (Array.isArray(input.activeCarryForward?.openQuestions) && input.activeCarryForward.openQuestions.length > 0) {
+    const questionCount = input.activeCarryForward.openQuestions.length;
+    carryStateParts.push(`${questionCount} question${questionCount === 1 ? "" : "s"}`);
+    carryStateTitleParts.push(`Open questions: ${input.activeCarryForward.openQuestions.join(" | ")}`);
+  }
+  if (Array.isArray(input.activeCarryForward?.constraints) && input.activeCarryForward.constraints.length > 0) {
+    const constraintCount = input.activeCarryForward.constraints.length;
+    carryStateParts.push(`${constraintCount} constraint${constraintCount === 1 ? "" : "s"}`);
+    carryStateTitleParts.push(`Constraints: ${input.activeCarryForward.constraints.join(" | ")}`);
+  }
+  if (input.activeCarryForward?.nextSuggestedStart?.trim()) {
+    carryStateParts.push("next start");
+    carryStateTitleParts.push(`Next suggested start: ${input.activeCarryForward.nextSuggestedStart.trim()}`);
+  }
+  if (Array.isArray(input.activeCarryForward?.relevantFileAnchors) && input.activeCarryForward.relevantFileAnchors.length > 0) {
+    carryStateTitleParts.push(`Carry file anchors: ${input.activeCarryForward.relevantFileAnchors.join(", ")}`);
+  }
+  if (carryStateParts.length > 0) {
+    summary.push({
+      label: "Carry State",
+      value: compactTraceableSummaryText(carryStateParts.join(" · "), 36),
+      title: carryStateTitleParts.join("\n")
+    });
+  }
+  if (input.parentTracePath?.trim() && (carryParts.length > 0 || carryStateParts.length > 0)) {
+    const inheritedContextSources = ["parent"];
+    const inheritedContextTitleParts = [`Continuation parent: ${input.parentTracePath.trim()}`];
+    if (carryParts.length > 0) {
+      inheritedContextSources.push("context");
+      inheritedContextTitleParts.push("Inherited carried context is present for this run.");
+    }
+    if (carryStateParts.length > 0) {
+      inheritedContextSources.push("state");
+      inheritedContextTitleParts.push("Inherited carry-forward state is present for this run.");
+    }
+    summary.push({
+      label: "Context In",
+      value: compactTraceableSummaryText(inheritedContextSources.join(" · "), 24),
+      title: inheritedContextTitleParts.join("\n")
+    });
+  }
   if (input.budgetPolicy?.maxIterations || input.budgetPolicy?.maxToolCalls) {
     const budgetParts: string[] = [];
     if (input.budgetPolicy.maxIterations) {
@@ -475,6 +533,14 @@ function getTraceableAutoHideMode(): TraceableAutoHideMode {
     return "no";
   }
   return "yes";
+}
+
+function getTraceableEvidenceOpenTarget(): TraceableEvidenceOpenTarget {
+  const configured = getProvenanceConfiguration().get<string>("traceableEvidenceOpenTarget", "traceable");
+  if (configured === "markdown" || configured === "source") {
+    return configured;
+  }
+  return "traceable";
 }
 
 function shouldAutoRevealTraceablePanel(inputReveal: boolean | undefined): boolean {
@@ -629,7 +695,7 @@ class QueuedReadOnlyTool<TInput> implements vscode.LanguageModelTool<TInput> {
   constructor(
     private readonly displayName: string,
     private readonly invocationMessage: (input: TInput) => string,
-    private readonly invokeImpl: (input: TInput, budget: number, preparedState?: unknown) => Promise<string>,
+    private readonly invokeImpl: (input: TInput, budget: number, preparedState?: unknown, token?: vscode.CancellationToken) => Promise<string>,
     private readonly mutex: QueuedMutex,
     private readonly prepareInvoke?: (input: TInput) => Promise<unknown> | unknown
   ) {}
@@ -640,12 +706,12 @@ class QueuedReadOnlyTool<TInput> implements vscode.LanguageModelTool<TInput> {
     };
   }
 
-  async invoke(options: vscode.LanguageModelToolInvocationOptions<TInput>): Promise<vscode.LanguageModelToolResult> {
+  async invoke(options: vscode.LanguageModelToolInvocationOptions<TInput>, token: vscode.CancellationToken): Promise<vscode.LanguageModelToolResult> {
     const preparedState = await this.prepareInvoke?.(options.input);
     const lease = await this.mutex.acquire(`${this.displayName} invocation`);
     const budget = outputBudget(options.tokenizationOptions?.tokenBudget);
     try {
-      const content = await this.invokeImpl(options.input, budget, preparedState);
+      const content = await this.invokeImpl(options.input, budget, preparedState, token);
       return textResult(content);
     } finally {
       lease.release();
@@ -920,6 +986,13 @@ export function activate(context: vscode.ExtensionContext): void {
   let traceablePanelPinnedOpen = false;
   void vscode.commands.executeCommand("setContext", TRACEABLE_PANEL_VISIBLE_CONTEXT, false);
   const traceableStatusDetail = new TraceableSubagentStatusDetailController();
+  let activeTraceableRun:
+    | {
+      cancelSource: vscode.CancellationTokenSource;
+      stopSource: "traceable-panel" | "host-cancel" | "unknown";
+      stopRequestedAt?: string;
+    }
+    | undefined;
   const traceableEvidence = new TraceableSubagentEvidenceController({
     header: {
       agentName: "Trace lane",
@@ -1017,6 +1090,24 @@ export function activate(context: vscode.ExtensionContext): void {
   };
   const openTraceableFile = async (filePath: string, startLine?: number, endLine?: number): Promise<void> => {
     const normalizedPath = filePath.trim();
+    if (/\.trace\.md$/iu.test(normalizedPath) && !Number.isInteger(startLine) && !Number.isInteger(endLine)) {
+      const targetUri = vscode.Uri.file(normalizedPath);
+      switch (getTraceableEvidenceOpenTarget()) {
+        case "source":
+          await vscode.commands.executeCommand("vscode.open", targetUri, {
+            preview: false,
+            preserveFocus: false
+          });
+          return;
+        case "markdown":
+          await openMarkdownPreviewLikeSource(targetUri);
+          return;
+        case "traceable":
+        default:
+          await openTraceableEvidenceEditor(targetUri);
+          return;
+      }
+    }
     if (/\.md$/iu.test(normalizedPath) && !Number.isInteger(startLine) && !Number.isInteger(endLine)) {
       await openMarkdownPreviewLikeSource(vscode.Uri.file(normalizedPath));
       return;
@@ -1172,6 +1263,16 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     openTraceableFile,
     async () => {
+      if (!activeTraceableRun || activeTraceableRun.cancelSource.token.isCancellationRequested) {
+        void vscode.window.showInformationMessage("No active TRACEABLE run is currently available to stop.");
+        return;
+      }
+      activeTraceableRun.stopSource = "traceable-panel";
+      activeTraceableRun.stopRequestedAt = new Date().toISOString();
+      activeTraceableRun.cancelSource.cancel();
+      output.appendLine(`TRACEABLE stop requested from panel at ${activeTraceableRun.stopRequestedAt}`);
+    },
+    async () => {
       await hideTraceablePanel({ restoreFocus: true, hideStatusBar: true, resetKeepOpen: true });
       traceableStatusPanel.setPinnedOpen(false);
     },
@@ -1217,6 +1318,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.registerTextDocumentContentProvider("tiinex-traceable-subagent-status", traceableStatusDetail),
     vscode.commands.registerCommand(OPEN_TRACEABLE_SUBAGENT_STATUS_DETAIL_COMMAND, async () => {
       await revealTraceablePanel("manual");
+    }),
+    vscode.commands.registerCommand(STOP_TRACEABLE_SUBAGENT_COMMAND, async () => {
+      if (!activeTraceableRun || activeTraceableRun.cancelSource.token.isCancellationRequested) {
+        void vscode.window.showInformationMessage("No active TRACEABLE run is currently available to stop.");
+        return;
+      }
+      activeTraceableRun.stopSource = "traceable-panel";
+      activeTraceableRun.stopRequestedAt = new Date().toISOString();
+      activeTraceableRun.cancelSource.cancel();
+      output.appendLine(`TRACEABLE stop requested from command at ${activeTraceableRun.stopRequestedAt}`);
     }),
     vscode.commands.registerCommand(OPEN_OVERVIEW_COMMAND, async () => {
       const repoReadme = vscode.Uri.file(path.resolve(context.extensionPath, "..", "..", "README.md"));
@@ -1367,38 +1478,68 @@ export function activate(context: vscode.ExtensionContext): void {
       new QueuedReadOnlyTool<TraceableSubagentInput>(
         "Run Traceable Subagent",
         (input) => traceableSubagentInvocationMessage(input),
-        async (input, _budget, preparedState) => {
+        async (input, _budget, preparedState, token) => {
           const runHooks = preparedState as {
+            preparedInput?: Awaited<ReturnType<typeof prepareTraceableSubagentInput>>;
             statusReporter?: ReturnType<TraceableSubagentStatusBarController["startRun"]>;
             beforeRun?: () => Promise<void>;
             afterRun?: (result: TraceableSubagentRunResult) => Promise<TraceableSubagentRunResult>;
           } | undefined;
           await runHooks?.beforeRun?.();
-          const result = await runTraceableSubagent(input, {
-            accessInformation: context.languageModelAccessInformation,
-            debugLogDir: context.globalStorageUri.fsPath,
-            statusReporter: runHooks?.statusReporter
-          });
-          const finalResult = runHooks?.afterRun ? await runHooks.afterRun(result) : result;
-          return renderTraceableSubagentMarkdown(finalResult);
+          const cancelSource = new vscode.CancellationTokenSource();
+          const activeRunState = {
+            cancelSource,
+            stopSource: "unknown" as "traceable-panel" | "host-cancel" | "unknown",
+            stopRequestedAt: undefined as string | undefined
+          };
+          activeTraceableRun = activeRunState;
+          const hostCancellationSubscription = token?.onCancellationRequested(() => {
+            if (!cancelSource.token.isCancellationRequested) {
+              activeRunState.stopSource = activeRunState.stopSource === "traceable-panel" ? "traceable-panel" : "host-cancel";
+              activeRunState.stopRequestedAt ??= new Date().toISOString();
+              cancelSource.cancel();
+            }
+          }) ?? { dispose() {} };
+          try {
+            const result = await runTraceableSubagent(input, {
+              accessInformation: context.languageModelAccessInformation,
+              debugLogDir: context.globalStorageUri.fsPath,
+              preparedInput: runHooks?.preparedInput,
+              token: cancelSource.token,
+              statusReporter: runHooks?.statusReporter,
+              getStopSource: () => activeRunState.stopSource,
+              getStopRequestedAt: () => activeRunState.stopRequestedAt
+            });
+            const finalResult = runHooks?.afterRun ? await runHooks.afterRun(result) : result;
+            return renderTraceableSubagentMarkdown(finalResult);
+          } finally {
+            hostCancellationSubscription.dispose();
+            if (activeTraceableRun === activeRunState) {
+              activeTraceableRun = undefined;
+            }
+            cancelSource.dispose();
+          }
         },
         traceableSubagentToolMutex,
-        (input) => {
-          if (shouldAutoRevealTraceablePanel(input.reveal)) {
+        async (input) => {
+          const preparedInput = await prepareTraceableSubagentInput(input);
+          const effectiveInput = preparedInput.input;
+          if (shouldAutoRevealTraceablePanel(effectiveInput.reveal)) {
             void (async () => {
               await revealTraceablePanel("auto");
             })();
           }
           const reporter = traceableStatusBar.startRun({
-            agentName: input.agentRole?.name,
-            modelLabel: input.modelSelector?.id
+            agentName: effectiveInput.agentRole?.name,
+            modelLabel: effectiveInput.modelSelector?.id
           });
-          reporter.setRequestSummary?.(buildTraceableRequestSummary(input));
+          reporter.setRequestSummary?.(buildTraceableRequestSummary(effectiveInput));
           reporter.update("queued");
           return {
+            preparedInput,
             statusReporter: reporter,
             beforeRun: async () => {
-              await traceableEvidence.prepareRequestedExport(input);
+              await traceableEvidence.prepareRequestedExport(effectiveInput);
               const snapshot = traceableEvidence.getSnapshot();
               traceableStatusDetail.update(snapshot);
               traceableStatusPanel.update(snapshot);
