@@ -6,18 +6,13 @@ It intentionally lives under `ides/vscode` because the repo itself is broader th
 
 ## Quick Start
 
-If you want to validate the package locally:
+After you install the extension in VS Code, the shortest useful first flow is:
 
-1. Open `ai-provenance/ides/vscode` in a terminal.
-2. Run `npm install`.
-3. Run `npm test`.
-4. Run `npm run package:vsix` if you want a local installable VSIX.
+1. type `#` in chat and pick `#listTraceableAgents` or `#listTraceableModels`
+2. run one narrow lane with `#runTraceableSubagent`
+3. inspect the returned evidence file with `#viewTraceableSubagent`
 
-If you install the extension in VS Code, the shortest useful first flow is:
-
-1. call `list_traceable_agents` or `list_traceable_models`
-2. run one narrow `run_traceable_subagent` lane
-3. inspect the returned evidence file with `view_traceable_subagent`
+The important operator detail is that chat usually exposes the prompt-reference names after `#`, not the raw internal tool ids. In practice you should expect `#listTraceableAgents`, not `list_traceable_agents`.
 
 ## What To Expect
 
@@ -26,6 +21,7 @@ This package is built for bounded provenance-first TRACEABLE work.
 - It helps you preflight roles and models before a run.
 - It writes and reopens `.trace.md` evidence artifacts.
 - It is designed for narrow investigation slices, not broad autonomous orchestration.
+- In chat, the first-class invocation surface is usually `#` plus the prompt reference name.
 
 Current status:
 
@@ -57,19 +53,22 @@ What it exposes in VS Code:
 
 Canonical tool usage:
 
-- `list_traceable_agents`: use this first when you want a grounded role-backed run; copy the exact returned display name or file path into `run_traceable_subagent.agentRole` instead of guessing a role label.
-- `list_traceable_models`: use this first when you need explicit model control; prefer `sendableOnly: true`, narrow with `query` when useful, and treat entries marked `Policy: blocked` as non-selectable for `run_traceable_subagent`.
-- `run_traceable_subagent`: keep `userInput` close to the source wording, keep `parentTask` as the bounded contract, keep `budgetPolicy` small, and restrict `allowedToolNames` to the minimum slice needed.
-- `view_traceable_subagent`: after a run returns an evidence file, inspect that artifact before rerunning the child lane; start with `summary` or `outcome`, then use `tool-ledger` or `state-json` only when deeper debugging is needed.
+Canonical prompt references in chat:
+
+- `#listTraceableAgents`: use this first when you want a grounded role-backed run; copy the exact returned display name or file path into `run_traceable_subagent.agentRole` instead of guessing a role label.
+- `#listTraceableModels`: use this first when you need explicit model control; prefer `sendableOnly: true`, narrow with `query` when useful, and treat entries marked `Policy: blocked` as non-selectable for `run_traceable_subagent`.
+- `#runTraceableSubagent`: keep `userInput` close to the source wording, keep `parentTask` as the bounded contract, keep `budgetPolicy` small, and restrict `allowedToolNames` to the minimum slice needed.
+- `#viewTraceableSubagent`: after a run returns an evidence file, inspect that artifact before rerunning the child lane; start with `summary` or `outcome`, then use `tool-ledger` or `state-json` only when deeper debugging is needed.
 
 Canonical examples:
 
-- Role-grounded preflight flow: `list_traceable_agents` -> `run_traceable_subagent` with `agentRole` -> `view_traceable_subagent` on the returned evidence file.
-- Model-grounded preflight flow: `list_traceable_models` -> copy one allowed exact model id -> `run_traceable_subagent` with `modelSelector.id` -> `view_traceable_subagent` on the returned evidence file.
-- Recovery flow: if a run already produced `.trace.md`, inspect it with `view_traceable_subagent` before launching another lane.
+- Role-grounded preflight flow: `#listTraceableAgents` -> `#runTraceableSubagent` with `agentRole` -> `#viewTraceableSubagent` on the returned evidence file.
+- Model-grounded preflight flow: `#listTraceableModels` -> copy one allowed exact model id -> `#runTraceableSubagent` with `modelSelector.id` -> `#viewTraceableSubagent` on the returned evidence file.
+- Recovery flow: if a run already produced `.trace.md`, inspect it with `#viewTraceableSubagent` before launching another lane.
 
 Local development loop:
 
+- This section is for extension contributors rather than Marketplace-first users.
 - `npm test` builds and runs the current validation slice
 - `npm run package:vsix` produces a local VSIX for install testing
 - `npm run release:check` is the release gate used before publishing
