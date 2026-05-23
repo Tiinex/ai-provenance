@@ -478,6 +478,16 @@
           "default": [],
           "description": "TRACEABLE model declarations to disallow for role-driven selection, preferred-model fallback selection, and explicit caller-provided modelSelector.id. Blocked declarations are also marked in `list_traceable_models` instead of being hidden. Use the same human-readable declaration syntax as agent frontmatter model/models."
         },
+        "tiinex.aiProvenance.traceableUndeclaredMaxIterations": {
+          "type": "number",
+          "default": 100,
+          "description": "Runtime-only fail-safe maximum model iterations for TRACEABLE runs when the caller does not provide `budgetPolicy`. This hidden guard is not surfaced to the child request contract."
+        },
+        "tiinex.aiProvenance.traceableUndeclaredMaxToolCalls": {
+          "type": "number",
+          "default": 100,
+          "description": "Runtime-only fail-safe maximum tool calls for TRACEABLE runs when the caller does not provide `budgetPolicy`. This hidden guard is not surfaced to the child request contract."
+        },
         "tiinex.aiProvenance.evidenceMaxItems": {
           "type": "number",
           "default": 10,

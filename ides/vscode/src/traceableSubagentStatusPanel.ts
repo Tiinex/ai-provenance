@@ -93,6 +93,10 @@ type PanelRenderedEntry =
     id: string;
     occurredAt: string;
     entries: Array<Extract<PanelActivityEntry, { kind: "status" }>>;
+    latestToolActionLabel?: string;
+    latestToolTitle?: string;
+    latestToolEvent?: PanelDisplayEvent;
+    groupedToolEntry?: Extract<PanelActivityEntry, { kind: "tool" }>;
   };
 
 interface ToolsetListItem {
@@ -288,6 +292,87 @@ function humanizeToolName(toolName: string): string {
     return trimmed.slice("copilot_".length);
   }
   return trimmed;
+}
+
+function formatToolActionLabel(displayEvent: PanelDisplayEvent): string {
+  return `running ${humanizeToolName(displayEvent.event.toolName)}`;
+}
+
+function formatToolActionTitle(displayEvent: PanelDisplayEvent): string {
+  const lines = [formatToolActionLabel(displayEvent)];
+  const note = displayEvent.note?.trim();
+  if (note) {
+    lines.push(note);
+  }
+  return lines.join("\n");
+}
+
+function renderStatusGroupActionIcon(displayEvent: PanelDisplayEvent | undefined): string {
+  if (!displayEvent) {
+    return "";
+  }
+  const statusClass = `event-status-group-action-${displayEvent.outcome}`;
+  return `<span class="event-icon event-status-group-action-icon ${statusClass}" style="color: ${statusGroupIconColorForOutcome(displayEvent.outcome)};" aria-hidden="true">${escapeHtml(eventIcon(displayEvent))}</span>`;
+}
+
+function statusGroupIconColorForOutcome(outcome: PanelEventOutcome): string {
+  switch (outcome) {
+    case "running":
+      return "var(--vscode-progressBar-background)";
+    case "success":
+      return "var(--vscode-terminal-ansiGreen)";
+    case "deferred":
+      return "var(--vscode-editorWarning-foreground)";
+    case "failure":
+      return "var(--vscode-errorForeground)";
+  }
+}
+
+function statusGroupIconColorForStatus(phase: PanelStatusEvent["phase"], running: boolean): string {
+  if (phase === "running") {
+    return running ? "var(--vscode-progressBar-background)" : "var(--vscode-terminal-ansiGreen)";
+  }
+  if (phase === "completed") {
+    return "var(--vscode-terminal-ansiGreen)";
+  }
+  if (phase === "warning") {
+    return "var(--vscode-editorWarning-foreground)";
+  }
+  if (phase === "error") {
+    return "var(--vscode-errorForeground)";
+  }
+  return "color-mix(in srgb, var(--accent) 74%, var(--muted))";
+}
+
+function deriveStatusGroupSummaryEvent(entry: Extract<PanelRenderedEntry, { kind: "status-group" }>):
+  | { kind: "tool"; displayEvent: PanelDisplayEvent; label: string; note: string; title: string; severityClass: string; phaseClass: string }
+  | { kind: "status"; entry: Extract<PanelActivityEntry, { kind: "status" }>; label: string; note: string; title: string; severityClass: string; phaseClass: string } {
+  if (entry.groupedToolEntry) {
+    const displayEvent = entry.groupedToolEntry.displayEvent;
+    return {
+      kind: "tool",
+      displayEvent,
+      label: formatToolActionLabel(displayEvent),
+      note: displayEvent.note?.trim() || "",
+      title: formatToolActionTitle(displayEvent),
+      severityClass: `status-group-severity-${displayEvent.outcome}`,
+      phaseClass: `event-status-group-phase-${displayEvent.outcome}`
+    };
+  }
+
+  const latestNonCompleted = [...entry.entries].reverse().find((child) => child.phase !== "completed");
+  const summaryEntry = latestNonCompleted ?? entry.entries[entry.entries.length - 1];
+  const note = summaryEntry.detail || deriveStatusTransparencyNote(summaryEntry) || "";
+  const title = [summaryEntry.message, note].filter(Boolean).join("\n");
+  return {
+    kind: "status",
+    entry: summaryEntry,
+    label: summaryEntry.message,
+    note,
+    title,
+    severityClass: `status-group-severity-${summaryEntry.phase}`,
+    phaseClass: `event-status-group-phase-${summaryEntry.phase}`
+  };
 }
 
 function normalizeToolBadgeKey(toolName: string): string {
@@ -632,8 +717,14 @@ function mergeContiguousRanges(
   return merged;
 }
 
-function buildEventChips(event: PanelDisplayEvent): string[] {
+function buildEventChips(
+  event: PanelDisplayEvent,
+  options?: {
+    durationPosition?: "before-file" | "after-file";
+  }
+): string[] {
   const chips: string[] = [];
+  const durationPosition = options?.durationPosition ?? "before-file";
   const toolIcon = toolBadgeIcon(event.event.toolName);
   const toolLabel = humanizeToolName(event.event.toolName);
   const toolChipClasses = ["chip", "chip-tool", toolIcon ? "chip-collapsible" : ""].filter(Boolean).join(" ");
@@ -659,6 +750,16 @@ function buildEventChips(event: PanelDisplayEvent): string[] {
       `</span>`
     ].join(""));
   }
+  const durationChip = renderActivityDuration(
+    event.running ? "Live" : "For",
+    event.baseElapsedMs,
+    event.occurredAt,
+    event.running,
+    event.running ? "Current tool duration" : "Recorded tool duration"
+  );
+  if (durationPosition === "before-file") {
+    chips.push(durationChip);
+  }
   const filePath = event.filePath ?? "";
   if (filePath) {
     const fileName = path.basename(filePath);
@@ -667,6 +768,9 @@ function buildEventChips(event: PanelDisplayEvent): string[] {
     const endLine = hasSingleRange ? event.ranges[0]?.endLine : undefined;
     const payload = escapeHtml(JSON.stringify({ type: "openFile", filePath, startLine, endLine }));
     chips.push(`<button class="chip chip-button" data-message="${payload}" title="${escapeHtml(filePath)}">${escapeHtml(fileName)}</button>`);
+  }
+  if (durationPosition === "after-file") {
+    chips.push(durationChip);
   }
   return chips;
 }
@@ -1261,12 +1365,22 @@ function groupActivityEntries(activities: PanelActivityEntry[]): PanelRenderedEn
       nextIndex += 1;
     }
     if (statusEntries.length >= 2) {
+      const groupedToolEntry = nextIndex < activities.length && activities[nextIndex]?.kind === "tool"
+        ? activities[nextIndex] as Extract<PanelActivityEntry, { kind: "tool" }>
+        : undefined;
       grouped.push({
         kind: "status-group",
-        id: `${statusEntries[0].id}:${statusEntries[statusEntries.length - 1].id}`,
+        id: `${statusEntries[0].id}:${groupedToolEntry?.id ?? statusEntries[statusEntries.length - 1].id}`,
         occurredAt: statusEntries[0].occurredAt,
-        entries: statusEntries
+        entries: statusEntries,
+        latestToolActionLabel: groupedToolEntry ? formatToolActionLabel(groupedToolEntry.displayEvent) : undefined,
+        latestToolEvent: groupedToolEntry?.displayEvent,
+        latestToolTitle: groupedToolEntry ? formatToolActionTitle(groupedToolEntry.displayEvent) : undefined,
+        groupedToolEntry
       });
+      if (groupedToolEntry) {
+        nextIndex += 1;
+      }
     } else {
       grouped.push(statusEntries[0]);
     }
@@ -1332,23 +1446,11 @@ function renderStatusActivity(entry: Extract<PanelActivityEntry, { kind: "status
 
 function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "status-group" }>): string {
   const firstEntry = entry.entries[0];
-  const severityClass = entry.entries.some((child) => child.phase === "error")
-    ? "status-group-severity-error"
-    : entry.entries.some((child) => child.phase === "warning")
-      ? "status-group-severity-warning"
-      : entry.entries.some((child) => child.phase === "running")
-        ? "status-group-severity-running"
-        : entry.entries.some((child) => child.phase === "completed")
-          ? "status-group-severity-completed"
-          : "";
-  const labelText = compactStatusGroupText(entry.entries.map((child) => child.message), 80);
-  const noteText = compactStatusGroupText(
-    entry.entries
-      .map((child) => child.detail || deriveStatusTransparencyNote(child) || "")
-      .filter(Boolean),
-    120
-  );
-  const titleText = entry.entries.map((child) => child.message).join(" ... ");
+  const summaryEvent = deriveStatusGroupSummaryEvent(entry);
+  const severityClass = summaryEvent.severityClass;
+  const summaryLabel = summaryEvent.label;
+  const noteText = summaryEvent.note;
+  const titleText = summaryEvent.title;
   const durationChips = entry.entries
     .filter((child) => child.running || child.baseElapsedMs >= 0)
     .map((child) => renderActivityDuration(
@@ -1364,12 +1466,20 @@ function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "s
     chips.push(`<span class="chip chip-time" title="Started ${escapeHtml(clockLabel)}">${escapeHtml(clockLabel)}</span>`);
   }
   chips.push(...durationChips);
-  const childRows = entry.entries.map((child) => renderStatusActivity(child)).join("");
+  if (entry.latestToolEvent) {
+    chips.push(...buildEventChips(entry.latestToolEvent, { durationPosition: "after-file" }));
+  }
+  const childRows = [
+    ...entry.entries.map((child) => renderStatusActivity(child)),
+    entry.groupedToolEntry ? renderToolActivity(entry.groupedToolEntry) : ""
+  ].filter(Boolean).join("");
   return [
     `<li class="status-group-item">`,
     `<details class="status-group ${severityClass}" data-status-group-id="${escapeHtml(entry.id)}">`,
     `<summary class="event-row event-status-group-summary" title="${escapeHtml(titleText)}">`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon event-status-group-toggle">${renderCodicon("chevron-right")}</span><span class="event-label">${escapeHtml(labelText)}</span></div>${noteText ? `<div class="event-note">${escapeHtml(noteText)}</div>` : ""}</div>`,
+    `<div class="event-body"><div class="event-main"><span class="event-icon event-status-group-toggle">${renderCodicon("chevron-right")}</span>${summaryEvent.kind === "tool"
+      ? renderStatusGroupActionIcon(summaryEvent.displayEvent)
+      : `<span class="event-icon event-status-group-action-icon ${summaryEvent.phaseClass}" style="color: ${statusGroupIconColorForStatus(summaryEvent.entry.phase, summaryEvent.entry.running)};" aria-hidden="true">${escapeHtml(panelStatusRowIcon(summaryEvent.entry.phase, summaryEvent.entry.running))}</span>`}<span class="event-label">${escapeHtml(summaryLabel)}</span></div>${noteText ? `<div class="event-note">${escapeHtml(noteText)}</div>` : ""}</div>`,
     `<div class="event-chips">${chips.join("")}</div>`,
     `</summary>`,
     `<ul class="status-group-children">${childRows}</ul>`,
@@ -2914,10 +3024,19 @@ export function renderTraceableSubagentPanelHtml(
     .status-group.status-group-severity-completed .event-status-group-toggle {
       color: var(--vscode-terminal-ansiGreen);
     }
+    .status-group.status-group-severity-success .event-status-group-toggle {
+      color: var(--vscode-terminal-ansiGreen);
+    }
     .status-group.status-group-severity-warning .event-status-group-toggle {
       color: var(--vscode-editorWarning-foreground);
     }
+    .status-group.status-group-severity-deferred .event-status-group-toggle {
+      color: var(--vscode-editorWarning-foreground);
+    }
     .status-group.status-group-severity-error .event-status-group-toggle {
+      color: var(--vscode-errorForeground);
+    }
+    .status-group.status-group-severity-failure .event-status-group-toggle {
       color: var(--vscode-errorForeground);
     }
     .status-group[open] .event-status-group-toggle {
@@ -3041,16 +3160,22 @@ export function renderTraceableSubagentPanelHtml(
       display: inline-flex;
       align-items: center;
       gap: 4px;
+      justify-content: flex-end;
     }
     .activity-duration-label {
       color: color-mix(in srgb, var(--muted) 90%, transparent);
       text-transform: uppercase;
       font-size: 10px;
       letter-spacing: 0.04em;
+      min-width: 3.6ch;
+      text-align: right;
     }
     .activity-duration-value {
+      display: inline-block;
       color: color-mix(in srgb, var(--fg) 86%, var(--muted));
       font-weight: 600;
+      min-width: 4.8ch;
+      text-align: right;
     }
     .chip-button {
       cursor: pointer;
@@ -3089,6 +3214,22 @@ export function renderTraceableSubagentPanelHtml(
     .event-tool.event-outcome-running.event-kind-search .event-icon { color: var(--vscode-terminal-ansiGreen); }
     .event-tool.event-outcome-deferred .event-icon { color: var(--vscode-editorWarning-foreground); }
     .event-tool.event-outcome-failure .event-icon { color: var(--vscode-errorForeground); }
+    .event-status-group-action-icon.event-status-group-phase-running,
+    .event-status-group-action-icon.event-status-group-action-running {
+      color: var(--vscode-progressBar-background);
+    }
+    .event-status-group-action-icon.event-status-group-phase-completed,
+    .event-status-group-action-icon.event-status-group-action-success {
+      color: var(--vscode-terminal-ansiGreen);
+    }
+    .event-status-group-action-icon.event-status-group-phase-warning,
+    .event-status-group-action-icon.event-status-group-action-deferred {
+      color: var(--vscode-editorWarning-foreground);
+    }
+    .event-status-group-action-icon.event-status-group-phase-error,
+    .event-status-group-action-icon.event-status-group-action-failure {
+      color: var(--vscode-errorForeground);
+    }
     .empty-state {
       color: var(--muted);
       padding: 10px 2px;
@@ -3317,7 +3458,7 @@ export function renderTraceableSubagentPanelHtml(
     if (timerNodes.some((timerNode) => timerNode instanceof HTMLElement && timerNode.dataset.running === 'true')) {
       timerInterval = window.setInterval(() => {
         applyTimers(new Date().toISOString());
-      }, 1000);
+      }, 100);
       window.addEventListener('beforeunload', () => {
         window.clearInterval(timerInterval);
       }, { once: true });

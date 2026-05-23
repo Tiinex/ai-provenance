@@ -50,8 +50,10 @@ export interface TraceableSubagentStatusReporter {
 
 type TraceableStopSource = "traceable-panel" | "host-cancel" | "unknown";
 
-const DEFAULT_MAX_ITERATIONS = 4;
-const DEFAULT_MAX_TOOL_CALLS = 6;
+const TRACEABLE_UNDECLARED_MAX_ITERATIONS_SETTING = "traceableUndeclaredMaxIterations";
+const TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING = "traceableUndeclaredMaxToolCalls";
+const DEFAULT_UNDECLARED_MAX_ITERATIONS = 100;
+const DEFAULT_UNDECLARED_MAX_TOOL_CALLS = 100;
 const DEFAULT_OUTPUT_TEXT_CHARS = 1600;
 
 const DEFAULT_BLOCKED_TOOL_NAMES = new Set([
@@ -620,6 +622,42 @@ function normalizeInheritedBudgetPolicy(value: unknown): TraceableBudgetPolicy |
     maxIterations,
     maxToolCalls
   };
+}
+
+function normalizeExplicitBudgetPolicy(input: TraceableSubagentInput): TraceableBudgetPolicy | undefined {
+  const maxIterations = Number.isInteger(input.budgetPolicy?.maxIterations) && (input.budgetPolicy?.maxIterations ?? 0) > 0
+    ? input.budgetPolicy!.maxIterations!
+    : undefined;
+  const maxToolCalls = Number.isInteger(input.budgetPolicy?.maxToolCalls) && (input.budgetPolicy?.maxToolCalls ?? 0) > 0
+    ? input.budgetPolicy!.maxToolCalls!
+    : undefined;
+  if (maxIterations === undefined && maxToolCalls === undefined) {
+    return undefined;
+  }
+  return {
+    maxIterations,
+    maxToolCalls
+  };
+}
+
+function parseConfiguredPositiveInteger(value: unknown, fallback: number): number {
+  const normalized = Number.isFinite(value) ? Math.floor(Number(value)) : NaN;
+  return normalized > 0 ? normalized : fallback;
+}
+
+function getTraceableUndeclaredBudgetPolicy(): Required<TraceableBudgetPolicy> {
+  try {
+    const config = vscode.workspace.getConfiguration("tiinex.aiProvenance");
+    return {
+      maxIterations: parseConfiguredPositiveInteger(config.get(TRACEABLE_UNDECLARED_MAX_ITERATIONS_SETTING), DEFAULT_UNDECLARED_MAX_ITERATIONS),
+      maxToolCalls: parseConfiguredPositiveInteger(config.get(TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING), DEFAULT_UNDECLARED_MAX_TOOL_CALLS)
+    };
+  } catch {
+    return {
+      maxIterations: DEFAULT_UNDECLARED_MAX_ITERATIONS,
+      maxToolCalls: DEFAULT_UNDECLARED_MAX_TOOL_CALLS
+    };
+  }
 }
 
 function normalizeInheritedAgentRole(value: unknown): TraceableAgentRole | undefined {
@@ -1564,12 +1602,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function normalizeBudgetPolicy(input: TraceableSubagentInput): Required<TraceableBudgetPolicy> {
-  const maxIterations = Number.isInteger(input.budgetPolicy?.maxIterations) && (input.budgetPolicy?.maxIterations ?? 0) > 0
-    ? input.budgetPolicy!.maxIterations!
-    : DEFAULT_MAX_ITERATIONS;
-  const maxToolCalls = Number.isInteger(input.budgetPolicy?.maxToolCalls) && (input.budgetPolicy?.maxToolCalls ?? 0) > 0
-    ? input.budgetPolicy!.maxToolCalls!
-    : DEFAULT_MAX_TOOL_CALLS;
+  const explicitBudgetPolicy = normalizeExplicitBudgetPolicy(input);
+  const undeclaredBudgetPolicy = getTraceableUndeclaredBudgetPolicy();
+  const maxIterations = explicitBudgetPolicy?.maxIterations ?? undeclaredBudgetPolicy.maxIterations;
+  const maxToolCalls = explicitBudgetPolicy?.maxToolCalls ?? undeclaredBudgetPolicy.maxToolCalls;
   return {
     maxIterations,
     maxToolCalls
@@ -1593,7 +1629,7 @@ export function resolveTraceableParentFrame(input: Pick<TraceableSubagentInput, 
 
 export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentInput): Record<string, unknown> {
   const wrapperPolicy = normalizedWrapperPolicy(input);
-  const budgetPolicy = normalizeBudgetPolicy(input);
+  const explicitBudgetPolicy = normalizeExplicitBudgetPolicy(input);
   const normalizedModelSelector = normalizeModelSelector(input.modelSelector);
   const normalizedAgentRole = normalizeAgentRole(input.agentRole);
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
@@ -1604,9 +1640,12 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   const parentTracePath = input.parentTracePath?.trim();
   const parentFrame = resolveTraceableParentFrame(input);
   const request: Record<string, unknown> = {
-    wrapperPolicy,
-    budgetPolicy
+    wrapperPolicy
   };
+
+  if (explicitBudgetPolicy) {
+    request.budgetPolicy = explicitBudgetPolicy;
+  }
 
   if (input.userInput?.trim()) {
     request.userInput = input.userInput.trim();

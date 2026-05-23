@@ -39,6 +39,8 @@ async function main() {
   assert.ok(packageJson.contributes?.configuration?.properties?.["tiinex.aiProvenance.traceableAutoHide"], "Provenance TRACEABLE auto-hide setting is missing.");
   assert.ok(packageJson.contributes?.configuration?.properties?.["tiinex.aiProvenance.traceablePreferredModels"], "Provenance TRACEABLE preferred-models setting is missing.");
   assert.ok(packageJson.contributes?.configuration?.properties?.["tiinex.aiProvenance.traceableBlockedModels"], "Provenance TRACEABLE blocked-models setting is missing.");
+  assert.ok(packageJson.contributes?.configuration?.properties?.["tiinex.aiProvenance.traceableUndeclaredMaxIterations"], "Provenance TRACEABLE undeclared max-iterations setting is missing.");
+  assert.ok(packageJson.contributes?.configuration?.properties?.["tiinex.aiProvenance.traceableUndeclaredMaxToolCalls"], "Provenance TRACEABLE undeclared max-tool-calls setting is missing.");
   assert.ok(packageJson.contributes?.views?.tiinexAiProvenanceTraceablePanel?.some((entry) => entry.id === "tiinex.aiProvenance.traceableStatus"), "Provenance TRACEABLE panel view contribution is missing.");
   assert.ok(packageJson.contributes?.commands?.some((entry) => entry.command === "tiinex.aiProvenance.openOverview"), "Overview command is missing.");
   assert.ok(packageJson.contributes?.commands?.some((entry) => entry.command === "tiinex.aiProvenance.inspectTraceableEvidence"), "TRACEABLE evidence inspect command is missing.");
@@ -114,6 +116,9 @@ async function main() {
   assert.ok(runtimeSource.includes("TRACEABLE DIRECT mode requires a non-empty userInput."), "Traceable runtime source is missing DIRECT-mode userInput enforcement.");
   assert.ok(runtimeSource.includes("TRACEABLE RESUME mode requires parentTracePath."), "Traceable runtime source is missing RESUME-mode parentTracePath enforcement.");
   assert.ok(runtimeSource.includes("TRACEABLE RESUME mode does not allow userInput, parentTask, or parentFrame."), "Traceable runtime source is missing strict RESUME prompt rejection.");
+  assert.ok(runtimeSource.includes("traceableUndeclaredMaxIterations"), "Traceable runtime source is missing the undeclared max-iterations runtime setting.");
+  assert.ok(runtimeSource.includes("traceableUndeclaredMaxToolCalls"), "Traceable runtime source is missing the undeclared max-tool-calls runtime setting.");
+  assert.ok(runtimeSource.includes("if (explicitBudgetPolicy)"), "Traceable runtime source should only expose budgetPolicy in the request envelope when it was explicitly declared.");
   assert.ok(runtimeSource.includes("parseTraceableEvidenceStateMarkdown"), "Traceable runtime source is missing readable parent evidence parsing for continuation.");
   assert.ok(runtimeSource.includes("continuedFromParent: true"), "Traceable runtime source is missing continuation metadata for child runs.");
   assert.ok(runtimeSource.includes("lineageLabel"), "Traceable runtime source is missing lineage metadata handling for continuation runs.");
@@ -149,6 +154,8 @@ async function main() {
   assert.ok(contractSource.includes("buildUnparseableChildPayloadFallback"), "Traceable contract source is missing unparseable-payload fallback construction.");
   assert.ok(contractSource.includes("collectTraceableInputValidationIssues"), "Traceable contract source is missing input validation helpers.");
   assert.ok(contractSource.includes('"DIRECT" | "RESUME"'), "Traceable contract source is missing the DIRECT/RESUME inputMode contract.");
+  assert.ok(contractSource.includes("traceableUndeclaredMaxIterations"), "Traceable contract source is missing the undeclared max-iterations runtime setting.");
+  assert.ok(contractSource.includes("traceableUndeclaredMaxToolCalls"), "Traceable contract source is missing the undeclared max-tool-calls runtime setting.");
   assert.ok(contractSource.includes("renderTraceableSubagentEvidencePathOnly"), "Traceable contract source is missing evidence-path-only markdown rendering.");
   assert.ok(contractSource.includes("formatTraceablePathReference"), "Traceable contract source is missing path-reference rendering.");
   assert.ok(contractSource.includes("renderTraceableSubagentMarkdown"), "Traceable contract source is missing full markdown rendering.");

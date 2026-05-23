@@ -107,6 +107,8 @@ Example payloads:
 
 The `DIRECT` and `RESUME` examples above omit `budgetPolicy` intentionally so the child sees live-like conditions and any undeclared runtime fail-safe stays internal. Add `budgetPolicy` only when you want the child to treat that budget as part of the explicit request contract.
 
+When `budgetPolicy` is omitted, TRACEABLE falls back to the hidden runtime fail-safe settings `tiinex.aiProvenance.traceableUndeclaredMaxIterations` and `tiinex.aiProvenance.traceableUndeclaredMaxToolCalls` instead of surfacing a synthesized default budget to the child.
+
 Local development loop:
 
 - This section is for extension contributors rather than Marketplace-first users.
