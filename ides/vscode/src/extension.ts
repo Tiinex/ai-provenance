@@ -5,6 +5,7 @@ import {
   parseTraceableEvidenceStateMarkdown,
   renderViewTraceableSubagentMarkdown,
   renderTraceableEvidenceSurfaceMarkdown,
+  type ParsedTraceableEvidenceState,
   type TraceableEvidenceSurface,
   type ViewTraceableSubagentInput
 } from "./traceableEvidence";
@@ -17,7 +18,8 @@ import {
   renderTraceableSubagentMarkdown,
   type TraceableSubagentInput,
   type TraceableSubagentRequestSummaryItem,
-  type TraceableSubagentRunResult
+  type TraceableSubagentRunResult,
+  type TraceableSubagentToolDetail
 } from "./traceableSubagent";
 import { TraceableSubagentEvidenceController } from "./traceableSubagentEvidence";
 import { QueuedMutex } from "./mutex";
@@ -29,6 +31,13 @@ import {
   TraceableSubagentStatusPanelProvider,
   renderTraceableSubagentPanelHtml
 } from "./traceableSubagentStatusPanel";
+import { type TraceableResolvedPathTarget } from "./traceableContract";
+import {
+  getUniqueWorkspaceFolderMatchByName,
+  isPathWithinAnyWorkspaceRoot,
+  resolveDriveLessAbsolutePathOnWindows,
+  resolveRelativeOpenPathInWorkspace
+} from "./traceableOpenPath.js";
 
 const OPEN_OVERVIEW_COMMAND = "tiinex.aiProvenance.openOverview";
 const INSPECT_TRACEABLE_EVIDENCE_COMMAND = "tiinex.aiProvenance.inspectTraceableEvidence";
@@ -390,8 +399,121 @@ function describeTraceableOutputMode(mode: TraceableSubagentInput["outputMode"],
   }
 }
 
-function buildTraceableRequestSummary(input: TraceableSubagentInput): TraceableSubagentRequestSummaryItem[] {
+function hasExplicitBudgetPolicy(input: TraceableSubagentInput | undefined): boolean {
+  return Boolean(
+    Number.isInteger(input?.budgetPolicy?.maxIterations)
+    || Number.isInteger(input?.budgetPolicy?.maxToolCalls)
+  );
+}
+
+function hasExplicitModelSelector(input: TraceableSubagentInput | undefined): boolean {
+  return Boolean(
+    input?.modelSelector?.id?.trim()
+    || input?.modelSelector?.vendor?.trim()
+    || input?.modelSelector?.family?.trim()
+    || input?.modelSelector?.version?.trim()
+  );
+}
+
+function hasExplicitAgentRole(input: TraceableSubagentInput | undefined): boolean {
+  return Boolean(input?.agentRole?.name?.trim() || input?.agentRole?.filePath?.trim());
+}
+
+function hasCarryContext(input: TraceableSubagentInput | undefined): boolean {
+  const carriedContext = input?.carriedContext;
+  return Boolean(
+    carriedContext?.priorTurnsSummary?.trim()
+    || (Array.isArray(carriedContext?.fileContext) && carriedContext.fileContext.length > 0)
+    || (Array.isArray(carriedContext?.reductions) && carriedContext.reductions.length > 0)
+  );
+}
+
+function hasCarryState(input: TraceableSubagentInput | undefined): boolean {
+  const carryState = input?.activeCarryForward;
+  return Boolean(
+    (Array.isArray(carryState?.remainingGoals) && carryState.remainingGoals.length > 0)
+    || (Array.isArray(carryState?.openQuestions) && carryState.openQuestions.length > 0)
+    || (Array.isArray(carryState?.constraints) && carryState.constraints.length > 0)
+    || carryState?.nextSuggestedStart?.trim()
+    || (Array.isArray(carryState?.relevantFileAnchors) && carryState.relevantFileAnchors.length > 0)
+    || (Array.isArray(carryState?.relevantArtifactAnchors) && carryState.relevantArtifactAnchors.length > 0)
+  );
+}
+
+function buildInheritedRequestSummaryItem(
+  effectiveInput: TraceableSubagentInput,
+  requestedInput: TraceableSubagentInput | undefined
+): TraceableSubagentRequestSummaryItem | undefined {
+  if (!effectiveInput.parentTracePath?.trim() || !requestedInput) {
+    return undefined;
+  }
+  const inheritedLabels: string[] = [];
+  const detailLines = [`Inherited from parent trace: ${effectiveInput.parentTracePath.trim()}`];
+  if (!requestedInput.inputMode && !requestedInput.validationMode) {
+    const formattedMode = formatTraceableModeSummaryValue(effectiveInput.inputMode, effectiveInput.validationMode);
+    const modeDescription = describeTraceableModeSummary(effectiveInput.inputMode, effectiveInput.validationMode);
+    if (formattedMode && modeDescription) {
+      inheritedLabels.push("mode");
+      detailLines.push(`Mode: ${formattedMode}`);
+      detailLines.push(modeDescription);
+    }
+  }
+  if (!requestedInput.outputMode && !requestedInput.exportToFolder?.trim()) {
+    const outputModeSummary = describeTraceableOutputMode(effectiveInput.outputMode, effectiveInput.exportToFolder);
+    if (outputModeSummary) {
+      inheritedLabels.push("output");
+      detailLines.push(`Output: ${outputModeSummary.title}`);
+    }
+  }
+  if (!hasExplicitAgentRole(requestedInput) && effectiveInput.agentRole?.name?.trim()) {
+    inheritedLabels.push("role");
+    detailLines.push(`Role: ${effectiveInput.agentRole.filePath?.trim() || effectiveInput.agentRole.name.trim()}`);
+  }
+  if (!hasExplicitModelSelector(requestedInput) && effectiveInput.modelSelector?.id?.trim()) {
+    inheritedLabels.push("model");
+    detailLines.push(`Model: ${effectiveInput.modelSelector.id.trim()}`);
+  }
+  if (!hasExplicitBudgetPolicy(requestedInput) && (effectiveInput.budgetPolicy?.maxIterations || effectiveInput.budgetPolicy?.maxToolCalls)) {
+    inheritedLabels.push("budget");
+    detailLines.push(`Budget: ${effectiveInput.budgetPolicy?.maxIterations ?? "-"}i · ${effectiveInput.budgetPolicy?.maxToolCalls ?? "-"}t`);
+  }
+  if (requestedInput.allowedToolNames === undefined && Array.isArray(effectiveInput.allowedToolNames) && effectiveInput.allowedToolNames.length > 0) {
+    inheritedLabels.push("allowlist");
+    detailLines.push(`Allowlist: ${effectiveInput.allowedToolNames.join(", ")}`);
+  }
+  if (requestedInput.blockedToolNames === undefined && Array.isArray(effectiveInput.blockedToolNames) && effectiveInput.blockedToolNames.length > 0) {
+    inheritedLabels.push("blocklist");
+    detailLines.push(`Blocklist: ${effectiveInput.blockedToolNames.join(", ")}`);
+  }
+  if (!hasCarryContext(requestedInput) && hasCarryContext(effectiveInput)) {
+    inheritedLabels.push("carry");
+  }
+  if (!hasCarryState(requestedInput) && hasCarryState(effectiveInput)) {
+    inheritedLabels.push("state");
+  }
+  if (inheritedLabels.length === 0) {
+    return undefined;
+  }
+  return {
+    label: "Inherited",
+    value: compactTraceableSummaryText(inheritedLabels.join(" · "), 24),
+    title: detailLines.join("\n")
+  };
+}
+
+function buildTraceableRequestSummary(
+  input: TraceableSubagentInput,
+  requestedInput?: TraceableSubagentInput
+): TraceableSubagentRequestSummaryItem[] {
   const summary: TraceableSubagentRequestSummaryItem[] = [];
+  const continuationRequested = Boolean(requestedInput?.parentTracePath?.trim());
+  const showModeBadge = !continuationRequested || Boolean(requestedInput?.inputMode || requestedInput?.validationMode);
+  const showOutputBadge = !continuationRequested || Boolean(requestedInput?.outputMode || requestedInput?.exportToFolder?.trim());
+  const showRoleBadge = !continuationRequested || hasExplicitAgentRole(requestedInput);
+  const showModelBadge = !continuationRequested || hasExplicitModelSelector(requestedInput);
+  const showBudgetBadge = !continuationRequested || hasExplicitBudgetPolicy(requestedInput);
+  const showAllowlistBadge = !continuationRequested || requestedInput?.allowedToolNames !== undefined;
+  const showBlocklistBadge = !continuationRequested || requestedInput?.blockedToolNames !== undefined;
   if (input.parentTracePath?.trim()) {
     summary.push({
       label: "Parent Trace",
@@ -416,13 +538,13 @@ function buildTraceableRequestSummary(input: TraceableSubagentInput): TraceableS
   }
   const formattedMode = formatTraceableModeSummaryValue(input.inputMode, input.validationMode);
   const modeDescription = describeTraceableModeSummary(input.inputMode, input.validationMode);
-  if (formattedMode && modeDescription) {
+  if (showModeBadge && formattedMode && modeDescription) {
     summary.push({
       label: "Mode",
       value: formattedMode,
       title: modeDescription
     });
-  } else {
+  } else if (showModeBadge) {
     const validationModeDescription = describeTraceableValidationMode(input.validationMode);
     if (input.validationMode?.trim() && validationModeDescription) {
       summary.push({
@@ -433,23 +555,23 @@ function buildTraceableRequestSummary(input: TraceableSubagentInput): TraceableS
     }
   }
   const outputModeSummary = describeTraceableOutputMode(input.outputMode, input.exportToFolder);
-  if (outputModeSummary) {
+  if (showOutputBadge && outputModeSummary) {
     summary.push({
       label: "Output",
       value: outputModeSummary.value,
       title: outputModeSummary.title
     });
   }
-  if (input.agentRole?.name?.trim()) {
+  if (showRoleBadge && input.agentRole?.name?.trim()) {
     summary.push({
       label: "Role",
       value: input.agentRole.name.trim(),
       title: input.agentRole.filePath?.trim() || input.agentRole.name.trim()
     });
   }
-  if (input.modelSelector?.id?.trim()) {
+  if (showModelBadge && input.modelSelector?.id?.trim()) {
     summary.push({
-      label: "Model",
+      label: "Requested Model",
       value: compactTraceableSummaryText(input.modelSelector.id.trim(), 24),
       title: input.modelSelector.id.trim()
     });
@@ -525,7 +647,7 @@ function buildTraceableRequestSummary(input: TraceableSubagentInput): TraceableS
       title: inheritedContextTitleParts.join("\n")
     });
   }
-  if (input.budgetPolicy?.maxIterations || input.budgetPolicy?.maxToolCalls) {
+  if (showBudgetBadge && (input.budgetPolicy?.maxIterations || input.budgetPolicy?.maxToolCalls)) {
     const budgetParts: string[] = [];
     if (input.budgetPolicy.maxIterations) {
       budgetParts.push(`up to ${input.budgetPolicy.maxIterations} model turn${input.budgetPolicy.maxIterations === 1 ? "" : "s"}`);
@@ -541,19 +663,23 @@ function buildTraceableRequestSummary(input: TraceableSubagentInput): TraceableS
         : "This child run has a bounded model-turn and tool-call budget."
     });
   }
-  if (Array.isArray(input.allowedToolNames) && input.allowedToolNames.length > 0) {
+  if (showAllowlistBadge && Array.isArray(input.allowedToolNames) && input.allowedToolNames.length > 0) {
     summary.push({
       label: "Allowlist",
       value: `${input.allowedToolNames.length} tool${input.allowedToolNames.length === 1 ? "" : "s"}`,
       title: `Allowed tools: ${input.allowedToolNames.join(", ")}`
     });
   }
-  if (Array.isArray(input.blockedToolNames) && input.blockedToolNames.length > 0) {
+  if (showBlocklistBadge && Array.isArray(input.blockedToolNames) && input.blockedToolNames.length > 0) {
     summary.push({
       label: "Blocklist",
       value: `${input.blockedToolNames.length} tool${input.blockedToolNames.length === 1 ? "" : "s"}`,
       title: `Blocked tools: ${input.blockedToolNames.join(", ")}`
     });
+  }
+  const inheritedSummaryItem = buildInheritedRequestSummaryItem(input, requestedInput);
+  if (inheritedSummaryItem) {
+    summary.push(inheritedSummaryItem);
   }
   if (input.reveal) {
     summary.push({
@@ -1004,6 +1130,45 @@ async function resolveTraceableEvidenceFilePath(evidenceFilePath: string): Promi
   throw new Error(`Could not resolve evidenceFilePath ${JSON.stringify(normalized)} under any open workspace folder. Provide an absolute path instead.`);
 }
 
+function getTraceableOpenWorkspaceFolders(): Array<{ name: string; fsPath: string }> {
+  return (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+    name: folder.name,
+    fsPath: folder.uri.fsPath
+  }));
+}
+
+async function resolveTraceableOpenPath(targetPath: string | TraceableResolvedPathTarget, baseDir?: string): Promise<string> {
+  if (typeof targetPath !== "string") {
+    return targetPath.kind === "relative"
+      ? path.resolve(targetPath.baseDir, targetPath.path)
+      : path.resolve(targetPath.path);
+  }
+  const normalized = targetPath.trim();
+  if (!normalized) {
+    throw new Error("TRACEABLE open path requires a non-empty target path.");
+  }
+  if (/^file:\/\//iu.test(normalized)) {
+    return vscode.Uri.parse(normalized).fsPath;
+  }
+  const workspaceFolders = getTraceableOpenWorkspaceFolders();
+  const cwdRoot = path.parse(process.cwd()).root.replace(/[\\/]+$/u, "");
+  const driveLessAbsolutePath = await resolveDriveLessAbsolutePathOnWindows(normalized, workspaceFolders, cwdRoot, pathExists);
+  if (driveLessAbsolutePath) {
+    return driveLessAbsolutePath;
+  }
+  if (path.isAbsolute(normalized)) {
+    return path.resolve(normalized);
+  }
+  if (typeof baseDir === "string" && baseDir.trim()) {
+    return path.resolve(baseDir.trim(), normalized);
+  }
+  const workspaceResolvedPath = await resolveRelativeOpenPathInWorkspace(normalized, workspaceFolders, pathExists);
+  if (workspaceResolvedPath) {
+    return workspaceResolvedPath;
+  }
+  throw new Error(`Could not resolve relative open path ${JSON.stringify(normalized)} under any open workspace folder or workspace root.`);
+}
+
 function truncateTraceableViewOutput(content: string, budget: number): string {
   if (content.length <= budget) {
     return content.endsWith("\n") ? content : `${content}\n`;
@@ -1026,6 +1191,34 @@ function getConfiguredIncludeSupportArtifacts(): boolean {
   return getProvenanceConfiguration().get<boolean>("includeSupportArtifacts", true);
 }
 
+async function delayMs(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readParsedTraceableEvidenceFromFileWithRetry(evidenceFilePath: string, attempts = 5): Promise<{
+  markdown: string;
+  parsed: ParsedTraceableEvidenceState | undefined;
+}> {
+  let lastMarkdown = "";
+  let lastParsed: ParsedTraceableEvidenceState | undefined;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const markdown = await fs.readFile(evidenceFilePath, "utf8");
+    const parsed = parseTraceableEvidenceStateMarkdown(markdown);
+    lastMarkdown = markdown;
+    lastParsed = parsed;
+    if (parsed) {
+      return { markdown, parsed };
+    }
+    const exportStillWriting = /- Export Status:\s+writing\b/u.test(markdown)
+      || /"status"\s*:\s*"writing"/u.test(markdown);
+    if (!exportStillWriting || attempt === attempts - 1) {
+      break;
+    }
+    await delayMs(80 * (attempt + 1));
+  }
+  return { markdown: lastMarkdown, parsed: lastParsed };
+}
+
 async function renderTraceableEvidenceSurfaceFromFile(input: {
   evidenceFilePath: string;
   surface: TraceableEvidenceSurface;
@@ -1037,8 +1230,7 @@ async function renderTraceableEvidenceSurfaceFromFile(input: {
   if (!evidenceFilePath.toLowerCase().endsWith(".trace.md")) {
     throw new Error(`TRACEABLE evidence inspect requires a .trace.md file. Got ${JSON.stringify(evidenceFilePath)}.`);
   }
-  const markdown = await fs.readFile(evidenceFilePath, "utf8");
-  const parsed = parseTraceableEvidenceStateMarkdown(markdown);
+  const { parsed } = await readParsedTraceableEvidenceFromFileWithRetry(evidenceFilePath);
   if (!parsed) {
     throw new Error(`TRACEABLE evidence file ${JSON.stringify(evidenceFilePath)} does not contain a readable Traceable State block.`);
   }
@@ -1089,6 +1281,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   const traceableEvidencePanels = new Map<string, vscode.WebviewPanel>();
   const traceableEvidencePanelSources = new Map<string, vscode.Uri>();
+  const traceableEvidenceLoadedToolDetails = new Map<string, Map<string, TraceableSubagentToolDetail>>();
   let activeTraceableEvidencePanelKey: string | undefined;
 
   const getTraceableEvidencePanelKey = (uri: vscode.Uri): string => getTraceableEvidenceResourceKey(uri);
@@ -1121,11 +1314,11 @@ export function activate(context: vscode.ExtensionContext): void {
         break;
       }
       seen.add(normalizedParentPath);
-      const markdown = await fs.readFile(normalizedParentPath, "utf8").catch(() => undefined);
-      if (!markdown) {
+      const parentRead = await readParsedTraceableEvidenceFromFileWithRetry(normalizedParentPath).catch(() => undefined);
+      if (!parentRead?.markdown) {
         break;
       }
-      const parentParsed = parseTraceableEvidenceStateMarkdown(markdown);
+      const parentParsed = parentRead.parsed;
       if (!parentParsed) {
         break;
       }
@@ -1133,11 +1326,17 @@ export function activate(context: vscode.ExtensionContext): void {
         filePath: normalizedParentPath,
         title: path.basename(normalizedParentPath),
         occurredAt: parentParsed.snapshot.updatedAt,
+        startedAt: parentParsed.snapshot.startedAt,
+        updatedAt: parentParsed.snapshot.updatedAt,
         finalSummary: parentParsed.result?.finalSummary ?? parentParsed.snapshot.resultSummary?.finalSummary,
         completionClaim: typeof parentParsed.result?.completionClaim === "string" ? parentParsed.result.completionClaim : undefined,
         status: parentParsed.snapshot.status,
         header: parentParsed.snapshot.header,
+        evidenceFile: parentParsed.snapshot.evidenceFile,
         requestSummary: parentParsed.snapshot.requestSummary,
+        statusHistory: parentParsed.snapshot.statusHistory,
+        recentTools: parentParsed.snapshot.recentTools,
+        timingSummary: parentParsed.snapshot.timingSummary,
         resultSummary: parentParsed.snapshot.resultSummary
       });
       parentCurrentFilePath = normalizedParentPath;
@@ -1178,24 +1377,153 @@ export function activate(context: vscode.ExtensionContext): void {
       document.uri.scheme === resolvedUri.scheme
       && getTraceableEvidencePanelKey(document.uri) === panelKey
     ));
-    const markdown = sourceDocument?.isDirty
-      ? sourceDocument.getText()
-      : await fs.readFile(resolvedUri.fsPath, "utf8");
-    const parsedState = parseTraceableEvidenceStateMarkdown(markdown);
+    const parsedState = sourceDocument?.isDirty
+      ? parseTraceableEvidenceStateMarkdown(sourceDocument.getText())
+      : (await readParsedTraceableEvidenceFromFileWithRetry(resolvedUri.fsPath)).parsed;
     if (parsedState) {
       parsedState.snapshot = await enrichSnapshotWithLineage(parsedState.snapshot, resolvedUri.fsPath);
     }
     return { sourceDocument, parsedState };
   };
-  const renderTraceableEvidencePanel = (panel: vscode.WebviewPanel, resolvedUri: vscode.Uri, snapshot: TraceableSubagentDetailSnapshot): void => {
+  const renderTraceableEvidencePanel = (
+    panel: vscode.WebviewPanel,
+    resolvedUri: vscode.Uri,
+    snapshot: TraceableSubagentDetailSnapshot,
+    loadedToolDetailsByCallId: ReadonlyMap<string, TraceableSubagentToolDetail> = new Map()
+  ): void => {
     const codiconCssHref = panel.webview.asWebviewUri(
       vscode.Uri.joinPath(context.extensionUri, "node_modules", "@vscode", "codicons", "dist", "codicon.css")
     ).toString();
     panel.title = path.basename(resolvedUri.fsPath);
     panel.webview.html = renderTraceableSubagentPanelHtml(snapshot, codiconCssHref, {
       pinnedOpen: true,
-      hideToolbarControls: true
+      hideToolbarControls: true,
+      loadedToolDetailsByCallId
     });
+  };
+  const buildPersistedToolDetail = (
+    snapshot: TraceableSubagentDetailSnapshot,
+    result: ParsedTraceableEvidenceState["result"],
+    callId: string
+  ): TraceableSubagentToolDetail | undefined => {
+    const matchingCall = result?.toolCalls.find((entry) => entry.callId === callId);
+    if (!matchingCall?.output) {
+      return undefined;
+    }
+    const matchingEvent = snapshot.recentTools.find((entry) => entry.callId === callId);
+    const phase = matchingEvent?.phase
+      ?? (matchingCall.result === "success"
+        ? "success"
+        : matchingCall.result === "notRun"
+          ? "deferred"
+          : "failure");
+    return {
+      callId,
+      toolName: matchingEvent?.toolName ?? matchingCall.toolName,
+      phase,
+      input: matchingEvent?.input,
+      note: matchingEvent?.note ?? matchingCall.note,
+      outputKind: matchingCall.output.kind,
+      outputSummary: matchingCall.output.summary,
+      outputMetadataSummary: matchingCall.output.metadataSummary,
+      rawOutput: matchingCall.output.rawText,
+      rawOutputTruncated: matchingCall.output.rawTextTruncated,
+      partKinds: matchingCall.output.partKinds ?? []
+    };
+  };
+  const buildPersistedToolDetailMap = (
+    snapshot: TraceableSubagentDetailSnapshot,
+    result: ParsedTraceableEvidenceState["result"],
+    existing: ReadonlyMap<string, TraceableSubagentToolDetail> = new Map()
+  ): Map<string, TraceableSubagentToolDetail> => {
+    const merged = new Map(existing);
+    for (const entry of result?.toolCalls ?? []) {
+      if (merged.has(entry.callId)) {
+        continue;
+      }
+      const detail = buildPersistedToolDetail(snapshot, result, entry.callId);
+      if (detail) {
+        merged.set(entry.callId, detail);
+      }
+    }
+    return merged;
+  };
+  const buildUnavailableToolDetail = (
+    snapshot: TraceableSubagentDetailSnapshot,
+    callId: string
+  ): TraceableSubagentToolDetail => {
+    const matchingEvent = snapshot.recentTools.find((entry) => entry.callId === callId);
+    return {
+      callId,
+      toolName: matchingEvent?.toolName ?? "tool",
+      phase: matchingEvent?.phase ?? "failure",
+      input: matchingEvent?.input,
+      note: matchingEvent?.note,
+      outputSummary: matchingEvent?.phase === "running"
+        ? "This tool call is still running."
+        : "This evidence file does not contain persisted tool output for this call.",
+      partKinds: []
+    };
+  };
+  const tryBuildRehydratedReadToolDetail = async (
+    snapshot: TraceableSubagentDetailSnapshot,
+    callId: string
+  ): Promise<TraceableSubagentToolDetail | undefined> => {
+    const matchingEvent = snapshot.recentTools.find((entry) => entry.callId === callId);
+    if (!matchingEvent) {
+      return undefined;
+    }
+    const normalizedToolName = matchingEvent.toolName.trim();
+    if (normalizedToolName !== "copilot_readFile" && normalizedToolName !== "read_file") {
+      return undefined;
+    }
+    const matchingInput = matchingEvent.input;
+    const filePath = typeof matchingInput?.filePath === "string" ? matchingInput.filePath.trim() : "";
+    const rawStartLine = typeof matchingInput?.startLine === "number" ? matchingInput.startLine : undefined;
+    const rawEndLine = typeof matchingInput?.endLine === "number" ? matchingInput.endLine : undefined;
+    if (
+      !filePath
+      || rawStartLine === undefined
+      || rawEndLine === undefined
+      || !Number.isInteger(rawStartLine)
+      || !Number.isInteger(rawEndLine)
+      || rawStartLine < 1
+      || rawEndLine < rawStartLine
+    ) {
+      return undefined;
+    }
+    const startLine = rawStartLine;
+    const endLine = rawEndLine;
+    try {
+      const markdown = await fs.readFile(filePath, "utf8");
+      const lines = markdown.split(/\r?\n/);
+      const rawOutput = lines.slice(startLine - 1, endLine).join("\n").trimEnd();
+      return {
+        callId,
+        toolName: matchingEvent.toolName,
+        phase: matchingEvent.phase,
+        input: matchingEvent.input,
+        note: matchingEvent.note,
+        outputKind: "text",
+        outputSummary: rawOutput
+          ? rawOutput.replace(/\s+/g, " ").trim().slice(0, 280)
+          : "Read output rehydrated from the current workspace file.",
+        rawOutput,
+        rawOutputTruncated: false,
+        partKinds: ["text"]
+      };
+    } catch {
+      return {
+        callId,
+        toolName: matchingEvent.toolName,
+        phase: matchingEvent.phase,
+        input: matchingEvent.input,
+        note: matchingEvent.note,
+        outputKind: "text",
+        outputSummary: "Could not rehydrate read output from the current workspace file.",
+        partKinds: ["text"]
+      };
+    }
   };
   const renderTraceableEvidenceErrorPanel = (panel: vscode.WebviewPanel, resolvedUri: vscode.Uri, message: string): void => {
     panel.title = path.basename(resolvedUri.fsPath);
@@ -1254,7 +1582,18 @@ export function activate(context: vscode.ExtensionContext): void {
       renderTraceableEvidenceErrorPanel(panel, resolvedUri, "This TRACEABLE evidence file does not contain a readable Traceable State block.");
       return true;
     }
-    renderTraceableEvidencePanel(panel, resolvedUri, latestState.parsedState.snapshot);
+    const mergedLoadedDetails = buildPersistedToolDetailMap(
+      latestState.parsedState.snapshot,
+      latestState.parsedState.result,
+      traceableEvidenceLoadedToolDetails.get(panelKey) ?? new Map()
+    );
+    traceableEvidenceLoadedToolDetails.set(panelKey, mergedLoadedDetails);
+    renderTraceableEvidencePanel(
+      panel,
+      resolvedUri,
+      latestState.parsedState.snapshot,
+      mergedLoadedDetails
+    );
     return true;
   };
   const getRelatedTraceableTabsToReplace = (resolvedUri: vscode.Uri): vscode.Tab[] => {
@@ -1303,10 +1642,52 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     await openMarkdownPreviewLikeSource(sourceUri);
   };
-  const openTraceableFile = async (filePath: string, startLine?: number, endLine?: number): Promise<void> => {
-    const normalizedPath = filePath.trim();
+  const openTraceableFile = async (
+    filePath: string | TraceableResolvedPathTarget,
+    startLine?: number,
+    endLine?: number,
+    baseDir?: string
+  ): Promise<void> => {
+    let normalizedPath: string;
+    try {
+      normalizedPath = await resolveTraceableOpenPath(filePath, baseDir);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not resolve the selected path.";
+      void vscode.window.showWarningMessage(message);
+      return;
+    }
+    const workspaceFolders = getTraceableOpenWorkspaceFolders();
+    const withinWorkspaceRoot = isPathWithinAnyWorkspaceRoot(normalizedPath, workspaceFolders);
+    const targetUri = vscode.Uri.file(normalizedPath);
+    try {
+      const targetStat = await fs.stat(normalizedPath);
+      if (targetStat.isDirectory()) {
+        if (!withinWorkspaceRoot) {
+          await vscode.commands.executeCommand("revealFileInOS", targetUri);
+          return;
+        }
+        await vscode.commands.executeCommand("workbench.view.explorer");
+        await vscode.commands.executeCommand("revealInExplorer", targetUri);
+        return;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") {
+        const workspaceRootFallback = getUniqueWorkspaceFolderMatchByName(path.basename(normalizedPath), workspaceFolders);
+        if (workspaceRootFallback) {
+          await vscode.commands.executeCommand("workbench.view.explorer");
+          await vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(workspaceRootFallback));
+          return;
+        }
+        void vscode.window.showWarningMessage(`The selected path no longer exists: ${normalizedPath}`);
+        return;
+      }
+      // Fall through to the existing open flow so other file-system errors keep the previous behavior.
+    }
+    if (!withinWorkspaceRoot) {
+      await vscode.commands.executeCommand("revealFileInOS", targetUri);
+      return;
+    }
     if (/\.trace\.md$/iu.test(normalizedPath) && !Number.isInteger(startLine) && !Number.isInteger(endLine)) {
-      const targetUri = vscode.Uri.file(normalizedPath);
       switch (getTraceableEvidenceOpenTarget()) {
         case "source":
           await vscode.commands.executeCommand("vscode.open", targetUri, {
@@ -1329,7 +1710,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const targetLine = Number.isInteger(startLine) ? Math.max(0, (startLine ?? 1) - 1) : 0;
     const targetEndLine = Number.isInteger(endLine) ? Math.max(targetLine, (endLine ?? startLine ?? 1) - 1) : targetLine;
-    await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(normalizedPath), {
+    await vscode.commands.executeCommand("vscode.open", targetUri, {
       preview: false,
       preserveFocus: false,
       selection: new vscode.Range(targetLine, 0, targetEndLine, 0)
@@ -1378,6 +1759,7 @@ export function activate(context: vscode.ExtensionContext): void {
     };
     traceableEvidencePanels.set(panelKey, panel);
     traceableEvidencePanelSources.set(panelKey, resolvedUri);
+    traceableEvidenceLoadedToolDetails.set(panelKey, new Map());
     activeTraceableEvidencePanelKey = panelKey;
     const panelDisposables: vscode.Disposable[] = [];
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1440,6 +1822,7 @@ export function activate(context: vscode.ExtensionContext): void {
         traceableEvidencePanels.delete(panelKey);
       }
       traceableEvidencePanelSources.delete(panelKey);
+      traceableEvidenceLoadedToolDetails.delete(panelKey);
       if (activeTraceableEvidencePanelKey === panelKey) {
         activeTraceableEvidencePanelKey = undefined;
       }
@@ -1452,6 +1835,30 @@ export function activate(context: vscode.ExtensionContext): void {
         const startLine = typeof message.startLine === "number" ? message.startLine : undefined;
         const endLine = typeof message.endLine === "number" ? message.endLine : undefined;
         await openTraceableFile(message.filePath, startLine, endLine);
+        return;
+      }
+      if (message.type === "loadToolDetail" && typeof message.callId === "string") {
+        const callId = message.callId.trim();
+        if (!callId) {
+          return;
+        }
+        const parsedState = (await readTraceableEvidenceViewState(resolvedUri)).parsedState;
+        const initialSnapshot = parsedState?.snapshot;
+        if (!initialSnapshot || !parsedState) {
+          return;
+        }
+        const loadedDetails = buildPersistedToolDetailMap(
+          initialSnapshot,
+          parsedState.result,
+          traceableEvidenceLoadedToolDetails.get(panelKey) ?? new Map<string, TraceableSubagentToolDetail>()
+        );
+        const detail = buildPersistedToolDetail(initialSnapshot, parsedState.result, callId)
+          ?? traceableStatusBar.getObservedToolDetail(callId)
+          ?? await tryBuildRehydratedReadToolDetail(initialSnapshot, callId)
+          ?? buildUnavailableToolDetail(initialSnapshot, callId);
+        loadedDetails.set(callId, detail);
+        traceableEvidenceLoadedToolDetails.set(panelKey, loadedDetails);
+        renderTraceableEvidencePanel(panel, resolvedUri, initialSnapshot, loadedDetails);
       }
     });
     const initialState = await readTraceableEvidenceViewState(resolvedUri);
@@ -1459,7 +1866,18 @@ export function activate(context: vscode.ExtensionContext): void {
       renderTraceableEvidenceErrorPanel(panel, resolvedUri, "This TRACEABLE evidence file does not contain a readable Traceable State block.");
       return;
     }
-    renderTraceableEvidencePanel(panel, resolvedUri, initialState.parsedState.snapshot);
+    const initialLoadedToolDetails = buildPersistedToolDetailMap(
+      initialState.parsedState.snapshot,
+      initialState.parsedState.result,
+      traceableEvidenceLoadedToolDetails.get(panelKey) ?? new Map()
+    );
+    traceableEvidenceLoadedToolDetails.set(panelKey, initialLoadedToolDetails);
+    renderTraceableEvidencePanel(
+      panel,
+      resolvedUri,
+      initialState.parsedState.snapshot,
+      initialLoadedToolDetails
+    );
   };
   const hideTraceablePanel = async (options: { restoreFocus?: boolean; hideStatusBar?: boolean; resetKeepOpen?: boolean } = {}): Promise<void> => {
     await vscode.commands.executeCommand("setContext", TRACEABLE_PANEL_VISIBLE_CONTEXT, false);
@@ -1483,6 +1901,7 @@ export function activate(context: vscode.ExtensionContext): void {
       traceableStatusPanel.update(snapshot);
     },
     openTraceableFile,
+    async (callId) => traceableStatusBar.getObservedToolDetail(callId),
     async () => {
       if (!activeTraceableRun || activeTraceableRun.cancelSource.token.isCancellationRequested) {
         void vscode.window.showInformationMessage("No active TRACEABLE run is currently available to stop.");
@@ -1583,8 +2002,7 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showErrorMessage("Open a .trace.md evidence file first, or invoke the command from a .trace.md file.");
         return;
       }
-      const markdown = await fs.readFile(evidenceUri.fsPath, "utf8");
-      const parsed = parseTraceableEvidenceStateMarkdown(markdown);
+      const { markdown, parsed } = await readParsedTraceableEvidenceFromFileWithRetry(evidenceUri.fsPath);
       if (!parsed) {
         void vscode.window.showErrorMessage("This TRACEABLE evidence file does not contain a readable Traceable State block.");
         return;
@@ -1688,8 +2106,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (!resolvedEvidenceFilePath.toLowerCase().endsWith(".trace.md")) {
           throw new Error(`TRACEABLE evidence view requires a .trace.md file. Got ${JSON.stringify(resolvedEvidenceFilePath)}.`);
         }
-        const markdown = await fs.readFile(resolvedEvidenceFilePath, "utf8");
-        const parsed = parseTraceableEvidenceStateMarkdown(markdown);
+        const { markdown, parsed } = await readParsedTraceableEvidenceFromFileWithRetry(resolvedEvidenceFilePath);
         if (!parsed) {
           throw new Error(`TRACEABLE evidence file ${JSON.stringify(resolvedEvidenceFilePath)} does not contain a readable Traceable State block.`);
         }
@@ -1770,10 +2187,9 @@ export function activate(context: vscode.ExtensionContext): void {
             })();
           }
           const reporter = traceableStatusBar.startRun({
-            agentName: effectiveInput.agentRole?.name,
-            modelLabel: effectiveInput.modelSelector?.id
+            agentName: effectiveInput.agentRole?.name
           });
-          reporter.setRequestSummary?.(buildTraceableRequestSummary(effectiveInput));
+          reporter.setRequestSummary?.(buildTraceableRequestSummary(effectiveInput, input));
           reporter.update("queued");
           return {
             preparedInput,

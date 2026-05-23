@@ -5,6 +5,7 @@ import type {
   TraceableSubagentRequestSummaryItem,
   TraceableSubagentStatusHeader,
   TraceableSubagentStatusReporter,
+  TraceableSubagentToolDetail,
   TraceableSubagentToolStatusEvent
 } from "./traceableSubagent";
 import type {
@@ -226,6 +227,7 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
   private clearTimer: NodeJS.Timeout | undefined;
   private trailItems = new Map<string, TrailItemState>();
   private observedTools = new Map<string, ObservedToolState>();
+  private observedToolDetails = new Map<string, TraceableSubagentToolDetail>();
   private nextTrailPriority = TRAIL_ITEM_BASE_PRIORITY;
   private currentStatus: StatusPresentationState = {
     phase: "running",
@@ -291,6 +293,12 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
         }
         this.recordToolEvent(event);
       },
+      recordToolDetail: (detail: TraceableSubagentToolDetail) => {
+        if (runId !== this.activeRunId) {
+          return;
+        }
+        this.recordToolDetail(detail);
+      },
       finish: (message: string, options?: { error?: boolean; warning?: boolean; keepMs?: number; detail?: string }) => {
         if (runId !== this.activeRunId) {
           return;
@@ -324,6 +332,15 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
     for (const entry of this.trailItems.values()) {
       entry.item.hide();
     }
+  }
+
+  getObservedToolDetail(callId: string): TraceableSubagentToolDetail | undefined {
+    const trimmed = callId.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const detail = this.observedToolDetails.get(trimmed);
+    return detail ? { ...detail } : undefined;
   }
 
   private showSpinner(runId: number, message: string): void {
@@ -432,6 +449,21 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
     this.publishDetailView();
   }
 
+  private recordToolDetail(detail: TraceableSubagentToolDetail): void {
+    const normalizedCallId = detail.callId.trim();
+    if (!normalizedCallId) {
+      return;
+    }
+    const previous = this.observedToolDetails.get(normalizedCallId);
+    this.observedToolDetails.set(normalizedCallId, {
+      ...previous,
+      ...detail,
+      callId: normalizedCallId,
+      toolName: detail.toolName.trim() || previous?.toolName || "tool",
+      partKinds: detail.partKinds ? [...detail.partKinds] : previous?.partKinds
+    });
+  }
+
   private recordStatusEvent(status: StatusPresentationState): void {
     const previous = this.statusHistory.at(-1);
     if (previous && previous.phase === status.phase && previous.message === status.message && previous.detail === status.detail) {
@@ -453,6 +485,7 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
     }
     this.trailItems.clear();
     this.observedTools.clear();
+    this.observedToolDetails.clear();
     this.nextTrailPriority = TRAIL_ITEM_BASE_PRIORITY;
     if (publish) {
       this.publishDetailView();

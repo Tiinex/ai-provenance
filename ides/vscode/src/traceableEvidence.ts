@@ -265,14 +265,27 @@ function backfillLegacyParsedResult(result: TraceableSubagentRunResult | undefin
   };
 }
 
+function extractTraceableEvidenceStateJson(markdown: string): string | undefined {
+  const startMatch = /## Traceable State\s+```json\s*\r?\n/u.exec(markdown);
+  if (!startMatch) {
+    return undefined;
+  }
+  const remainder = markdown.slice(startMatch.index + startMatch[0].length);
+  const closingMatch = /^```[ \t]*$/um.exec(remainder);
+  if (closingMatch?.index === undefined) {
+    return undefined;
+  }
+  return remainder.slice(0, closingMatch.index).trim();
+}
+
 export function parseTraceableEvidenceStateMarkdown(markdown: string): ParsedTraceableEvidenceState | undefined {
-  const match = markdown.match(/## Traceable State\s+```json\s*([\s\S]*?)\s*```/u);
-  if (!match?.[1]) {
+  const jsonBlock = extractTraceableEvidenceStateJson(markdown);
+  if (!jsonBlock) {
     return undefined;
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(match[1]);
+    parsed = JSON.parse(jsonBlock);
   } catch {
     return undefined;
   }

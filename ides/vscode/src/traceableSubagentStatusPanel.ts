@@ -1,7 +1,9 @@
 import * as vscode from "vscode";
 import path from "node:path";
 import type { TraceableSubagentDetailSnapshot } from "./traceableSubagentStatusDetail";
+import { buildTraceableMarkdownPathRenderOptions, resolveTraceablePathTarget, type TraceableResolvedPathTarget } from "./traceableContract";
 import { expandToolReferenceKeys, normalizeToolReferenceKey } from "./toolNameNormalization";
+import type { TraceableSubagentToolDetail } from "./traceableSubagent";
 
 export const TRACEABLE_SUBAGENT_PANEL_CONTAINER_ID = "tiinexAiProvenanceTraceablePanel";
 export const TRACEABLE_SUBAGENT_PANEL_VIEW_ID = "tiinex.aiProvenance.traceableStatus";
@@ -28,6 +30,8 @@ interface PanelDisplayEvent {
   note?: string;
 }
 
+type PanelLoadedToolDetail = TraceableSubagentToolDetail;
+
 type PanelActivityEntry =
   | {
     kind: "ancestor";
@@ -35,11 +39,17 @@ type PanelActivityEntry =
     occurredAt: string;
     title: string;
     filePath: string;
+    startedAt?: string;
+    updatedAt?: string;
     finalSummary?: string;
     completionClaim?: string;
     status?: TraceableSubagentDetailSnapshot["status"];
     header?: TraceableSubagentDetailSnapshot["header"];
+    evidenceFile?: TraceableSubagentDetailSnapshot["evidenceFile"];
     requestSummary?: TraceableSubagentDetailSnapshot["requestSummary"];
+    statusHistory?: TraceableSubagentDetailSnapshot["statusHistory"];
+    recentTools?: TraceableSubagentDetailSnapshot["recentTools"];
+    timingSummary?: TraceableSubagentDetailSnapshot["timingSummary"];
     resultSummary?: TraceableSubagentDetailSnapshot["resultSummary"];
   }
   | {
@@ -78,6 +88,12 @@ type PanelActivityEntry =
     goalCount: number;
     questionCount: number;
     hasNextStart: boolean;
+    nextSuggestedStart?: string;
+    remainingGoals?: string[];
+    openQuestions?: string[];
+    constraints?: string[];
+    relevantFileAnchors?: string[];
+    relevantArtifactAnchors?: string[];
   }
   | {
     kind: "tool";
@@ -121,6 +137,37 @@ interface ToolRuntimeSummary {
   deferredCount: number;
   failureCount: number;
   totalElapsedMs: number;
+}
+
+type PanelOpenFilePayload = {
+  type: "openFile";
+  startLine?: number;
+  endLine?: number;
+} & (
+  | {
+    filePath: string;
+    baseDir?: string;
+    target?: never;
+  }
+  | {
+    target: TraceableResolvedPathTarget;
+    filePath?: never;
+    baseDir?: never;
+  }
+);
+
+function isTraceableResolvedPathTarget(value: unknown): value is TraceableResolvedPathTarget {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<TraceableResolvedPathTarget>;
+  if (candidate.kind === "absolute") {
+    return typeof candidate.path === "string";
+  }
+  if (candidate.kind === "relative") {
+    return typeof candidate.path === "string" && typeof candidate.baseDir === "string";
+  }
+  return false;
 }
 
 function mergeMinLine(left: number | undefined, right: number | undefined): number | undefined {
@@ -313,6 +360,41 @@ function renderStatusGroupActionIcon(displayEvent: PanelDisplayEvent | undefined
   }
   const statusClass = `event-status-group-action-${displayEvent.outcome}`;
   return `<span class="event-icon event-status-group-action-icon ${statusClass}" style="color: ${statusGroupIconColorForOutcome(displayEvent.outcome)};" aria-hidden="true">${escapeHtml(eventIcon(displayEvent))}</span>`;
+}
+
+function ancestorSummaryIconColor(kind: "handoff" | "output" | "request" | "status"): string {
+  switch (kind) {
+    case "handoff":
+      return "color-mix(in srgb, var(--accent-soft) 82%, var(--fg))";
+    case "output":
+      return "var(--vscode-terminal-ansiGreen)";
+    case "request":
+      return "color-mix(in srgb, var(--accent) 78%, var(--fg))";
+    case "status":
+      return "color-mix(in srgb, var(--accent) 74%, var(--muted))";
+  }
+}
+
+function renderAncestorSummaryActionIcon(kind: "handoff" | "output" | "request" | "status"): string {
+  if (kind === "request") {
+    return `<span class="event-icon event-ancestor-action-icon" style="color: ${ancestorSummaryIconColor(kind)};" aria-hidden="true">${renderCodicon("mail")}</span>`;
+  }
+  const symbol = kind === "handoff" ? "↪" : kind === "output" ? "↩" : "↥";
+  return `<span class="event-icon event-ancestor-action-icon" style="color: ${ancestorSummaryIconColor(kind)};" aria-hidden="true">${escapeHtml(symbol)}</span>`;
+}
+
+function renderAncestorStatusChip(entry: Extract<PanelActivityEntry, { kind: "ancestor" }>): string[] {
+  const statusMessage = entry.status?.message?.trim();
+  if (statusMessage) {
+    const phaseClass = entry.status?.phase === "error"
+      ? "failure"
+      : (entry.status?.phase ?? "completed");
+    return [`<span class="chip chip-status-phase chip-status-phase-${escapeHtml(phaseClass)}" title="Earlier trace status">${escapeHtml(statusMessage)}</span>`];
+  }
+  const completionClaim = entry.completionClaim?.trim();
+  return completionClaim
+    ? [`<span class="chip chip-status-phase" title="Earlier trace completion claim">${escapeHtml(completionClaim)}</span>`]
+    : [];
 }
 
 function statusGroupIconColorForOutcome(outcome: PanelEventOutcome): string {
@@ -698,6 +780,264 @@ function eventCountChipLabel(count: number): string {
   return `${count}x`;
 }
 
+function compactChipText(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+  return `${compact.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+function normalizeInputString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function normalizeInputNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeInputBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function buildPanelOpenFilePayload(
+  targetPath: string,
+  evidenceFilePath: string | undefined,
+  startLine?: number,
+  endLine?: number
+): PanelOpenFilePayload {
+  const trimmedTargetPath = targetPath.trim();
+  if (!trimmedTargetPath) {
+    return { type: "openFile", filePath: trimmedTargetPath, startLine, endLine };
+  }
+  if (!path.isAbsolute(trimmedTargetPath) && !/^file:\/\//iu.test(trimmedTargetPath)) {
+    return { type: "openFile", filePath: trimmedTargetPath, startLine, endLine };
+  }
+  return {
+    type: "openFile",
+    target: resolveTraceablePathTarget(trimmedTargetPath, buildTraceableMarkdownPathRenderOptions(evidenceFilePath)),
+    startLine,
+    endLine
+  };
+}
+
+function buildObservedOpenFilePayload(targetPath: string, startLine?: number, endLine?: number): PanelOpenFilePayload {
+  return {
+    type: "openFile",
+    filePath: targetPath.trim(),
+    startLine,
+    endLine
+  };
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    .map((entry) => entry.trim());
+}
+
+function summarizeChipPath(rawPath: string): string {
+  const trimmed = rawPath.trim().replace(/[\\/]+$/, "");
+  if (!trimmed) {
+    return rawPath.trim();
+  }
+  const baseName = path.basename(trimmed);
+  return baseName || trimmed;
+}
+
+function normalizeComparableWorkspacePath(value: string): string {
+  return path.resolve(value)
+    .replace(/\\+/g, "/")
+    .replace(/\/+$/u, "")
+    .toLowerCase();
+}
+
+function isPathWithinAnyWorkspaceRoot(targetPath: string): boolean {
+  const normalizedTarget = normalizeComparableWorkspacePath(targetPath);
+  return (vscode.workspace.workspaceFolders ?? []).some((folder) => {
+    const normalizedRoot = normalizeComparableWorkspacePath(folder.uri.fsPath);
+    return normalizedTarget === normalizedRoot || normalizedTarget.startsWith(`${normalizedRoot}/`);
+  });
+}
+
+function describePathChipAction(rawPath: string): string {
+  const trimmedPath = rawPath.trim();
+  if (!trimmedPath) {
+    return "Open path";
+  }
+  if (path.isAbsolute(trimmedPath) || /^file:\/\//iu.test(trimmedPath)) {
+    if (/^file:\/\//iu.test(trimmedPath)) {
+      return `Open or reveal path: ${trimmedPath}`;
+    }
+    return isPathWithinAnyWorkspaceRoot(trimmedPath)
+      ? `Open or reveal in VS Code: ${trimmedPath}`
+      : `${process.platform === "win32" ? "Reveal in Windows File Explorer" : "Reveal in system file explorer"}: ${trimmedPath}`;
+  }
+  return `Open or reveal from workspace context: ${trimmedPath}`;
+}
+
+function renderParameterChip(
+  label: string,
+  value: string,
+  title?: string,
+  messagePayload?: PanelOpenFilePayload
+): string {
+  const tagName = messagePayload ? "button" : "span";
+  const messageAttribute = messagePayload
+    ? ` data-message="${escapeHtml(JSON.stringify(messagePayload))}"`
+    : "";
+  const buttonTypeAttribute = messagePayload ? ` type="button"` : "";
+  const className = ["chip", "chip-param", "chip-collapsible", messagePayload ? "chip-button" : ""].filter(Boolean).join(" ");
+  return [
+    `<${tagName} class="${className}"${buttonTypeAttribute}${messageAttribute}${title ? ` title="${escapeHtml(title)}"` : ""}>`,
+    `<span class="chip-hover-label">${escapeHtml(label)}</span>`,
+    `<span class="chip-value">${escapeHtml(value)}</span>`,
+    `</${tagName}>`
+  ].join("");
+}
+
+function buildEventParameterChips(event: PanelDisplayEvent, evidenceFilePath?: string): string[] {
+  const chips: string[] = [];
+  const input = event.event.input ?? {};
+  const normalizedToolName = normalizeToolBadgeKey(event.event.toolName);
+  const pushPathChip = (label: string, rawPath: string | undefined) => {
+    if (!rawPath) {
+      return;
+    }
+    const payload = buildObservedOpenFilePayload(rawPath);
+    chips.push(renderParameterChip(
+      label,
+      summarizeChipPath(rawPath),
+      `${label}: ${rawPath}\n${describePathChipAction(rawPath)}`,
+      payload
+    ));
+  };
+  const pushQueryChip = (label: string, rawQuery: string | undefined) => {
+    if (!rawQuery) {
+      return;
+    }
+    chips.push(renderParameterChip(label, compactChipText(rawQuery, 26), `${label}: ${rawQuery}`));
+  };
+
+  switch (normalizedToolName) {
+    case "list_directory": {
+      pushPathChip("dir", normalizeInputString(input.path));
+      break;
+    }
+    case "find_files":
+    case "file_search": {
+      pushQueryChip("find", normalizeInputString(input.query));
+      pushQueryChip("in", normalizeInputString(input.includePattern));
+      const maxResults = normalizeInputNumber(input.maxResults);
+      if (maxResults !== undefined && maxResults > 0) {
+        chips.push(renderParameterChip("top", String(maxResults), `top: ${maxResults} results`));
+      }
+      break;
+    }
+    case "find_text_in_files":
+    case "text_search":
+    case "semantic_search": {
+      pushQueryChip("query", normalizeInputString(input.query));
+      pushQueryChip("in", normalizeInputString(input.includePattern));
+      const maxResults = normalizeInputNumber(input.maxResults);
+      if (maxResults !== undefined && maxResults > 0) {
+        chips.push(renderParameterChip("top", String(maxResults), `top: ${maxResults} results`));
+      }
+      break;
+    }
+    case "get_errors": {
+      const filePaths = normalizeStringArray(input.filePaths);
+      if (filePaths.length === 1) {
+        pushPathChip("target", filePaths[0]);
+      } else if (filePaths.length > 1) {
+        chips.push(renderParameterChip("targets", String(filePaths.length), `${filePaths.length} explicit targets`));
+      } else {
+        chips.push(renderParameterChip("scope", "all", "Checking all available targets"));
+      }
+      break;
+    }
+    case "list_agent_sessions":
+    case "survey_agent_sessions": {
+      const scope = normalizeInputString(input.scope);
+      if (scope) {
+        chips.push(renderParameterChip("scope", scope, `scope: ${scope}`));
+      }
+      const limit = normalizeInputNumber(input.limit);
+      if (limit !== undefined && limit > 0) {
+        chips.push(renderParameterChip("limit", String(limit), `limit: ${limit}`));
+      }
+      break;
+    }
+    case "get_agent_session_snapshot":
+    case "get_agent_session_index":
+    case "get_agent_session_profile": {
+      const scope = normalizeInputString(input.scope);
+      if (scope) {
+        chips.push(renderParameterChip("scope", scope, `scope: ${scope}`));
+      }
+      const sessionId = normalizeInputString(input.sessionId);
+      if (sessionId) {
+        chips.push(renderParameterChip("session", compactChipText(sessionId, 10), `session: ${sessionId}`));
+      }
+      if (normalizeInputBoolean(input.latest)) {
+        chips.push(renderParameterChip("pick", "latest", "Using latest discovered session"));
+      }
+      break;
+    }
+    case "get_agent_session_window": {
+      const scope = normalizeInputString(input.scope);
+      if (scope) {
+        chips.push(renderParameterChip("scope", scope, `scope: ${scope}`));
+      }
+      const sessionId = normalizeInputString(input.sessionId);
+      if (sessionId) {
+        chips.push(renderParameterChip("session", compactChipText(sessionId, 10), `session: ${sessionId}`));
+      }
+      if (normalizeInputBoolean(input.latest)) {
+        chips.push(renderParameterChip("pick", "latest", "Using latest discovered session"));
+      }
+      pushQueryChip("anchor", normalizeInputString(input.anchorText));
+      const before = normalizeInputNumber(input.before);
+      const after = normalizeInputNumber(input.after);
+      if (before !== undefined || after !== undefined) {
+        chips.push(renderParameterChip("window", `${before ?? 0}/${after ?? 0}`, `window: ${before ?? 0} before, ${after ?? 0} after`));
+      }
+      break;
+    }
+    case "export_agent_evidence_transcript": {
+      const scope = normalizeInputString(input.scope);
+      if (scope) {
+        chips.push(renderParameterChip("scope", scope, `scope: ${scope}`));
+      }
+      const sessionId = normalizeInputString(input.sessionId);
+      if (sessionId) {
+        chips.push(renderParameterChip("session", compactChipText(sessionId, 10), `session: ${sessionId}`));
+      }
+      if (normalizeInputBoolean(input.latest)) {
+        chips.push(renderParameterChip("pick", "latest", "Using latest discovered session"));
+      }
+      pushQueryChip("anchor", normalizeInputString(input.anchorText));
+      if (normalizeInputBoolean(input.afterLatestCompact)) {
+        chips.push(renderParameterChip("slice", "compact+", "Restricted to the latest compact boundary"));
+      }
+      const maxBlocks = normalizeInputNumber(input.maxBlocks);
+      if (maxBlocks !== undefined && maxBlocks > 0) {
+        chips.push(renderParameterChip("blocks", String(maxBlocks), `max blocks: ${maxBlocks}`));
+      }
+      const detailLevel = normalizeInputString(input.detailLevel);
+      if (detailLevel) {
+        chips.push(renderParameterChip("detail", detailLevel, `detail: ${detailLevel}`));
+      }
+      break;
+    }
+  }
+
+  return chips;
+}
+
 function mergeContiguousRanges(
   ranges: Array<{ startLine: number; endLine: number }>,
   startLine: number,
@@ -721,10 +1061,13 @@ function buildEventChips(
   event: PanelDisplayEvent,
   options?: {
     durationPosition?: "before-file" | "after-file";
+    evidenceFilePath?: string;
+    includeDurationChip?: boolean;
   }
 ): string[] {
   const chips: string[] = [];
   const durationPosition = options?.durationPosition ?? "before-file";
+  const includeDurationChip = options?.includeDurationChip !== false;
   const toolIcon = toolBadgeIcon(event.event.toolName);
   const toolLabel = humanizeToolName(event.event.toolName);
   const toolChipClasses = ["chip", "chip-tool", toolIcon ? "chip-collapsible" : ""].filter(Boolean).join(" ");
@@ -739,6 +1082,7 @@ function buildEventChips(
   if (event.count > 1) {
     chips.push(`<span class="chip" title="Merged ${escapeHtml(String(event.count))} tool calls">${escapeHtml(eventCountChipLabel(event.count))}</span>`);
   }
+  chips.push(...buildEventParameterChips(event, options?.evidenceFilePath));
   for (const [index, range] of event.ranges.entries()) {
     if (index > 0) {
       chips.push(`<span class="chip-separator" aria-hidden="true">|</span>`);
@@ -757,7 +1101,7 @@ function buildEventChips(
     event.running,
     event.running ? "Current tool duration" : "Recorded tool duration"
   );
-  if (durationPosition === "before-file") {
+  if (includeDurationChip && durationPosition === "before-file") {
     chips.push(durationChip);
   }
   const filePath = event.filePath ?? "";
@@ -766,10 +1110,10 @@ function buildEventChips(
     const hasSingleRange = event.ranges.length === 1;
     const startLine = hasSingleRange ? event.ranges[0]?.startLine : undefined;
     const endLine = hasSingleRange ? event.ranges[0]?.endLine : undefined;
-    const payload = escapeHtml(JSON.stringify({ type: "openFile", filePath, startLine, endLine }));
-    chips.push(`<button class="chip chip-button" data-message="${payload}" title="${escapeHtml(filePath)}">${escapeHtml(fileName)}</button>`);
+    const payload = escapeHtml(JSON.stringify(buildPanelOpenFilePayload(filePath, options?.evidenceFilePath, startLine, endLine)));
+    chips.push(`<button class="chip chip-button" data-message="${payload}" title="${escapeHtml(describePathChipAction(filePath))}">${escapeHtml(fileName)}</button>`);
   }
-  if (durationPosition === "after-file") {
+  if (includeDurationChip && durationPosition === "after-file") {
     chips.push(durationChip);
   }
   return chips;
@@ -861,6 +1205,9 @@ function renderRequestSummaryBadge(item: PanelRequestSummaryItem, snapshot?: Tra
   }
   if (normalizedLabel === "model") {
     return renderHeaderBadge(item.label, item.value, "activity-request-badge header-badge-model", item.title);
+  }
+  if (normalizedLabel === "inherited") {
+    return renderHeaderBadge(item.label, item.value, "activity-request-badge activity-request-badge-inherited", item.title, "link");
   }
   if (normalizedLabel === "parent trace") {
     const parentTracePath = item.title?.trim() || item.value.trim();
@@ -992,12 +1339,32 @@ function renderRequestSummaryChips(summary: PanelRequestSummaryItem[], snapshot?
 }
 
 function renderRequestDetailSection(label: string, value: string): string {
+  return renderDetailSectionMarkup(label, escapeHtml(value));
+}
+
+function renderDetailSectionMarkup(label: string, valueMarkup: string): string {
   return [
     `<div class="event-request-detail-section">`,
     `<div class="event-request-detail-label">${escapeHtml(label)}</div>`,
-    `<div class="event-request-detail-value">${escapeHtml(value)}</div>`,
+    `<div class="event-request-detail-value">${valueMarkup}</div>`,
     `</div>`
   ].join("");
+}
+
+function extractOutputEvidencePaths(text: string): string[] {
+  const matches = text.match(/[A-Za-z]:\\[^\n;]+/g) ?? [];
+  return [...new Set(matches
+    .map((match) => match.trim().replace(/[.,)\]]+$/u, ""))
+    .filter(Boolean))];
+}
+
+function renderPathChipRow(paths: string[], evidenceFilePath: string | undefined, label: string): string {
+  return `<div class="event-detail-chip-row">${paths.map((rawPath) => renderParameterChip(
+    label,
+    summarizeChipPath(rawPath),
+    `${label}: ${rawPath}\n${describePathChipAction(rawPath)}`,
+    buildObservedOpenFilePayload(rawPath)
+  )).join("")}</div>`;
 }
 
 function compactModeDetailText(title: string, fallbackValue: string): string {
@@ -1063,11 +1430,17 @@ function buildActivityEntries(snapshot: TraceableSubagentDetailSnapshot): PanelA
       occurredAt: lineageEntry.occurredAt,
       title: lineageEntry.title,
       filePath: lineageEntry.filePath,
+      startedAt: lineageEntry.startedAt,
+      updatedAt: lineageEntry.updatedAt,
       finalSummary: lineageEntry.finalSummary,
       completionClaim: lineageEntry.completionClaim,
       status: lineageEntry.status,
       header: lineageEntry.header,
+      evidenceFile: lineageEntry.evidenceFile,
       requestSummary: lineageEntry.requestSummary,
+      statusHistory: lineageEntry.statusHistory,
+      recentTools: lineageEntry.recentTools,
+      timingSummary: lineageEntry.timingSummary,
       resultSummary: lineageEntry.resultSummary
     });
   }
@@ -1148,11 +1521,7 @@ function buildActivityEntries(snapshot: TraceableSubagentDetailSnapshot): PanelA
 
 function renderAncestorActivity(entry: Extract<PanelActivityEntry, { kind: "ancestor" }>): string {
   const summaryText = entry.finalSummary?.trim() || "Earlier trace in this continuation chain.";
-  const statusChip = entry.status?.message?.trim()
-    ? [`<span class="chip chip-lineage-claim" title="Earlier trace status">${escapeHtml(entry.status.message.trim())}</span>`]
-    : entry.completionClaim?.trim()
-      ? [`<span class="chip chip-lineage-claim" title="Earlier trace completion claim">${escapeHtml(entry.completionClaim.trim())}</span>`]
-      : [];
+  const statusChip = renderAncestorStatusChip(entry);
   const lineageSnapshot: TraceableSubagentDetailSnapshot = {
     header: entry.header ?? {
       agentName: "Trace lane",
@@ -1171,52 +1540,61 @@ function renderAncestorActivity(entry: Extract<PanelActivityEntry, { kind: "ance
       message: entry.completionClaim?.trim() || "completed",
       detail: summaryText
     },
+    evidenceFile: entry.evidenceFile,
     requestSummary: entry.requestSummary ?? [],
-    statusHistory: [],
-    recentTools: [],
-    startedAt: entry.occurredAt,
-    updatedAt: entry.occurredAt,
+    statusHistory: entry.statusHistory ?? [],
+    recentTools: entry.recentTools ?? [],
+    timingSummary: entry.timingSummary,
+    startedAt: entry.startedAt ?? entry.occurredAt,
+    updatedAt: entry.updatedAt ?? entry.occurredAt,
     resultSummary: entry.resultSummary
   };
-  const childRows: string[] = [];
-  if ((entry.requestSummary?.length ?? 0) > 0) {
-    childRows.push(renderRequestActivity({
-      kind: "request",
-      id: `${entry.id}:request`,
-      occurredAt: entry.occurredAt,
-      requestSummary: entry.requestSummary ?? [],
-      snapshot: lineageSnapshot
-    }));
-  }
-  if (summaryText) {
-    childRows.push(renderOutputActivity({
-      kind: "output",
-      id: `${entry.id}:output`,
-      occurredAt: entry.occurredAt,
-      text: summaryText
-    }));
-  }
   const lineageHandoff = buildCarryHandoffActivity(lineageSnapshot);
-  if (lineageHandoff) {
-    childRows.push(renderHandoffActivity({
-      ...lineageHandoff,
-      id: `${entry.id}:handoff`
-    }));
-  }
+  const childRows = groupActivityEntries(buildActivityEntries(lineageSnapshot).filter((activity) => activity.kind !== "ancestor"))
+    .map((activity) => renderActivityRow(activity, entry.filePath));
+  const latestAncestorSignal = lineageHandoff
+    ? {
+      kind: "handoff" as const,
+      note: lineageHandoff.summary.trim() || lineageHandoff.note.trim() || summaryText,
+      chips: [
+        ...statusChip,
+        `<span class="chip chip-handoff-kind" title="Carry package type">${escapeHtml(lineageHandoff.disposition)}</span>`,
+        lineageHandoff.goalCount > 0 ? `<span class="chip chip-handoff-scope" title="Remaining goals carried forward">${escapeHtml(String(lineageHandoff.goalCount))} goal${lineageHandoff.goalCount === 1 ? "" : "s"}</span>` : "",
+        lineageHandoff.questionCount > 0 ? `<span class="chip chip-handoff-scope" title="Open questions carried forward">${escapeHtml(String(lineageHandoff.questionCount))} question${lineageHandoff.questionCount === 1 ? "" : "s"}</span>` : "",
+        lineageHandoff.hasNextStart ? `<span class="chip chip-handoff-scope" title="A next suggested start is included">next start</span>` : ""
+      ].filter(Boolean)
+    }
+    : summaryText
+      ? {
+        kind: "output" as const,
+        note: summaryText,
+        chips: statusChip
+      }
+      : (entry.requestSummary?.length ?? 0) > 0
+        ? {
+          kind: "request" as const,
+          note: "Earlier trace request context is available.",
+          chips: statusChip
+        }
+        : {
+          kind: "status" as const,
+          note: summaryText,
+          chips: statusChip
+        };
   if (childRows.length === 0) {
     return [
       `<li class="event-row event-ancestor" title="${escapeHtml(entry.filePath)}">`,
-      `<div class="event-body"><div class="event-main"><span class="event-icon">↥</span><span class="event-label">Earlier Trace</span><span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(entry.title)}</span></span></div><div class="event-note">${escapeHtml(summaryText)}</div></div>`,
-      renderActivityMeta(entry.occurredAt, "", statusChip),
+      `<div class="event-body"><div class="event-main"><span class="event-icon">↥</span><span class="event-label">Earlier Trace</span><span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(entry.title)}</span></span></div><div class="event-note">${escapeHtml(latestAncestorSignal.note)}</div></div>`,
+      renderActivityMeta(entry.occurredAt, "", latestAncestorSignal.chips),
       `</li>`
     ].join("");
   }
   return [
     `<li class="ancestor-group-item">`,
-    `<details class="ancestor-group" data-ancestor-group-id="${escapeHtml(entry.id)}" open>`,
+    `<details class="ancestor-group" data-ancestor-group-id="${escapeHtml(entry.id)}">`,
     `<summary class="event-row event-ancestor" title="${escapeHtml(entry.filePath)}">`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon event-ancestor-toggle">${renderCodicon("chevron-right")}</span><span class="event-label">Earlier Trace</span><span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(entry.title)}</span></span></div><div class="event-note">${escapeHtml(summaryText)}</div></div>`,
-    renderActivityMeta(entry.occurredAt, "", statusChip),
+    `<div class="event-body"><div class="event-main"><span class="event-icon event-ancestor-toggle">${renderCodicon("chevron-right")}</span>${renderAncestorSummaryActionIcon(latestAncestorSignal.kind)}<span class="event-label">Earlier Trace</span><span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(entry.title)}</span></span></div><div class="event-note">${escapeHtml(latestAncestorSignal.note)}</div></div>`,
+    renderActivityMeta(entry.occurredAt, "", latestAncestorSignal.chips),
     `</summary>`,
     `<ul class="ancestor-group-children">${childRows.join("")}</ul>`,
     `</details>`,
@@ -1294,7 +1672,13 @@ function buildCarryHandoffActivity(snapshot: TraceableSubagentDetailSnapshot): E
     disposition: resolvedDisposition,
     goalCount,
     questionCount,
-    hasNextStart
+    hasNextStart,
+    nextSuggestedStart: summaryState?.nextSuggestedStart?.trim() || undefined,
+    remainingGoals: Array.isArray(summaryState?.remainingGoals) ? summaryState.remainingGoals.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [],
+    openQuestions: Array.isArray(summaryState?.openQuestions) ? summaryState.openQuestions.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [],
+    constraints: Array.isArray(summaryState?.constraints) ? summaryState.constraints.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [],
+    relevantFileAnchors: Array.isArray(summaryState?.relevantFileAnchors) ? summaryState.relevantFileAnchors.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [],
+    relevantArtifactAnchors: Array.isArray(summaryState?.relevantArtifactAnchors) ? summaryState.relevantArtifactAnchors.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : []
   };
 }
 
@@ -1327,14 +1711,15 @@ function renderActivityMeta(
   extraChips: string[]
 ): string {
   const chips = [...extraChips];
+  const timingChips: string[] = [];
   const clockLabel = formatPanelClockTime(occurredAt);
   if (clockLabel) {
-    chips.push(`<span class="chip chip-time" title="Started ${escapeHtml(clockLabel)}">${escapeHtml(clockLabel)}</span>`);
+    timingChips.push(`<span class="chip chip-time" title="Started ${escapeHtml(clockLabel)}">${escapeHtml(clockLabel)}</span>`);
   }
   if (durationMarkup) {
-    chips.push(durationMarkup);
+    timingChips.push(durationMarkup);
   }
-  return `<div class="event-chips">${chips.join("")}</div>`;
+  return `<div class="event-chips">${chips.length > 0 ? `<span class="event-meta-chips">${chips.join("")}</span>` : ""}${timingChips.length > 0 ? `<span class="event-meta-timing">${timingChips.join("")}</span>` : ""}</div>`;
 }
 
 function compactStatusGroupText(parts: string[], maxLength: number): string {
@@ -1444,7 +1829,7 @@ function renderStatusActivity(entry: Extract<PanelActivityEntry, { kind: "status
   ].join("");
 }
 
-function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "status-group" }>): string {
+function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "status-group" }>, evidenceFilePath?: string): string {
   const firstEntry = entry.entries[0];
   const summaryEvent = deriveStatusGroupSummaryEvent(entry);
   const severityClass = summaryEvent.severityClass;
@@ -1467,11 +1852,11 @@ function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "s
   }
   chips.push(...durationChips);
   if (entry.latestToolEvent) {
-    chips.push(...buildEventChips(entry.latestToolEvent, { durationPosition: "after-file" }));
+    chips.push(...buildEventChips(entry.latestToolEvent, { durationPosition: "after-file", evidenceFilePath }));
   }
   const childRows = [
     ...entry.entries.map((child) => renderStatusActivity(child)),
-    entry.groupedToolEntry ? renderToolActivity(entry.groupedToolEntry) : ""
+    entry.groupedToolEntry ? renderToolActivity(entry.groupedToolEntry, evidenceFilePath) : ""
   ].filter(Boolean).join("");
   return [
     `<li class="status-group-item">`,
@@ -1519,22 +1904,27 @@ function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "reque
   ].join("");
 }
 
-function renderOutputActivity(entry: Extract<PanelActivityEntry, { kind: "output" }>): string {
+function renderOutputActivity(entry: Extract<PanelActivityEntry, { kind: "output" }>, evidenceFilePath?: string): string {
   const noteText = entry.text.trim();
+  const evidencePaths = extractOutputEvidencePaths(noteText);
   const expandable = noteText.length > 0;
   const expandableAttributes = expandable ? ` data-output-expandable="true" data-output-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
   const summaryMarkup = noteText
     ? `<span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(noteText)}</span>${expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : ""}</span>`
     : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
+  const detailSections = [
+    noteText ? renderRequestDetailSection("Summary", noteText) : "",
+    evidencePaths.length > 0 ? renderDetailSectionMarkup("Evidence Paths", renderPathChipRow(evidencePaths, evidenceFilePath, "path")) : ""
+  ].filter(Boolean).join("");
   return [
     `<li class="event-row event-output" title="Final output returned to the parent lane"${expandableAttributes}>`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon">↩</span><span class="event-label">Output</span>${summaryMarkup}</div>${expandable ? `<div class="event-output-detail">${escapeHtml(noteText)}</div>` : ""}</div>`,
+    `<div class="event-body"><div class="event-main"><span class="event-icon">↩</span><span class="event-label">Output</span>${summaryMarkup}</div>${expandable ? `<div class="event-output-detail">${detailSections}</div>` : ""}</div>`,
     renderActivityMeta(entry.occurredAt, "", []),
     `</li>`
   ].join("");
 }
 
-function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "handoff" }>): string {
+function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "handoff" }>, evidenceFilePath?: string): string {
   const detailText = [entry.note.trim(), entry.detail?.trim() || ""].filter(Boolean).join("\n\n");
   const expandable = detailText.length > 0;
   const expandableAttributes = expandable ? ` data-handoff-expandable="true" data-handoff-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
@@ -1547,8 +1937,18 @@ function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "hando
     entry.questionCount > 0 ? `<span class="chip chip-handoff-scope" title="Open questions carried forward">${escapeHtml(String(entry.questionCount))} question${entry.questionCount === 1 ? "" : "s"}</span>` : "",
     entry.hasNextStart ? `<span class="chip chip-handoff-scope" title="A next suggested start is included">next start</span>` : ""
   ].filter(Boolean);
-  const detailMarkup = detailText
-    ? `<div class="event-handoff-detail">${escapeHtml(detailText)}</div>`
+  const detailSections = [
+    entry.note.trim() ? renderRequestDetailSection("Summary", entry.note.trim()) : "",
+    entry.nextSuggestedStart ? renderRequestDetailSection("Next Start", entry.nextSuggestedStart) : "",
+    entry.remainingGoals && entry.remainingGoals.length > 0 ? renderRequestDetailSection("Remaining Goals", entry.remainingGoals.join("\n")) : "",
+    entry.openQuestions && entry.openQuestions.length > 0 ? renderRequestDetailSection("Open Questions", entry.openQuestions.join("\n")) : "",
+    entry.constraints && entry.constraints.length > 0 ? renderRequestDetailSection("Constraints", entry.constraints.join("\n")) : "",
+    entry.relevantFileAnchors && entry.relevantFileAnchors.length > 0 ? renderDetailSectionMarkup("File Anchors", renderPathChipRow(entry.relevantFileAnchors, evidenceFilePath, "file")) : "",
+    entry.relevantArtifactAnchors && entry.relevantArtifactAnchors.length > 0 ? renderDetailSectionMarkup("Artifact Anchors", renderPathChipRow(entry.relevantArtifactAnchors, evidenceFilePath, "artifact")) : "",
+    entry.detail?.trim() ? renderRequestDetailSection("Notes", entry.detail.trim()) : ""
+  ].filter(Boolean).join("");
+  const detailMarkup = detailSections
+    ? `<div class="event-handoff-detail">${detailSections}</div>`
     : "";
   return [
     `<li class="event-row event-handoff" title="Carry state left behind for the next trace lane"${expandableAttributes}>`,
@@ -1558,10 +1958,235 @@ function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "hando
   ].join("");
 }
 
-function renderToolActivity(entry: Extract<PanelActivityEntry, { kind: "tool" }>): string {
+function summarizeToolOutputHeading(toolName: string): string {
+  switch (toolName.trim()) {
+    case "copilot_readFile":
+      return "Read Content";
+    case "copilot_fileSearch":
+    case "grep_search":
+      return "Matches";
+    case "list_dir":
+      return "Directory Listing";
+    case "get_errors":
+      return "Diagnostics";
+    default:
+      return "Output";
+  }
+}
+
+function renderToolRawDisclosure(label: string, value: string, truncated = false): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  return [
+    `<details class="event-raw-disclosure">`,
+    `<summary class="event-raw-summary">${escapeHtml(label)}${truncated ? `<span class="event-raw-summary-note"> truncated</span>` : ""}</summary>`,
+    `<pre class="event-raw-block">${escapeHtml(trimmed)}</pre>`,
+    `</details>`
+  ].join("");
+}
+
+function renderCopyValueButton(options: {
+  sourceId?: string;
+  value?: string;
+  label: string;
+}): string {
+  const sourceId = options.sourceId?.trim();
+  const value = options.value?.trim();
+  if (!sourceId && !value) {
+    return "";
+  }
+  const sourceAttribute = sourceId ? ` data-copy-source-id="${escapeHtml(sourceId)}"` : "";
+  const valueAttribute = !sourceId && value ? ` data-copy-value="${escapeHtml(value)}"` : "";
+  return `<button class="event-tool-section-copy" type="button"${sourceAttribute}${valueAttribute} data-copy-label="${escapeHtml(options.label)}" title="Copy ${escapeHtml(options.label).toLowerCase()}">Copy</button>`;
+}
+
+function tryParseJsonText(value: string): unknown | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
+function renderJsonHighlightedMarkup(value: unknown, attributes = ""): string {
+  const json = JSON.stringify(value, null, 2);
+  const tokenPattern = /("(?:\\u[\da-fA-F]{4}|\\[^u]|[^\\"])*"\s*:?)|\btrue\b|\bfalse\b|\bnull\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
+  let cursor = 0;
+  let markup = "";
+  for (const match of json.matchAll(tokenPattern)) {
+    const token = match[0];
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      markup += escapeHtml(json.slice(cursor, index));
+    }
+    let className = "event-json-number";
+    if (token.endsWith(":")) {
+      className = "event-json-key";
+    } else if (token.startsWith("\"")) {
+      className = "event-json-string";
+    } else if (token === "true" || token === "false") {
+      className = "event-json-boolean";
+    } else if (token === "null") {
+      className = "event-json-null";
+    }
+    markup += `<span class="${className}">${escapeHtml(token)}</span>`;
+    cursor = index + token.length;
+  }
+  if (cursor < json.length) {
+    markup += escapeHtml(json.slice(cursor));
+  }
+  return `<pre class="event-raw-block event-json-block"${attributes}>${markup}</pre>`;
+}
+
+function renderStructuredValueMarkup(value: string, attributes = ""): string {
+  const parsed = tryParseJsonText(value);
+  if (parsed !== undefined) {
+    return renderJsonHighlightedMarkup(parsed, attributes);
+  }
+  return `<pre class="event-raw-block"${attributes}>${escapeHtml(value)}</pre>`;
+}
+
+function renderToolSectionDisclosure(
+  label: string,
+  bodyMarkup: string,
+  attributes = "",
+  summaryNote?: string,
+  copyButtonMarkup = ""
+): string {
+  return [
+    `<details class="event-tool-section-disclosure"${attributes}>`,
+    `<summary class="event-tool-section-summary"><span class="event-tool-section-summary-label">${escapeHtml(label)}</span><span class="event-expand-indicator" aria-hidden="true">▸</span>${summaryNote ? `<span class="event-tool-section-summary-note">${escapeHtml(summaryNote)}</span>` : ""}<span class="event-tool-section-summary-spacer"></span>${copyButtonMarkup}</summary>`,
+    `<div class="event-tool-section-body">${bodyMarkup}</div>`,
+    `</details>`
+  ].join("");
+}
+
+function buildUnavailableToolDetail(event: PanelToolEvent): PanelLoadedToolDetail {
+  return {
+    callId: event.callId,
+    toolName: event.toolName,
+    phase: event.phase,
+    input: event.input,
+    note: event.note,
+    outputSummary: event.phase === "running"
+      ? "This tool call is still running."
+      : "No captured tool output is available for this call.",
+    partKinds: []
+  };
+}
+
+function renderToolOutputDetail(
+  event: PanelDisplayEvent,
+  detail: PanelLoadedToolDetail | undefined
+): string {
+  const sections: string[] = [];
+  let summaryNote: string | undefined;
+  let copySourceId: string | undefined;
+  let copyValue: string | undefined;
+  if (event.running) {
+    sections.push(renderRequestDetailSection("Status", "Waiting for the tool to finish."));
+    summaryNote = "Pending";
+  } else if (!detail) {
+    sections.push(`<div class="event-tool-loading"><span class="event-tool-loading-spinner" aria-hidden="true"></span><span>Loading output...</span></div>`);
+  } else {
+    if (detail.outputKind?.trim()) {
+      sections.push(renderRequestDetailSection("Kind", detail.outputKind.trim()));
+    }
+    if (detail.outputSummary?.trim()) {
+      sections.push(renderRequestDetailSection(summarizeToolOutputHeading(event.event.toolName), detail.outputSummary.trim()));
+    }
+    if (detail.outputMetadataSummary?.trim()) {
+      sections.push(renderRequestDetailSection("Data", detail.outputMetadataSummary.trim()));
+    }
+    if (detail.partKinds && detail.partKinds.length > 0) {
+      sections.push(renderRequestDetailSection("Parts", detail.partKinds.join("\n")));
+    }
+    if (detail.note?.trim() && detail.note.trim() !== event.note?.trim()) {
+      sections.push(renderRequestDetailSection("Tool Note", detail.note.trim()));
+    }
+    if (detail.rawOutput?.trim()) {
+      copySourceId = `tool-output-${event.event.callId}`;
+      copyValue = detail.rawOutput.trim();
+      sections.push(renderStructuredValueMarkup(detail.rawOutput, ` id="${escapeHtml(copySourceId)}"`));
+    }
+    if (sections.length === 0) {
+      sections.push(renderRequestDetailSection("Output", "No additional tool output was captured for this call."));
+    }
+    if (!copyValue) {
+      copyValue = detail.outputSummary?.trim() || detail.note?.trim();
+    }
+    summaryNote = detail.rawOutputTruncated === true ? "Truncated" : undefined;
+  }
+  return renderToolSectionDisclosure(
+    "Output",
+    sections.join(""),
+    ` data-tool-output-disclosure="true" data-tool-output-id="${escapeHtml(event.event.callId)}" data-tool-output-needs-load="${!event.running && !detail ? "true" : "false"}"`,
+    summaryNote,
+    renderCopyValueButton({ sourceId: copySourceId, value: copyValue, label: "output" })
+  );
+}
+
+function renderToolDetailSections(
+  event: PanelDisplayEvent,
+  evidenceFilePath?: string,
+  detail?: PanelLoadedToolDetail
+): string {
+  const detailSections: string[] = [];
+  detailSections.push(renderRequestDetailSection("Tool", humanizeToolName(event.event.toolName)));
+  detailSections.push(renderRequestDetailSection("Outcome", event.outcome));
+  if (event.note?.trim()) {
+    detailSections.push(renderRequestDetailSection("Note", event.note.trim()));
+  }
+  if (event.filePath) {
+    detailSections.push(renderDetailSectionMarkup(
+      "Target",
+      renderPathChipRow([event.filePath], evidenceFilePath, "path")
+    ));
+  }
+  if (event.ranges.length > 0) {
+    detailSections.push(renderRequestDetailSection(
+      "Ranges",
+      event.ranges.map((range) => `${range.startLine}-${range.endLine}`).join("\n")
+    ));
+  }
+  if (event.count > 1) {
+    detailSections.push(renderRequestDetailSection("Merged Calls", String(event.count)));
+  }
+  if (event.event.input && Object.keys(event.event.input).length > 0) {
+    const inputSourceId = `tool-input-${event.event.callId}`;
+    detailSections.push(renderToolSectionDisclosure(
+      "Input",
+      renderJsonHighlightedMarkup(event.event.input, ` id="${escapeHtml(inputSourceId)}"`),
+      ` data-tool-input-disclosure="true" data-tool-input-id="${escapeHtml(event.event.callId)}"`,
+      undefined,
+      renderCopyValueButton({
+        sourceId: inputSourceId,
+        value: JSON.stringify(event.event.input, null, 2),
+        label: "input"
+      })
+    ));
+  }
+  detailSections.push(renderToolOutputDetail(event, detail));
+  return detailSections.join("");
+}
+
+function renderToolActivity(
+  entry: Extract<PanelActivityEntry, { kind: "tool" }>,
+  evidenceFilePath?: string,
+  loadedDetailByCallId: ReadonlyMap<string, PanelLoadedToolDetail> = new Map()
+): string {
   const event = entry.displayEvent;
   const title = (event.note ?? "") || event.event.toolName;
   const noteRow = event.note ? `<div class="event-note">${escapeHtml(event.note)}</div>` : "";
+  const detailSections = renderToolDetailSections(event, evidenceFilePath, loadedDetailByCallId.get(event.event.callId));
+  const expandable = detailSections.length > 0;
+  const expandableAttributes = expandable ? ` data-tool-expandable="true" data-tool-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
   const durationMarkup = renderActivityDuration(
     event.running ? "Live" : "For",
     event.baseElapsedMs,
@@ -1570,16 +2195,19 @@ function renderToolActivity(entry: Extract<PanelActivityEntry, { kind: "tool" }>
     event.running ? "Current tool duration" : "Recorded tool duration"
   );
   return [
-    `<li class="event-row event-tool event-kind-${event.kind.toLowerCase()} event-outcome-${event.outcome}" title="${escapeHtml(title)}">`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon">${escapeHtml(eventIcon(event))}</span><span class="event-label">${escapeHtml(eventLabel(event))}</span></div>${noteRow}</div>`,
-    renderActivityMeta(event.occurredAt, durationMarkup, buildEventChips(event)),
+    `<li class="event-row event-tool event-kind-${event.kind.toLowerCase()} event-outcome-${event.outcome}" title="${escapeHtml(title)}"${expandableAttributes}>`,
+    `<div class="event-body"><button class="event-main event-tool-main-toggle" type="button" data-tool-toggle-id="${escapeHtml(entry.id)}"><span class="event-icon">${escapeHtml(eventIcon(event))}</span><span class="event-label">${escapeHtml(eventLabel(event))}</span>${expandable ? `<span class="event-summary-inline"><span class="event-expand-indicator" aria-hidden="true">▸</span></span>` : ""}</button>${noteRow}${expandable ? `<div class="event-tool-detail">${detailSections}</div>` : ""}</div>`,
+    renderActivityMeta(event.occurredAt, durationMarkup, buildEventChips(event, {
+      evidenceFilePath,
+      includeDurationChip: event.count > 1
+    })),
     "</li>"
   ].join("");
 }
 
-function renderActivityRow(entry: PanelRenderedEntry): string {
+function renderActivityRow(entry: PanelRenderedEntry, evidenceFilePath?: string): string {
   if (entry.kind === "status-group") {
-    return renderStatusGroupActivity(entry);
+    return renderStatusGroupActivity(entry, evidenceFilePath);
   }
   if (entry.kind === "ancestor") {
     return renderAncestorActivity(entry);
@@ -1591,12 +2219,12 @@ function renderActivityRow(entry: PanelRenderedEntry): string {
     return renderStatusActivity(entry);
   }
   if (entry.kind === "output") {
-    return renderOutputActivity(entry);
+    return renderOutputActivity(entry, evidenceFilePath);
   }
   if (entry.kind === "handoff") {
-    return renderHandoffActivity(entry);
+    return renderHandoffActivity(entry, evidenceFilePath);
   }
-  return renderToolActivity(entry);
+  return renderToolActivity(entry, evidenceFilePath);
 }
 
 function normalizeHeaderToolsetNames(toolsetNames: readonly string[]): string[] {
@@ -2006,16 +2634,23 @@ function evidenceViewState(snapshot: TraceableSubagentDetailSnapshot): {
 export function renderTraceableSubagentPanelHtml(
   snapshot: TraceableSubagentDetailSnapshot,
   codiconCssHref?: string,
-  options: { pinnedOpen?: boolean; hideToolbarControls?: boolean } = {}
+  options: {
+    pinnedOpen?: boolean;
+    hideToolbarControls?: boolean;
+    loadedToolDetailsByCallId?: ReadonlyMap<string, PanelLoadedToolDetail>;
+  } = {}
 ): string {
   const activities = buildActivityEntries(snapshot);
   const renderedEntries = groupActivityEntries(activities);
   const hasActivityFeed = renderedEntries.length > 0;
   const pinnedOpen = options.pinnedOpen === true;
   const hideToolbarControls = options.hideToolbarControls === true;
+  const loadedToolDetailsByCallId = options.loadedToolDetailsByCallId ?? new Map<string, PanelLoadedToolDetail>();
   const evidenceState = evidenceViewState(snapshot);
   const eventRows = hasActivityFeed
-    ? renderedEntries.map((event) => renderActivityRow(event)).join("")
+    ? renderedEntries.map((event) => event.kind === "tool"
+      ? renderToolActivity(event, snapshot.evidenceFile?.filePath, loadedToolDetailsByCallId)
+      : renderActivityRow(event, snapshot.evidenceFile?.filePath)).join("")
     : renderPanelEmptyState(snapshot);
   const updatedLabel = formatPanelUpdatedAt(snapshot.updatedAt);
   const runningState = snapshot.status.phase === "running" ? "true" : "false";
@@ -2361,6 +2996,13 @@ export function renderTraceableSubagentPanelHtml(
     }
     .activity-request-badge.header-badge-track-experimental .header-badge-value {
       color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 72%, var(--fg));
+    }
+    .activity-request-badge.activity-request-badge-inherited {
+      border-color: color-mix(in srgb, var(--accent-soft) 24%, var(--chip-border));
+      background: color-mix(in srgb, var(--accent-soft) 10%, var(--chip-bg));
+    }
+    .activity-request-badge.activity-request-badge-inherited .header-badge-label {
+      color: color-mix(in srgb, var(--accent-soft) 82%, var(--fg));
     }
     .chip-request {
       gap: 5px;
@@ -2827,7 +3469,6 @@ export function renderTraceableSubagentPanelHtml(
     }
     .event-request.request-expanded .event-expand-indicator {
       transform: rotate(90deg);
-      color: color-mix(in srgb, var(--accent) 78%, var(--fg));
     }
     .event-output .event-note {
       color: color-mix(in srgb, var(--fg) 84%, var(--muted));
@@ -2841,9 +3482,7 @@ export function renderTraceableSubagentPanelHtml(
       display: none;
       padding-left: 20px;
       margin-top: 6px;
-      color: color-mix(in srgb, var(--fg) 88%, var(--muted));
-      white-space: pre-wrap;
-      line-height: 1.45;
+      gap: 8px;
     }
     .event-output.output-expanded .event-note {
       display: none;
@@ -2852,11 +3491,10 @@ export function renderTraceableSubagentPanelHtml(
       display: none;
     }
     .event-output.output-expanded .event-output-detail {
-      display: block;
+      display: grid;
     }
     .event-output.output-expanded .event-expand-indicator {
       transform: rotate(90deg);
-      color: color-mix(in srgb, var(--accent) 78%, var(--fg));
     }
     .event-handoff[data-handoff-expandable="true"] {
       cursor: pointer;
@@ -2883,9 +3521,7 @@ export function renderTraceableSubagentPanelHtml(
       display: none;
       margin-top: 6px;
       padding-left: 20px;
-      color: color-mix(in srgb, var(--fg) 82%, var(--muted));
-      white-space: pre-wrap;
-      line-height: 1.45;
+      gap: 8px;
     }
     .event-handoff.handoff-expanded .event-note {
       display: none;
@@ -2894,11 +3530,196 @@ export function renderTraceableSubagentPanelHtml(
       display: none;
     }
     .event-handoff.handoff-expanded .event-handoff-detail {
-      display: block;
+      display: grid;
+    }
+    .chip-handoff-kind,
+    .chip-handoff-scope {
+      color: color-mix(in srgb, var(--accent-soft) 82%, var(--fg));
+      border-color: color-mix(in srgb, var(--accent-soft) 24%, var(--chip-border));
+      background: color-mix(in srgb, var(--accent-soft) 10%, var(--chip-bg));
     }
     .event-handoff.handoff-expanded .event-expand-indicator {
       transform: rotate(90deg);
-      color: color-mix(in srgb, var(--accent) 78%, var(--fg));
+    }
+    .event-tool[data-tool-expandable="true"] {
+      cursor: pointer;
+    }
+    .event-tool[data-tool-expandable="true"]:hover {
+      background: color-mix(in srgb, var(--chip-bg) 42%, transparent);
+    }
+    .event-tool[data-tool-expandable="true"]:focus-visible {
+      outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+      outline-offset: 2px;
+    }
+    .event-tool-detail {
+      display: none;
+      gap: 8px;
+      padding-left: 20px;
+      margin-top: 6px;
+    }
+    .event-tool.tool-expanded .event-tool-detail {
+      display: grid;
+    }
+    .event-tool.tool-expanded .event-note {
+      display: none;
+    }
+    .event-tool.tool-expanded .event-meta-chips {
+      display: none;
+    }
+    .event-tool.tool-expanded .event-expand-indicator {
+      transform: rotate(90deg);
+    }
+    .event-tool-main-toggle {
+      width: 100%;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      text-align: left;
+      font: inherit;
+      cursor: pointer;
+    }
+    .event-raw-disclosure {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+    }
+    .event-raw-summary {
+      color: color-mix(in srgb, var(--muted) 90%, transparent);
+      cursor: pointer;
+      list-style: none;
+      font-size: 11px;
+    }
+    .event-raw-summary::-webkit-details-marker {
+      display: none;
+    }
+    .event-raw-summary-note {
+      color: color-mix(in srgb, var(--muted) 78%, transparent);
+      font-size: 10px;
+      text-transform: uppercase;
+      margin-left: 4px;
+    }
+    .event-raw-block {
+      margin: 0;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+      background: color-mix(in srgb, var(--panel) 88%, var(--chip-bg));
+      color: color-mix(in srgb, var(--fg) 90%, var(--muted));
+      white-space: pre;
+      word-break: normal;
+      overflow-wrap: normal;
+      font: inherit;
+      line-height: 1.45;
+      width: 100%;
+      box-sizing: border-box;
+      max-height: calc(20 * 1.45em + 18px);
+      overflow: auto;
+    }
+    .event-json-block {
+      font-family: var(--vscode-editor-font-family, Consolas, monospace);
+      font-size: 12px;
+    }
+    .event-json-key {
+      color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe);
+    }
+    .event-json-string {
+      color: var(--vscode-terminal-ansiGreen, #ce9178);
+    }
+    .event-json-number {
+      color: var(--vscode-debugTokenExpression-number, #b5cea8);
+    }
+    .event-json-boolean {
+      color: var(--vscode-symbolIcon-keywordForeground, #569cd6);
+    }
+    .event-json-null {
+      color: var(--vscode-symbolIcon-keywordForeground, #569cd6);
+      font-style: italic;
+    }
+    .event-tool-section-disclosure {
+      display: grid;
+      gap: 6px;
+      margin: 0;
+    }
+    .event-tool-section-summary {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      list-style: none;
+      color: color-mix(in srgb, var(--muted) 92%, transparent);
+      font-size: 11px;
+      user-select: none;
+      width: 100%;
+    }
+    .event-tool-section-summary::-webkit-details-marker {
+      display: none;
+    }
+    .event-tool-section-summary-label {
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .event-tool-section-summary-spacer {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+    .event-tool-section-summary-note {
+      color: color-mix(in srgb, var(--muted) 74%, transparent);
+      font-size: 10px;
+    }
+    .event-tool-section-copy {
+      border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+      background: color-mix(in srgb, var(--panel) 82%, var(--chip-bg));
+      color: color-mix(in srgb, var(--fg) 90%, var(--muted));
+      border-radius: 999px;
+      padding: 1px 8px;
+      font: inherit;
+      font-size: 10px;
+      line-height: 1.5;
+      cursor: pointer;
+    }
+    .event-tool-section-copy:hover {
+      border-color: color-mix(in srgb, var(--accent) 60%, var(--border));
+      color: var(--fg);
+    }
+    .event-tool-section-copy.is-copied {
+      border-color: color-mix(in srgb, var(--accent) 72%, transparent);
+      color: var(--accent);
+    }
+    .event-tool-section-disclosure[open] .event-expand-indicator {
+      transform: rotate(90deg);
+    }
+    .event-tool-section-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 8px;
+      padding-left: 10px;
+      width: 100%;
+      min-width: 0;
+    }
+    .event-tool-loading {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: color-mix(in srgb, var(--fg) 84%, var(--muted));
+    }
+    .event-tool-loading-fallback {
+      color: color-mix(in srgb, var(--fg) 84%, var(--muted));
+      line-height: 1.45;
+    }
+    .event-tool-loading-spinner {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      border: 2px solid color-mix(in srgb, var(--border) 82%, transparent);
+      border-top-color: var(--accent);
+      animation: event-tool-spin 720ms linear infinite;
+      flex: 0 0 auto;
+    }
+    @keyframes event-tool-spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
     }
     .event-request-detail-section {
       display: grid;
@@ -2935,13 +3756,30 @@ export function renderTraceableSubagentPanelHtml(
       align-items: flex-start;
       min-width: 0;
     }
+    .event-request .event-label,
+    .event-output .event-label {
+      flex: 0 0 auto;
+      padding-right: 2px;
+    }
     .event-request .event-summary-inline {
       flex: 1 1 auto;
       min-width: 0;
+      padding-left: 4px;
+    }
+    .event-output .event-summary-inline {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding-left: 4px;
     }
     .event-request .event-label {
       color: color-mix(in srgb, var(--accent) 78%, var(--fg));
       letter-spacing: 0.02em;
+    }
+    .event-detail-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: flex-start;
     }
     .event-request-inline-chips {
       display: flex;
@@ -3018,6 +3856,16 @@ export function renderTraceableSubagentPanelHtml(
       color: color-mix(in srgb, var(--accent) 70%, var(--muted));
       transition: transform 140ms ease;
     }
+    .event-ancestor-action-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      flex: 0 0 auto;
+    }
+    .event-ancestor-action-icon .codicon {
+      font-size: 13px;
+    }
     .status-group.status-group-severity-running .event-status-group-toggle {
       color: var(--vscode-progressBar-background);
     }
@@ -3075,6 +3923,17 @@ export function renderTraceableSubagentPanelHtml(
       align-content: flex-start;
       min-width: 0;
     }
+    .event-meta-chips,
+    .event-meta-timing {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: flex-start;
+    }
+    .event-meta-timing {
+      justify-content: flex-end;
+      margin-left: auto;
+    }
     .chip-separator {
       color: color-mix(in srgb, var(--muted) 88%, transparent);
       font-size: 11px;
@@ -3100,30 +3959,40 @@ export function renderTraceableSubagentPanelHtml(
       gap: 5px;
     }
     .chip-collapsible {
+      position: relative;
       justify-content: center;
+      overflow: visible;
     }
     .chip-tool.chip-collapsible,
     .chip-range.chip-collapsible {
       gap: 0;
     }
     .chip-collapsible .chip-hover-label {
-      max-width: 0;
-      opacity: 0;
-      overflow: hidden;
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 6px);
+      transform: translateX(-50%);
+      z-index: 3;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 7px;
+      border: 1px solid var(--chip-border);
+      background: color-mix(in srgb, var(--bg) 94%, var(--chip-bg));
+      border-radius: 999px;
+      box-shadow: 0 4px 14px color-mix(in srgb, black 22%, transparent);
+      color: color-mix(in srgb, var(--fg) 84%, var(--muted));
+      font-size: 10px;
+      line-height: 1.1;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
       white-space: nowrap;
-      transition: max-width 140ms ease, opacity 120ms ease;
-    }
-    .chip-tool.chip-collapsible:hover,
-    .chip-tool.chip-collapsible:focus-within {
-      gap: 5px;
-    }
-    .chip-range.chip-collapsible:hover,
-    .chip-range.chip-collapsible:focus-within {
-      gap: 4px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 120ms ease;
     }
     .chip-collapsible:hover .chip-hover-label,
     .chip-collapsible:focus-within .chip-hover-label {
-      max-width: 120px;
       opacity: 1;
     }
     .chip-icon {
@@ -3141,6 +4010,9 @@ export function renderTraceableSubagentPanelHtml(
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .chip-param {
+      max-width: min(20rem, 36vw);
+    }
     .chip-time,
     .chip-status-phase,
     .activity-duration {
@@ -3150,6 +4022,21 @@ export function renderTraceableSubagentPanelHtml(
       color: var(--vscode-editorWarning-foreground);
       border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 26%, var(--chip-border));
       background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 8%, var(--chip-bg));
+    }
+    .chip-status-phase-running {
+      color: var(--vscode-progressBar-background);
+      border-color: color-mix(in srgb, var(--vscode-progressBar-background) 26%, var(--chip-border));
+      background: color-mix(in srgb, var(--vscode-progressBar-background) 8%, var(--chip-bg));
+    }
+    .chip-status-phase-completed {
+      color: var(--vscode-terminal-ansiGreen);
+      border-color: color-mix(in srgb, var(--vscode-terminal-ansiGreen) 26%, var(--chip-border));
+      background: color-mix(in srgb, var(--vscode-terminal-ansiGreen) 8%, var(--chip-bg));
+    }
+    .chip-status-phase-error {
+      color: var(--vscode-errorForeground);
+      border-color: color-mix(in srgb, var(--vscode-errorForeground) 26%, var(--chip-border));
+      background: color-mix(in srgb, var(--vscode-errorForeground) 8%, var(--chip-bg));
     }
     .chip-status-phase-failure {
       color: var(--vscode-errorForeground);
@@ -3191,9 +4078,6 @@ export function renderTraceableSubagentPanelHtml(
     .event-ancestor .event-label {
       color: color-mix(in srgb, var(--accent-soft) 76%, var(--fg));
       letter-spacing: 0.02em;
-    }
-    .chip-lineage-claim {
-      color: color-mix(in srgb, var(--fg) 82%, var(--muted));
     }
     .event-status-running.event-status-live .event-icon {
       color: var(--vscode-progressBar-background);
@@ -3304,6 +4188,10 @@ export function renderTraceableSubagentPanelHtml(
       requestExpandedById: {},
       outputExpandedById: {},
       handoffExpandedById: {},
+      toolExpandedById: {},
+      toolInputOpenById: {},
+      toolOutputOpenById: {},
+      ancestorGroupOpenById: {},
       namespaceOpenById: {},
       statusGroupOpenById: {},
       runId: ''
@@ -3325,6 +4213,18 @@ export function renderTraceableSubagentPanelHtml(
             handoffExpandedById: state.handoffExpandedById && typeof state.handoffExpandedById === 'object'
               ? Object.fromEntries(Object.entries(state.handoffExpandedById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
               : {},
+            toolExpandedById: state.toolExpandedById && typeof state.toolExpandedById === 'object'
+              ? Object.fromEntries(Object.entries(state.toolExpandedById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
+              : {},
+            toolInputOpenById: state.toolInputOpenById && typeof state.toolInputOpenById === 'object'
+              ? Object.fromEntries(Object.entries(state.toolInputOpenById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
+              : {},
+            toolOutputOpenById: state.toolOutputOpenById && typeof state.toolOutputOpenById === 'object'
+              ? Object.fromEntries(Object.entries(state.toolOutputOpenById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
+              : {},
+            ancestorGroupOpenById: state.ancestorGroupOpenById && typeof state.ancestorGroupOpenById === 'object'
+              ? Object.fromEntries(Object.entries(state.ancestorGroupOpenById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
+              : {},
             namespaceOpenById: state.namespaceOpenById && typeof state.namespaceOpenById === 'object'
               ? Object.fromEntries(Object.entries(state.namespaceOpenById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
               : {},
@@ -3341,10 +4241,19 @@ export function renderTraceableSubagentPanelHtml(
     const toolsetDisclosure = document.querySelector('.toolset-disclosure');
     const namespaceGroups = Array.from(document.querySelectorAll('.toolset-namespace-group[data-namespace-id]'));
     const statusGroups = Array.from(document.querySelectorAll('.status-group[data-status-group-id]'));
+    const ancestorGroups = Array.from(document.querySelectorAll('.ancestor-group[data-ancestor-group-id]'));
     const timerNodes = Array.from(document.querySelectorAll('[data-timer-kind]'));
     const requestRows = Array.from(document.querySelectorAll('.event-request[data-request-expandable="true"][data-request-id]'));
     const outputRows = Array.from(document.querySelectorAll('.event-output[data-output-expandable="true"][data-output-id]'));
     const handoffRows = Array.from(document.querySelectorAll('.event-handoff[data-handoff-expandable="true"][data-handoff-id]'));
+    const toolRows = Array.from(document.querySelectorAll('.event-tool[data-tool-expandable="true"][data-tool-id]'));
+    const toolToggleButtons = Array.from(document.querySelectorAll('.event-tool-main-toggle[data-tool-toggle-id]'));
+    const toolInputDisclosures = Array.from(document.querySelectorAll('.event-tool-section-disclosure[data-tool-input-disclosure="true"][data-tool-input-id]'));
+    const toolOutputDisclosures = Array.from(document.querySelectorAll('.event-tool-section-disclosure[data-tool-output-disclosure="true"][data-tool-output-id]'));
+    const toolOutputSummaries = Array.from(document.querySelectorAll('.event-tool-section-disclosure[data-tool-output-disclosure="true"] > .event-tool-section-summary'));
+    const copyButtons = Array.from(document.querySelectorAll('.event-tool-section-copy[data-copy-source-id], .event-tool-section-copy[data-copy-value]'));
+    const isNestedInteractiveTarget = (target) => target instanceof HTMLElement
+      && Boolean(target.closest('[data-message], button, a, summary, details, input, select, textarea, label'));
 
     const persistPanelState = (nextState) => {
       panelState = { ...panelState, ...nextState };
@@ -3357,10 +4266,49 @@ export function renderTraceableSubagentPanelHtml(
         requestExpandedById: {},
         outputExpandedById: {},
         handoffExpandedById: {},
+        toolExpandedById: {},
+        toolInputOpenById: {},
+        toolOutputOpenById: {},
         namespaceOpenById: {},
         statusGroupOpenById: {}
       });
     }
+
+    const requestToolOutputLoad = (disclosure) => {
+      if (!(disclosure instanceof HTMLDetailsElement)) {
+        return;
+      }
+      if (disclosure.dataset.toolOutputNeedsLoad !== 'true') {
+        return;
+      }
+      if (disclosure.dataset.toolOutputArmed !== 'true') {
+        return;
+      }
+      const callId = disclosure.dataset.toolOutputId || '';
+      if (!callId || disclosure.dataset.toolOutputRequested === 'true') {
+        return;
+      }
+      disclosure.dataset.toolOutputRequested = 'true';
+      try {
+        vscodeApi.postMessage({ type: 'loadToolDetail', callId });
+        window.setTimeout(() => {
+          if (!disclosure.isConnected) {
+            return;
+          }
+          if (disclosure.dataset.toolOutputRequested !== 'true' || disclosure.dataset.toolOutputNeedsLoad !== 'true') {
+            return;
+          }
+          const body = disclosure.querySelector('.event-tool-section-body');
+          if (!(body instanceof HTMLElement)) {
+            return;
+          }
+          body.innerHTML = '<div class="event-tool-loading-fallback">No persisted tool output is available for this call in the current trace view.</div>';
+          disclosure.dataset.toolOutputRequested = 'false';
+        }, 1500);
+      } catch {
+        disclosure.dataset.toolOutputRequested = 'false';
+      }
+    };
 
     const parseTimestampMs = (value) => {
       const parsed = new Date(value || '').getTime();
@@ -3509,6 +4457,43 @@ export function renderTraceableSubagentPanelHtml(
       });
     }
 
+    let applyingAncestorGroupState = false;
+    const applyAncestorGroupState = () => {
+      applyingAncestorGroupState = true;
+      try {
+        for (const groupNode of ancestorGroups) {
+          if (!(groupNode instanceof HTMLDetailsElement)) {
+            continue;
+          }
+          const groupId = groupNode.dataset.ancestorGroupId || '';
+          const hasStoredState = Object.prototype.hasOwnProperty.call(panelState.ancestorGroupOpenById, groupId);
+          groupNode.open = hasStoredState ? panelState.ancestorGroupOpenById[groupId] === true : false;
+        }
+      } finally {
+        applyingAncestorGroupState = false;
+      }
+    };
+
+    applyAncestorGroupState();
+
+    for (const groupNode of ancestorGroups) {
+      if (!(groupNode instanceof HTMLDetailsElement)) {
+        continue;
+      }
+      groupNode.addEventListener('toggle', () => {
+        if (applyingAncestorGroupState) {
+          return;
+        }
+        const groupId = groupNode.dataset.ancestorGroupId || '';
+        persistPanelState({
+          ancestorGroupOpenById: {
+            ...panelState.ancestorGroupOpenById,
+            [groupId]: groupNode.open
+          }
+        });
+      });
+    }
+
     let applyingStatusGroupState = false;
     const applyStatusGroupState = () => {
       applyingStatusGroupState = true;
@@ -3591,7 +4576,7 @@ export function renderTraceableSubagentPanelHtml(
       };
       requestRow.addEventListener('click', (event) => {
         const target = event.target;
-        if (target instanceof HTMLElement && target.closest('[data-message], button, a')) {
+        if (isNestedInteractiveTarget(target)) {
           return;
         }
         toggleRequestExpansion();
@@ -3635,7 +4620,7 @@ export function renderTraceableSubagentPanelHtml(
       };
       outputRow.addEventListener('click', (event) => {
         const target = event.target;
-        if (target instanceof HTMLElement && target.closest('[data-message], button, a')) {
+        if (isNestedInteractiveTarget(target)) {
           return;
         }
         toggleOutputExpansion();
@@ -3679,7 +4664,7 @@ export function renderTraceableSubagentPanelHtml(
       };
       handoffRow.addEventListener('click', (event) => {
         const target = event.target;
-        if (target instanceof HTMLElement && target.closest('[data-message], button, a')) {
+        if (isNestedInteractiveTarget(target)) {
           return;
         }
         toggleHandoffExpansion();
@@ -3690,6 +4675,189 @@ export function renderTraceableSubagentPanelHtml(
         }
         event.preventDefault();
         toggleHandoffExpansion();
+      });
+    }
+
+    const applyToolExpansion = () => {
+      for (const toolRow of toolRows) {
+        if (!(toolRow instanceof HTMLElement)) {
+          continue;
+        }
+        const toolId = toolRow.dataset.toolId || '';
+        const expanded = panelState.toolExpandedById?.[toolId] === true;
+        toolRow.classList.toggle('tool-expanded', expanded);
+        toolRow.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      }
+    };
+
+    applyToolExpansion();
+
+    const toggleToolExpansionById = (toolId) => {
+      persistPanelState({
+        toolExpandedById: {
+          ...panelState.toolExpandedById,
+          [toolId]: panelState.toolExpandedById?.[toolId] !== true
+        }
+      });
+      applyToolExpansion();
+    };
+
+    for (const toolRow of toolRows) {
+      if (!(toolRow instanceof HTMLElement)) {
+        continue;
+      }
+      toolRow.addEventListener('click', (event) => {
+        const target = event.target;
+        if (isNestedInteractiveTarget(target)) {
+          return;
+        }
+        toggleToolExpansionById(toolRow.dataset.toolId || '');
+      });
+      toolRow.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+          return;
+        }
+        event.preventDefault();
+        toggleToolExpansionById(toolRow.dataset.toolId || '');
+      });
+    }
+
+    for (const toggleButton of toolToggleButtons) {
+      if (!(toggleButton instanceof HTMLButtonElement)) {
+        continue;
+      }
+      toggleButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleToolExpansionById(toggleButton.dataset.toolToggleId || '');
+      });
+    }
+
+    const applyToolInputDisclosureState = () => {
+      for (const disclosure of toolInputDisclosures) {
+        if (!(disclosure instanceof HTMLDetailsElement)) {
+          continue;
+        }
+        const disclosureId = disclosure.dataset.toolInputId || '';
+        disclosure.open = panelState.toolInputOpenById?.[disclosureId] === true;
+      }
+    };
+
+    applyToolInputDisclosureState();
+
+    for (const disclosure of toolInputDisclosures) {
+      if (!(disclosure instanceof HTMLDetailsElement)) {
+        continue;
+      }
+      disclosure.addEventListener('toggle', () => {
+        const disclosureId = disclosure.dataset.toolInputId || '';
+        persistPanelState({
+          toolInputOpenById: {
+            ...panelState.toolInputOpenById,
+            [disclosureId]: disclosure.open
+          }
+        });
+      });
+    }
+
+    const applyToolOutputDisclosureState = () => {
+      for (const disclosure of toolOutputDisclosures) {
+        if (!(disclosure instanceof HTMLDetailsElement)) {
+          continue;
+        }
+        const disclosureId = disclosure.dataset.toolOutputId || '';
+        disclosure.open = panelState.toolOutputOpenById?.[disclosureId] === true
+          && disclosure.dataset.toolOutputNeedsLoad !== 'true';
+      }
+    };
+
+    applyToolOutputDisclosureState();
+
+    for (const summary of toolOutputSummaries) {
+      if (!(summary instanceof HTMLElement)) {
+        continue;
+      }
+      const disclosure = summary.closest('.event-tool-section-disclosure[data-tool-output-disclosure="true"]');
+      if (!(disclosure instanceof HTMLDetailsElement)) {
+        continue;
+      }
+      const armDisclosureLoad = () => {
+        disclosure.dataset.toolOutputArmed = 'true';
+      };
+      summary.addEventListener('click', armDisclosureLoad);
+      summary.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          armDisclosureLoad();
+        }
+      });
+    }
+
+    for (const disclosure of toolOutputDisclosures) {
+      if (!(disclosure instanceof HTMLDetailsElement)) {
+        continue;
+      }
+      disclosure.addEventListener('toggle', () => {
+        const disclosureId = disclosure.dataset.toolOutputId || '';
+        persistPanelState({
+          toolOutputOpenById: {
+            ...panelState.toolOutputOpenById,
+            [disclosureId]: disclosure.open
+          }
+        });
+        if (disclosure.open) {
+          requestToolOutputLoad(disclosure);
+          disclosure.dataset.toolOutputArmed = 'false';
+        }
+      });
+    }
+
+    const copyTextToClipboard = async (text) => {
+      if (typeof text !== 'string' || text.length === 0) {
+        return false;
+      }
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+      const fallback = document.createElement('textarea');
+      fallback.value = text;
+      fallback.setAttribute('readonly', 'true');
+      fallback.style.position = 'fixed';
+      fallback.style.opacity = '0';
+      fallback.style.pointerEvents = 'none';
+      document.body.appendChild(fallback);
+      fallback.focus();
+      fallback.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(fallback);
+      return copied;
+    };
+
+    for (const copyButton of copyButtons) {
+      if (!(copyButton instanceof HTMLButtonElement)) {
+        continue;
+      }
+      copyButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const sourceId = copyButton.dataset.copySourceId || '';
+        const sourceNode = sourceId ? document.getElementById(sourceId) : null;
+        const copyValue = sourceNode?.textContent || copyButton.dataset.copyValue || '';
+        try {
+          const copied = await copyTextToClipboard(copyValue);
+          if (!copied) {
+            return;
+          }
+          copyButton.classList.add('is-copied');
+          const originalText = copyButton.textContent || 'Copy';
+          copyButton.textContent = 'Copied';
+          window.setTimeout(() => {
+            copyButton.classList.remove('is-copied');
+            copyButton.textContent = originalText;
+          }, 1200);
+        } catch {
+          // ignore clipboard failures in the view layer
+        }
       });
     }
 
@@ -3807,6 +4975,7 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
   private codiconCssHref: string | undefined;
   private pendingViewResolvers: Array<(view: vscode.WebviewView | undefined) => void> = [];
   private pinnedOpen = false;
+  private loadedToolDetailsByCallId = new Map<string, PanelLoadedToolDetail>();
   private snapshot: TraceableSubagentDetailSnapshot = {
     header: {
       agentName: "Trace lane",
@@ -3831,7 +5000,8 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly onExportMarkdown: () => Promise<void>,
-    private readonly onOpenFile: (filePath: string, startLine?: number, endLine?: number) => Promise<void>,
+    private readonly onOpenFile: (target: string | TraceableResolvedPathTarget, startLine?: number, endLine?: number, baseDir?: string) => Promise<void>,
+    private readonly onLoadToolDetail: (callId: string) => Promise<PanelLoadedToolDetail | undefined>,
     private readonly onStopRun: () => Promise<void>,
     private readonly onClosePanel: () => Promise<void>,
     private readonly onStayOpen: () => Promise<void>
@@ -3870,16 +5040,44 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
         await this.onStayOpen();
         return;
       }
-      if (message.type === "openFile" && typeof message.filePath === "string") {
+      if (message.type === "openFile") {
         const startLine = typeof message.startLine === "number" ? message.startLine : undefined;
         const endLine = typeof message.endLine === "number" ? message.endLine : undefined;
-        await this.onOpenFile(message.filePath, startLine, endLine);
+        if (isTraceableResolvedPathTarget(message.target)) {
+          await this.onOpenFile(message.target, startLine, endLine);
+          return;
+        }
+        if (typeof message.filePath !== "string") {
+          return;
+        }
+        const baseDir = typeof message.baseDir === "string" ? message.baseDir : undefined;
+        await this.onOpenFile(message.filePath, startLine, endLine, baseDir);
+        return;
+      }
+      if (message.type === "loadToolDetail" && typeof message.callId === "string") {
+        const callId = message.callId.trim();
+        if (!callId) {
+          return;
+        }
+        const detail = await this.onLoadToolDetail(callId);
+        const resolvedDetail = detail ?? buildUnavailableToolDetail(
+          this.snapshot.recentTools.find((entry) => entry.callId === callId) ?? {
+            callId,
+            toolName: "tool",
+            phase: "failure"
+          }
+        );
+        this.loadedToolDetailsByCallId.set(callId, resolvedDetail);
+        await this.render();
       }
     });
     await this.render();
   }
 
   update(snapshot: TraceableSubagentDetailSnapshot): void {
+    if (snapshot.startedAt !== this.snapshot.startedAt) {
+      this.loadedToolDetailsByCallId.clear();
+    }
     this.snapshot = snapshot;
     void this.render();
   }
@@ -3967,7 +5165,8 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     this.view.title = "Traceable";
     this.view.description = this.snapshot.status.message;
     this.view.webview.html = renderTraceableSubagentPanelHtml(this.snapshot, this.codiconCssHref, {
-      pinnedOpen: this.pinnedOpen
+      pinnedOpen: this.pinnedOpen,
+      loadedToolDetailsByCallId: this.loadedToolDetailsByCallId
     });
   }
 }

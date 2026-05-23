@@ -39,6 +39,20 @@ export interface TraceableSubagentToolStatusEvent {
   occurredAt?: string;
 }
 
+export interface TraceableSubagentToolDetail {
+  callId: string;
+  toolName: string;
+  phase: TraceableSubagentToolStatusEvent["phase"];
+  input?: Record<string, unknown>;
+  note?: string;
+  outputKind?: "text" | "structured" | "data" | "mixed";
+  outputSummary?: string;
+  outputMetadataSummary?: string;
+  rawOutput?: string;
+  rawOutputTruncated?: boolean;
+  partKinds?: string[];
+}
+
 export interface TraceableSubagentStatusReporter {
   update(message: string): void;
   finish(message: string, options?: { error?: boolean; warning?: boolean; keepMs?: number; detail?: string }): void;
@@ -46,6 +60,7 @@ export interface TraceableSubagentStatusReporter {
   setRequestSummary?(summary: TraceableSubagentRequestSummaryItem[]): void;
   setTimingSummary?(summary: TraceableSubagentTimingSummary): void;
   recordToolCall?(event: TraceableSubagentToolStatusEvent): void;
+  recordToolDetail?(detail: TraceableSubagentToolDetail): void;
 }
 
 type TraceableStopSource = "traceable-panel" | "host-cancel" | "unknown";
@@ -55,6 +70,7 @@ const TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING = "traceableUndeclaredMaxToolC
 const DEFAULT_UNDECLARED_MAX_ITERATIONS = 100;
 const DEFAULT_UNDECLARED_MAX_TOOL_CALLS = 100;
 const DEFAULT_OUTPUT_TEXT_CHARS = 1600;
+const MAX_TOOL_DETAIL_TEXT_CHARS = 120000;
 
 const DEFAULT_BLOCKED_TOOL_NAMES = new Set([
   TRACEABLE_SUBAGENT_TOOL_NAME,
@@ -189,6 +205,10 @@ function hasExactModelSelector(selector: TraceableModelSelector | undefined): se
   return Boolean(selector?.id?.trim());
 }
 
+function isAutomaticTraceableModelSelector(selector: TraceableModelSelector | undefined): boolean {
+  return (selector?.id?.trim().toLowerCase() || "") === "auto";
+}
+
 function normalizeTraceableInputMode(mode: unknown): TraceableSubagentInputMode | undefined {
   const normalized = typeof mode === "string" ? mode.trim().toUpperCase() : "";
   switch (normalized) {
@@ -296,6 +316,14 @@ export interface TraceableSubagentToolCallRecord {
   argsSummary: string;
   result: TraceableToolResult;
   note?: string;
+  output?: {
+    kind?: "text" | "structured" | "data" | "mixed";
+    summary?: string;
+    metadataSummary?: string;
+    rawText?: string;
+    rawTextTruncated?: boolean;
+    partKinds?: string[];
+  };
 }
 
 export interface TraceableSubagentUsageSummary {
@@ -332,6 +360,7 @@ export interface TraceableSubagentRunResult {
     id: string;
     version: string;
   } | null;
+  modelDisplayName?: string;
   allowedToolNames: string[];
   toolCalls: TraceableSubagentToolCallRecord[];
   traceStatus: TraceableStatus;
@@ -401,6 +430,202 @@ function summarizeMessageContentParts(content: unknown): { partKinds: string[]; 
     toolCallIds,
     toolResultCallIds
   };
+}
+
+function summarizeToolResultContent(content: unknown): {
+  outputKind?: "text" | "structured" | "data" | "mixed";
+  outputSummary?: string;
+  outputMetadataSummary?: string;
+  rawOutput?: string;
+  rawOutputTruncated?: boolean;
+  partKinds: string[];
+} {
+  const contentSummary = summarizeMessageContentParts(content);
+  const rawSegments: string[] = [];
+  const metadataSegments: string[] = [];
+  let sawDataPart = false;
+  let sawTextPart = false;
+  if (typeof content === "string") {
+    const trimmed = content.trim();
+    if (trimmed) {
+      rawSegments.push(trimmed);
+      sawTextPart = true;
+    }
+  } else if (Array.isArray(content)) {
+    for (const part of content) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        const trimmed = part.value.trim();
+        if (trimmed) {
+          rawSegments.push(trimmed);
+          sawTextPart = true;
+        }
+        continue;
+      }
+      if (part instanceof vscode.LanguageModelDataPart) {
+        sawDataPart = true;
+        const candidate = (part as unknown as { value?: unknown; data?: unknown }).value
+          ?? (part as unknown as { data?: unknown }).data
+          ?? { kind: "data" };
+        const metadataSummary = summarizeToolDataCandidateMetadata(candidate);
+        if (metadataSummary) {
+          metadataSegments.push(metadataSummary);
+        }
+        if (!isBinaryLikeToolDataCandidate(candidate)) {
+          rawSegments.push(summarizeJson(candidate, MAX_TOOL_DETAIL_TEXT_CHARS));
+        }
+        continue;
+      }
+      rawSegments.push(summarizeJson(part, MAX_TOOL_DETAIL_TEXT_CHARS));
+    }
+  }
+  const rawOutput = rawSegments.join("\n\n").trim();
+  const outputKind = sawDataPart
+    ? (sawTextPart ? "mixed" : "data")
+    : rawOutput && tryParseJsonForToolOutputKind(rawOutput)
+      ? "structured"
+      : rawOutput
+        ? "text"
+        : undefined;
+  const outputMetadataSummary = metadataSegments.join("\n").trim() || undefined;
+  if (!rawOutput) {
+    return {
+      outputKind,
+      outputMetadataSummary,
+      partKinds: contentSummary.partKinds
+    };
+  }
+  const boundedRawOutput = truncate(rawOutput, MAX_TOOL_DETAIL_TEXT_CHARS);
+  return {
+    outputKind,
+    outputSummary: truncate(rawOutput.replace(/\s+/g, " ").trim(), 280),
+    outputMetadataSummary,
+    rawOutput: boundedRawOutput,
+    rawOutputTruncated: boundedRawOutput !== rawOutput,
+    partKinds: contentSummary.partKinds
+  };
+}
+
+function buildPersistedToolOutput(detail: {
+  outputKind?: "text" | "structured" | "data" | "mixed";
+  outputSummary?: string;
+  outputMetadataSummary?: string;
+  rawOutput?: string;
+  rawOutputTruncated?: boolean;
+  partKinds?: string[];
+}): TraceableSubagentToolCallRecord["output"] {
+  const kind = detail.outputKind;
+  const summary = detail.outputSummary?.trim() || undefined;
+  const metadataSummary = detail.outputMetadataSummary?.trim() || undefined;
+  const rawText = detail.rawOutput?.trim() || undefined;
+  const partKinds = Array.isArray(detail.partKinds)
+    ? [...new Set(detail.partKinds.map((value) => value.trim()).filter(Boolean))]
+    : [];
+  if (!kind && !summary && !metadataSummary && !rawText && partKinds.length === 0) {
+    return undefined;
+  }
+  return {
+    kind,
+    summary,
+    metadataSummary,
+    rawText,
+    rawTextTruncated: detail.rawOutputTruncated === true || undefined,
+    partKinds: partKinds.length > 0 ? partKinds : undefined
+  };
+}
+
+function tryParseJsonForToolOutputKind(value: string): unknown | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || (!trimmed.startsWith("{") && !trimmed.startsWith("["))) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+}
+
+function isBinaryLikeMimeType(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return /^(image|audio|video)\//.test(normalized)
+    || normalized === "application/octet-stream"
+    || normalized === "application/pdf"
+    || normalized.endsWith("+zip");
+}
+
+function isBinaryLikeToolDataCandidate(value: unknown): boolean {
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+    return true;
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  const mimeType = typeof record.mimeType === "string"
+    ? record.mimeType
+    : typeof record.mediaType === "string"
+      ? record.mediaType
+      : typeof record.contentType === "string"
+        ? record.contentType
+        : undefined;
+  if (mimeType && isBinaryLikeMimeType(mimeType)) {
+    return true;
+  }
+  if (record.bytes instanceof Uint8Array || record.buffer instanceof ArrayBuffer) {
+    return true;
+  }
+  if (Array.isArray(record.bytes) && record.bytes.length > 0 && record.bytes.every((entry) => typeof entry === "number")) {
+    return true;
+  }
+  const base64Candidate = typeof record.base64 === "string"
+    ? record.base64
+    : typeof record.data === "string"
+      ? record.data
+      : undefined;
+  return Boolean(base64Candidate && base64Candidate.length > 256 && /^[A-Za-z0-9+/=\r\n]+$/.test(base64Candidate));
+}
+
+function summarizeToolDataCandidateMetadata(value: unknown): string | undefined {
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+    return `Binary-like data output (${value.byteLength} bytes)`;
+  }
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const metadata: string[] = [];
+  const mimeType = typeof record.mimeType === "string"
+    ? record.mimeType.trim()
+    : typeof record.mediaType === "string"
+      ? record.mediaType.trim()
+      : typeof record.contentType === "string"
+        ? record.contentType.trim()
+        : "";
+  if (mimeType) {
+    metadata.push(`mime: ${mimeType}`);
+  }
+  const byteLength = typeof record.byteLength === "number"
+    ? record.byteLength
+    : typeof record.size === "number"
+      ? record.size
+      : record.bytes instanceof Uint8Array
+        ? record.bytes.byteLength
+        : record.buffer instanceof ArrayBuffer
+          ? record.buffer.byteLength
+          : Array.isArray(record.bytes)
+            ? record.bytes.length
+            : undefined;
+  if (typeof byteLength === "number" && Number.isFinite(byteLength) && byteLength >= 0) {
+    metadata.push(`bytes: ${byteLength}`);
+  }
+  const kind = typeof record.kind === "string" ? record.kind.trim() : "";
+  if (kind) {
+    metadata.push(`kind: ${kind}`);
+  }
+  if (metadata.length === 0) {
+    return isBinaryLikeToolDataCandidate(value) ? "Binary-like data output" : undefined;
+  }
+  return `${isBinaryLikeToolDataCandidate(value) ? "Binary-like data output" : "Data output"} (${metadata.join(", ")})`;
 }
 
 function summarizeRecentMessages(messages: readonly vscode.LanguageModelChatMessage[], maxMessages = 8): Array<Record<string, unknown>> {
@@ -1417,6 +1642,17 @@ function isBlockedTraceableModelSelector(
   return buildNormalizedModelSelectorAliases(selector).some((alias) => blockedDeclarations.has(alias));
 }
 
+function isBlockedTraceableRuntimeModel(
+  model: Pick<vscode.LanguageModelChat, "vendor" | "family" | "id">,
+  blockedDeclarations: ReadonlySet<string>
+): boolean {
+  return isBlockedTraceableModelSelector({
+    vendor: model.vendor,
+    family: model.family,
+    id: model.id
+  }, blockedDeclarations);
+}
+
 function getTraceableModelPolicyDeclarations(): {
   preferred: string[];
   blocked: Set<string>;
@@ -1831,6 +2067,38 @@ function normalizeMissingItems(value: unknown): TraceableSubagentMissingItem[] {
 }
 
 function normalizeSteps(value: unknown): TraceableSubagentStep[] {
+  const normalizeStepStatus = (status: unknown, fallback: TraceableStepStatus): TraceableStepStatus => {
+    if (status === "planned"
+      || status === "attempted"
+      || status === "completed"
+      || status === "failed"
+      || status === "skipped") {
+      return status;
+    }
+    if (typeof status !== "string") {
+      return fallback;
+    }
+    const normalized = status.trim().toLowerCase();
+    if (!normalized) {
+      return fallback;
+    }
+    if (/^(?:done|complete|completed|success|successful|succeeded|verified|grounded|finished)$/u.test(normalized)) {
+      return "completed";
+    }
+    if (/^(?:plan|planned|todo)$/u.test(normalized)) {
+      return "planned";
+    }
+    if (/^(?:attempted|attempt|started|running|in[_ -]?progress|working)$/u.test(normalized)) {
+      return "attempted";
+    }
+    if (/^(?:failed|failure|error|blocked)$/u.test(normalized)) {
+      return "failed";
+    }
+    if (/^(?:skipped|skip)$/u.test(normalized)) {
+      return "skipped";
+    }
+    return fallback;
+  };
   if (!Array.isArray(value)) {
     return [];
   }
@@ -1857,13 +2125,7 @@ function normalizeSteps(value: unknown): TraceableSubagentStep[] {
         return [{
           id: typeof item.id === "string" ? item.id : `step-${index + 1}`,
           intent: observation,
-          status: item.status === "planned"
-            || item.status === "attempted"
-            || item.status === "completed"
-            || item.status === "failed"
-            || item.status === "skipped"
-            ? item.status
-            : "completed",
+          status: normalizeStepStatus(item.status, "completed"),
           note: typeof item.note === "string"
             ? item.note
             : (evidence || undefined)
@@ -1872,13 +2134,7 @@ function normalizeSteps(value: unknown): TraceableSubagentStep[] {
       return [{
         id: typeof item.id === "string" ? item.id : `step-${index + 1}`,
         intent: typeof item.intent === "string" ? item.intent : "unspecified",
-        status: item.status === "planned"
-          || item.status === "attempted"
-          || item.status === "completed"
-          || item.status === "failed"
-          || item.status === "skipped"
-          ? item.status
-          : "attempted",
+        status: normalizeStepStatus(item.status, "attempted"),
         note: typeof item.note === "string" ? item.note : undefined
       }];
     });
@@ -1993,6 +2249,22 @@ function normalizeCompletionClaimValue(value: unknown, stopReason: TraceableStop
     : "unresolved");
 }
 
+function reconcileCompletionClaimWithSteps(
+  completionClaim: TraceableCompletionClaim | undefined,
+  steps: TraceableSubagentStep[]
+): TraceableCompletionClaim | undefined {
+  if (completionClaim !== "complete" || steps.length === 0) {
+    return completionClaim;
+  }
+  if (steps.some((step) => step.status === "completed")) {
+    return completionClaim;
+  }
+  if (steps.some((step) => step.status === "attempted" || step.status === "planned" || step.status === "failed" || step.status === "skipped")) {
+    return "partial";
+  }
+  return completionClaim;
+}
+
 function normalizeFinalSummaryValue(value: unknown): string {
   if (typeof value === "string") {
     return value.trim();
@@ -2081,7 +2353,10 @@ function normalizeParsedPayload(value: unknown): TraceableSubagentChildPayload |
   const stopReason = normalizedStopReason ?? (normalizeCompletionClaimValue(value.completionClaim, normalizedStopReason) === "complete"
     ? "completed"
     : undefined);
-  const completionClaim = normalizeCompletionClaimValue(value.completionClaim, stopReason);
+  const completionClaim = reconcileCompletionClaimWithSteps(
+    normalizeCompletionClaimValue(value.completionClaim, stopReason),
+    steps
+  );
   const finalSummary = normalizeFinalSummaryValue(value.finalSummary);
   const activeCarryForward = normalizeTraceableCarryForwardState(value.activeCarryForward);
   const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState);
@@ -2683,6 +2958,9 @@ function resolveTraceableFileContextAnchors(fileContext: string[] | undefined): 
 
 export function buildTraceableSubagentModelSelectors(input: Pick<TraceableSubagentInput, "modelSelector">): vscode.LanguageModelChatSelector[] {
   const normalizedSelector = normalizeModelSelector(input.modelSelector);
+  if (isAutomaticTraceableModelSelector(normalizedSelector)) {
+    return [];
+  }
   if (hasExactModelSelector(normalizedSelector)) {
     return [canonicalizeExplicitTraceableModelSelector(normalizedSelector)];
   }
@@ -3070,15 +3348,31 @@ export async function runTraceableSubagent(
   let availableModels: vscode.LanguageModelChat[] = [];
   let sendableModels: vscode.LanguageModelChat[] = [];
   let matchedSelector: vscode.LanguageModelChatSelector | undefined;
+  let model: vscode.LanguageModelChat | undefined;
 
   if (selectors.length === 0) {
+    const canUseImplicitAutoSelection = !resolvedAgentArtifact
+      && !input.parentTracePath?.trim();
+    const broadRuntimeModels = await loadBroadRuntimeModels();
+    if (canUseImplicitAutoSelection) {
+      const allowedAvailableModels = broadRuntimeModels.available.filter((candidate) => !isBlockedTraceableRuntimeModel(candidate, policy.blocked));
+      const allowedSendableModels = broadRuntimeModels.sendable.filter((candidate) => !isBlockedTraceableRuntimeModel(candidate, policy.blocked));
+      availableModels = allowedAvailableModels;
+      sendableModels = allowedSendableModels;
+      if (allowedSendableModels[0]) {
+        model = allowedSendableModels[Math.floor(Math.random() * allowedSendableModels.length)];
+      }
+    }
+  }
+
+  if (!model && selectors.length === 0) {
     const broadRuntimeModels = await loadBroadRuntimeModels();
     return finalizeResult(fallbackResult(
       input,
       toolCalls,
       resolvedAgentArtifact?.modelDeclaration
         ? `Resolved traceable agent artifact ${JSON.stringify(resolvedAgentArtifact.resolvedName)} declared models ${summarizeJson(resolvedAgentArtifact.modelDeclarations, 220)}, but no supported unblocked declaration could be translated into an exact model selector safely. Provide modelSelector.id explicitly, adjust the role's model/models declarations, or configure tiinex.aiProvenance.traceablePreferredModels. availableRuntimeModels=${summarizeModelCandidates(broadRuntimeModels.available)}; sendableRuntimeModels=${summarizeModelCandidates(broadRuntimeModels.sendable)}`
-        : `Traceable subagent model selection is not configured safely. Provide modelSelector.id explicitly or configure tiinex.aiProvenance.traceablePreferredModels with supported human-readable model declarations. The runtime refuses implicit auto-selection to avoid hidden model-cost drift, and the current LM tool invocation API does not expose the parent chat model to this tool. availableRuntimeModels=${summarizeModelCandidates(broadRuntimeModels.available)}; sendableRuntimeModels=${summarizeModelCandidates(broadRuntimeModels.sendable)}`,
+        : `Traceable subagent model selection is not configured safely from explicit or inherited sources, and no unblocked runtime model was available for implicit auto-selection. Provide modelSelector.id explicitly, adjust role declarations, or review tiinex.aiProvenance.traceablePreferredModels and traceableBlockedModels. availableRuntimeModels=${summarizeModelCandidates(broadRuntimeModels.available)}; sendableRuntimeModels=${summarizeModelCandidates(broadRuntimeModels.sendable)}`,
       "tool_blocked",
       "unresolved",
       {
@@ -3114,7 +3408,6 @@ export async function runTraceableSubagent(
     });
   }
 
-  let model: vscode.LanguageModelChat | undefined;
   setStatus("selecting model");
   try {
     for (const selector of selectors) {
@@ -3190,10 +3483,11 @@ export async function runTraceableSubagent(
     id: model.id,
     version: model.version
   };
+  const selectedModelDisplayName = model.name?.trim() || model.id;
 
   try {
     options.statusReporter?.setHeader?.({
-      modelLabel: model.name || model.id
+      modelLabel: selectedModelDisplayName
     });
   } catch {
     // Best-effort UI status only; runtime correctness should not depend on it.
@@ -3418,6 +3712,7 @@ export async function runTraceableSubagent(
       return finalizeResult({
         request: buildTraceableSubagentRequestEnvelope(input),
         model: modelInfo,
+        modelDisplayName: selectedModelDisplayName,
         allowedToolNames: selectedToolNames,
         toolCalls,
         traceStatus: resolveTraceStatus(parsedPayload, toolCalls, allOpaqueDelegations),
@@ -3493,6 +3788,12 @@ export async function runTraceableSubagent(
       const repeatedAnchoredReadDecision = shouldDeferRepeatedAnchoredRead(call, toolCalls, fileContextAnchors);
       if (repeatedAnchoredReadDecision.shouldDefer) {
         const note = repeatedAnchoredReadDecision.note ?? `Deferred repeated read of ${call.name}.`;
+        const deferredOutput = buildPersistedToolOutput({
+          outputSummary: truncate(note, 280),
+          rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+          rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+          partKinds: ["text"]
+        });
         deferredToolCallsThisIteration += 1;
         repeatedAnchoredReadDeferralsThisIteration += 1;
         toolCalls.push({
@@ -3500,7 +3801,8 @@ export async function runTraceableSubagent(
           toolName: call.name,
           argsSummary: summarizeJson(call.input),
           result: "notRun",
-          note
+          note,
+          output: deferredOutput
         });
         toolResultParts.push(
           new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(note)])
@@ -3514,6 +3816,17 @@ export async function runTraceableSubagent(
             note,
             elapsedMs: 0,
             occurredAt: toolOccurredAt
+          });
+          options.statusReporter?.recordToolDetail?.({
+            callId: call.callId,
+            toolName: call.name,
+            phase: "deferred",
+            input: isRecord(call.input) ? call.input : undefined,
+            note,
+            outputSummary: truncate(note, 280),
+            rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+            rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+            partKinds: ["text"]
           });
         } catch {
           // Best-effort UI status only; runtime correctness should not depend on it.
@@ -3534,13 +3847,20 @@ export async function runTraceableSubagent(
         const note = shouldReserveIterationSynthesisSlot
           ? `Deferred ${call.name} to preserve a final synthesis turn before the iteration budget is exhausted.`
           : `Tool-call budget exhausted before ${call.name} could run.`;
+        const deferredOutput = buildPersistedToolOutput({
+          outputSummary: truncate(note, 280),
+          rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+          rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+          partKinds: ["text"]
+        });
         deferredToolCallsThisIteration += 1;
         toolCalls.push({
           callId: call.callId,
           toolName: call.name,
           argsSummary: summarizeJson(call.input),
           result: "notRun",
-          note
+          note,
+          output: deferredOutput
         });
         toolResultParts.push(
           new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(note)])
@@ -3554,6 +3874,17 @@ export async function runTraceableSubagent(
             note,
             elapsedMs: 0,
             occurredAt: toolOccurredAt
+          });
+          options.statusReporter?.recordToolDetail?.({
+            callId: call.callId,
+            toolName: call.name,
+            phase: "deferred",
+            input: isRecord(call.input) ? call.input : undefined,
+            note,
+            outputSummary: truncate(note, 280),
+            rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+            rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+            partKinds: ["text"]
           });
         } catch {
           // Best-effort UI status only; runtime correctness should not depend on it.
@@ -3567,12 +3898,19 @@ export async function runTraceableSubagent(
 
       if (countConsumedToolBudget(toolCalls) >= budgetPolicy.maxToolCalls) {
         const note = `Tool-call budget exhausted before ${call.name} could run.`;
+        const deferredOutput = buildPersistedToolOutput({
+          outputSummary: truncate(note, 280),
+          rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+          rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+          partKinds: ["text"]
+        });
         toolCalls.push({
           callId: call.callId,
           toolName: call.name,
           argsSummary: summarizeJson(call.input),
           result: "notRun",
-          note
+          note,
+          output: deferredOutput
         });
         toolResultParts.push(
           new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(note)])
@@ -3587,6 +3925,17 @@ export async function runTraceableSubagent(
             elapsedMs: 0,
             occurredAt: toolOccurredAt
           });
+          options.statusReporter?.recordToolDetail?.({
+            callId: call.callId,
+            toolName: call.name,
+            phase: "deferred",
+            input: isRecord(call.input) ? call.input : undefined,
+            note,
+            outputSummary: truncate(note, 280),
+            rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+            rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+            partKinds: ["text"]
+          });
         } catch {
           // Best-effort UI status only; runtime correctness should not depend on it.
         }
@@ -3595,12 +3944,19 @@ export async function runTraceableSubagent(
 
       if (call.name === TRACEABLE_SUBAGENT_TOOL_NAME) {
         const note = `${TRACEABLE_SUBAGENT_TOOL_NAME} is non-reentrant and cannot call itself.`;
+        const failureOutput = buildPersistedToolOutput({
+          outputSummary: truncate(note, 280),
+          rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+          rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+          partKinds: ["text"]
+        });
         toolCalls.push({
           callId: call.callId,
           toolName: call.name,
           argsSummary: summarizeJson(call.input),
           result: "failure",
-          note
+          note,
+          output: failureOutput
         });
         toolResultParts.push(
           new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(note)])
@@ -3615,6 +3971,17 @@ export async function runTraceableSubagent(
             elapsedMs: 0,
             occurredAt: toolOccurredAt
           });
+          options.statusReporter?.recordToolDetail?.({
+            callId: call.callId,
+            toolName: call.name,
+            phase: "failure",
+            input: isRecord(call.input) ? call.input : undefined,
+            note,
+            outputSummary: truncate(note, 280),
+            rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+            rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+            partKinds: ["text"]
+          });
         } catch {
           // Best-effort UI status only; runtime correctness should not depend on it.
         }
@@ -3622,12 +3989,19 @@ export async function runTraceableSubagent(
       }
       if (/^runSubagent$/i.test(call.name) || /^run_subagent$/i.test(call.name)) {
         const note = "runSubagent is blocked inside TRACEABLE lanes so parent-controlled traceability remains single-lane and explicit.";
+        const failureOutput = buildPersistedToolOutput({
+          outputSummary: truncate(note, 280),
+          rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+          rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+          partKinds: ["text"]
+        });
         toolCalls.push({
           callId: call.callId,
           toolName: call.name,
           argsSummary: summarizeJson(call.input),
           result: "failure",
-          note
+          note,
+          output: failureOutput
         });
         toolResultParts.push(
           new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(note)])
@@ -3641,6 +4015,17 @@ export async function runTraceableSubagent(
             note,
             elapsedMs: 0,
             occurredAt: toolOccurredAt
+          });
+          options.statusReporter?.recordToolDetail?.({
+            callId: call.callId,
+            toolName: call.name,
+            phase: "failure",
+            input: isRecord(call.input) ? call.input : undefined,
+            note,
+            outputSummary: truncate(note, 280),
+            rawOutput: truncate(note, MAX_TOOL_DETAIL_TEXT_CHARS),
+            rawOutputTruncated: note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+            partKinds: ["text"]
           });
         } catch {
           // Best-effort UI status only; runtime correctness should not depend on it.
@@ -3656,6 +4041,7 @@ export async function runTraceableSubagent(
         const toolFinishedAtMs = Date.now();
         const toolElapsedMs = toolFinishedAtMs - toolStartedAtMs;
         transitionTimingSegment("runtime", toolFinishedAtMs);
+        const toolOutput = summarizeToolResultContent(toolResult.content);
 
         runnableToolCallsThisIteration += 1;
 
@@ -3663,7 +4049,8 @@ export async function runTraceableSubagent(
           callId: call.callId,
           toolName: call.name,
           argsSummary: summarizeJson(call.input),
-          result: "success"
+          result: "success",
+          output: buildPersistedToolOutput(toolOutput)
         });
         toolResultParts.push(new vscode.LanguageModelToolResultPart(call.callId, toolResult.content));
         try {
@@ -3675,6 +4062,13 @@ export async function runTraceableSubagent(
             elapsedMs: toolElapsedMs,
             occurredAt: toolOccurredAt
           });
+          options.statusReporter?.recordToolDetail?.({
+            callId: call.callId,
+            toolName: call.name,
+            phase: "success",
+            input: isRecord(call.input) ? call.input : undefined,
+            ...toolOutput
+          });
         } catch {
           // Best-effort UI status only; runtime correctness should not depend on it.
         }
@@ -3683,12 +4077,19 @@ export async function runTraceableSubagent(
         const toolElapsedMs = toolFinishedAtMs - toolStartedAtMs;
         transitionTimingSegment("runtime", toolFinishedAtMs);
         const failure = summarizeToolError(error);
+        const failureOutput = buildPersistedToolOutput({
+          outputSummary: truncate(failure.note, 280),
+          rawOutput: truncate(failure.note, MAX_TOOL_DETAIL_TEXT_CHARS),
+          rawOutputTruncated: failure.note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+          partKinds: ["text"]
+        });
         toolCalls.push({
           callId: call.callId,
           toolName: call.name,
           argsSummary: summarizeJson(call.input),
           result: failure.result,
-          note: failure.note
+          note: failure.note,
+          output: failureOutput
         });
         toolResultParts.push(
           new vscode.LanguageModelToolResultPart(call.callId, [new vscode.LanguageModelTextPart(failure.note)])
@@ -3702,6 +4103,17 @@ export async function runTraceableSubagent(
             note: failure.note,
             elapsedMs: toolElapsedMs,
             occurredAt: toolOccurredAt
+          });
+          options.statusReporter?.recordToolDetail?.({
+            callId: call.callId,
+            toolName: call.name,
+            phase: "failure",
+            input: isRecord(call.input) ? call.input : undefined,
+            note: failure.note,
+            outputSummary: truncate(failure.note, 280),
+            rawOutput: truncate(failure.note, MAX_TOOL_DETAIL_TEXT_CHARS),
+            rawOutputTruncated: failure.note.length > MAX_TOOL_DETAIL_TEXT_CHARS,
+            partKinds: ["text"]
           });
         } catch {
           // Best-effort UI status only; runtime correctness should not depend on it.
@@ -4090,8 +4502,11 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
   const quickReadMissing = rewriteTraceableTextPathMentions(summarizeMissingSignal(result.expectedButMissing), result, options);
   const usageSummary = summarizeUsage(result);
   const elapsedSummary = formatElapsedMs(result.elapsedMs);
+  const attemptedStepCount = result.steps.filter((step) => step.status === "attempted").length;
   const completedStepsSummary = result.steps.length > 0
-    ? `${completedStepCount}/${result.steps.length}`
+    ? attemptedStepCount > 0 && completedStepCount === 0
+      ? `${completedStepCount}/${result.steps.length} completed, ${attemptedStepCount} attempted`
+      : `${completedStepCount}/${result.steps.length}`
     : "- (no final child steps captured)";
   const lines = [
     "# Traceable Subagent Result",
@@ -4122,7 +4537,7 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
     `- Completion Claim: ${result.completionClaim}`,
     `- Final Summary: ${rewrittenFinalSummary}`,
     `- Validation Issues: ${validationIssues.length > 0 ? validationIssues.join(" | ") : "-"}`,
-    `- Model: ${result.model ? `${result.model.vendor}/${result.model.family}/${result.model.id}` : "-"}`,
+    `- Model: ${result.modelDisplayName?.trim() || (result.model ? `${result.model.vendor}/${result.model.family}/${result.model.id}` : "-")}`,
     `- Usage: ${usageSummary}`,
     `- Elapsed: ${elapsedSummary}`,
     `- Output Mode: ${outputMode ?? "summary-without-export"}`,

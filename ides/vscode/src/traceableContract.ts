@@ -31,6 +31,10 @@ export interface TraceableMarkdownRenderOptions extends TraceableMarkdownPathRen
   includeSupportArtifacts?: boolean;
 }
 
+export type TraceableResolvedPathTarget =
+  | { kind: "relative"; path: string; baseDir: string }
+  | { kind: "absolute"; path: string };
+
 const TRACEABLE_MAX_RELATIVE_PATH_DEPTH_SETTING = "maximumDepthOutsideOfWorkspaceRootForRelativePaths";
 
 function normalizeTraceablePathForMarkdown(value: string): string {
@@ -53,10 +57,7 @@ function countLeadingParentSegments(relativePath: string): number {
 }
 
 function findContainingWorkspaceRoot(filePath: string): string | undefined {
-  const candidates = (vscode.workspace.workspaceFolders ?? [])
-    .map((folder) => folder.uri.fsPath)
-    .filter((root) => filePath.toLowerCase().startsWith(root.toLowerCase()));
-  return candidates.sort((left, right) => right.length - left.length)[0];
+  return vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath;
 }
 
 export function getMaximumDepthOutsideOfWorkspaceRootForRelativePaths(): number {
@@ -90,30 +91,43 @@ function renderTraceablePathValue(filePath: string, options: TraceableMarkdownPa
   if (mode === "absolute-file-uri-markdown") {
     return pathToFileURL(filePath).toString();
   }
+  const resolvedTarget = resolveTraceablePathTarget(filePath, options);
+  return resolvedTarget.kind === "relative"
+    ? resolvedTarget.path
+    : pathToFileURL(resolvedTarget.path).toString();
+}
+
+export function resolveTraceablePathTarget(
+  filePath: string,
+  options: TraceableMarkdownPathRenderOptions | undefined
+): TraceableResolvedPathTarget {
+  const trimmed = filePath.trim();
   const baseDir = options?.baseDir?.trim();
   if (!baseDir) {
-    return filePath;
+    return { kind: "absolute", path: trimmed };
   }
-  const relativePath = normalizeTraceablePathForMarkdown(path.relative(baseDir, filePath));
+  const relativePath = normalizeTraceablePathForMarkdown(path.relative(baseDir, trimmed));
   if (!relativePath) {
-    return path.basename(filePath);
+    return { kind: "relative", path: path.basename(trimmed), baseDir };
   }
   if (path.isAbsolute(relativePath)) {
-    return pathToFileURL(filePath).toString();
+    return { kind: "absolute", path: trimmed };
   }
   const workspaceRoot = options?.workspaceRoot?.trim();
   if (!workspaceRoot) {
-    return relativePath;
+    return { kind: "relative", path: relativePath, baseDir };
   }
   const baseToWorkspace = normalizeTraceablePathForMarkdown(path.relative(baseDir, workspaceRoot));
   if (path.isAbsolute(baseToWorkspace)) {
-    return pathToFileURL(filePath).toString();
+    return { kind: "absolute", path: trimmed };
   }
   const outsideDepth = Math.max(0, countLeadingParentSegments(relativePath) - countLeadingParentSegments(baseToWorkspace));
   const maximumDepth = Number.isFinite(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths)
     ? Math.max(0, Math.floor(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths ?? 0))
     : 1;
-  return outsideDepth <= maximumDepth ? relativePath : pathToFileURL(filePath).toString();
+  return outsideDepth <= maximumDepth
+    ? { kind: "relative", path: relativePath, baseDir }
+    : { kind: "absolute", path: trimmed };
 }
 
 export interface TraceableSubagentStatusHeader {
@@ -256,6 +270,14 @@ export interface TraceableSubagentToolCallRecord {
   argsSummary: string;
   result: TraceableToolResult;
   note?: string;
+  output?: {
+    kind?: "text" | "structured" | "data" | "mixed";
+    summary?: string;
+    metadataSummary?: string;
+    rawText?: string;
+    rawTextTruncated?: boolean;
+    partKinds?: string[];
+  };
 }
 
 export interface TraceableSubagentUsageSummary {
@@ -301,6 +323,7 @@ export interface TraceableSubagentRunResult {
     id: string;
     version: string;
   } | null;
+  modelDisplayName?: string;
   allowedToolNames: string[];
   toolCalls: TraceableSubagentToolCallRecord[];
   traceStatus: TraceableStatus;
@@ -624,6 +647,38 @@ export function normalizeMissingItems(value: unknown): TraceableSubagentMissingI
 }
 
 export function normalizeSteps(value: unknown): TraceableSubagentStep[] {
+  const normalizeStepStatus = (status: unknown, fallback: TraceableStepStatus): TraceableStepStatus => {
+    if (status === "planned"
+      || status === "attempted"
+      || status === "completed"
+      || status === "failed"
+      || status === "skipped") {
+      return status;
+    }
+    if (typeof status !== "string") {
+      return fallback;
+    }
+    const normalized = status.trim().toLowerCase();
+    if (!normalized) {
+      return fallback;
+    }
+    if (/^(?:done|complete|completed|success|successful|succeeded|verified|grounded|finished)$/u.test(normalized)) {
+      return "completed";
+    }
+    if (/^(?:plan|planned|todo)$/u.test(normalized)) {
+      return "planned";
+    }
+    if (/^(?:attempted|attempt|started|running|in[_ -]?progress|working)$/u.test(normalized)) {
+      return "attempted";
+    }
+    if (/^(?:failed|failure|error|blocked)$/u.test(normalized)) {
+      return "failed";
+    }
+    if (/^(?:skipped|skip)$/u.test(normalized)) {
+      return "skipped";
+    }
+    return fallback;
+  };
   if (!Array.isArray(value)) {
     return [];
   }
@@ -646,13 +701,7 @@ export function normalizeSteps(value: unknown): TraceableSubagentStep[] {
     return [{
       id: typeof item.id === "string" ? item.id : `step-${index + 1}`,
       intent: typeof item.intent === "string" ? item.intent : "unspecified",
-      status: item.status === "planned"
-        || item.status === "attempted"
-        || item.status === "completed"
-        || item.status === "failed"
-        || item.status === "skipped"
-        ? item.status
-        : "attempted",
+      status: normalizeStepStatus(item.status, "attempted"),
       note: typeof item.note === "string" ? item.note : undefined
     }];
   });
@@ -761,6 +810,22 @@ export function normalizeCompletionClaimValue(value: unknown, stopReason: Tracea
     : "unresolved");
 }
 
+export function reconcileCompletionClaimWithSteps(
+  completionClaim: TraceableCompletionClaim | undefined,
+  steps: TraceableSubagentStep[]
+): TraceableCompletionClaim | undefined {
+  if (completionClaim !== "complete" || steps.length === 0) {
+    return completionClaim;
+  }
+  if (steps.some((step) => step.status === "completed")) {
+    return completionClaim;
+  }
+  if (steps.some((step) => step.status === "attempted" || step.status === "planned" || step.status === "failed" || step.status === "skipped")) {
+    return "partial";
+  }
+  return completionClaim;
+}
+
 export function normalizeFinalSummaryValue(value: unknown): string {
   if (typeof value === "string") {
     return value.trim();
@@ -799,13 +864,17 @@ export function normalizeParsedPayload(value: unknown): TraceableSubagentChildPa
   const stopReason = normalizedStopReason ?? (normalizeCompletionClaimValue(value.completionClaim, normalizedStopReason) === "complete"
     ? "completed"
     : undefined);
-  const completionClaim = normalizeCompletionClaimValue(value.completionClaim, stopReason);
+  const steps = normalizeSteps(value.steps);
+  const completionClaim = reconcileCompletionClaimWithSteps(
+    normalizeCompletionClaimValue(value.completionClaim, stopReason),
+    steps
+  );
   const finalSummary = normalizeFinalSummaryValue(value.finalSummary);
   if (!stopReason || !completionClaim || !finalSummary) {
     return undefined;
   }
   return {
-    steps: normalizeSteps(value.steps),
+    steps,
     expectedButMissing: normalizeMissingItems(value.expectedButMissing),
     stopReason,
     completionClaim,
@@ -1325,8 +1394,11 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
   const quickReadMissing = rewriteTraceableTextPathMentions(summarizeMissingSignal(result.expectedButMissing), result, options);
   const usageSummary = summarizeUsage(result);
   const elapsedSummary = formatElapsedMs(result.elapsedMs);
+  const attemptedStepCount = result.steps.filter((step) => step.status === "attempted").length;
   const completedStepsSummary = result.steps.length > 0
-    ? `${completedStepCount}/${result.steps.length}`
+    ? attemptedStepCount > 0 && completedStepCount === 0
+      ? `${completedStepCount}/${result.steps.length} completed, ${attemptedStepCount} attempted`
+      : `${completedStepCount}/${result.steps.length}`
     : "- (no final child steps captured)";
   const lines = [
     "# Traceable Subagent Result",
@@ -1361,7 +1433,7 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
     `- Lineage: ${result.lineageLabel ? `${result.lineageLabel} (depth ${result.lineageDepth ?? "-"})` : "-"}`,
     `- Carry State: ${result.carryStateDisposition ?? (result.activeCarryForward ? "active" : result.recoverableCarryState ? "recoverable" : "-")}`,
     `- Validation Issues: ${validationIssues.length > 0 ? validationIssues.join(" | ") : "-"}`,
-    `- Model: ${result.model ? `${result.model.vendor}/${result.model.family}/${result.model.id}` : "-"}`,
+    `- Model: ${result.modelDisplayName?.trim() || (result.model ? `${result.model.vendor}/${result.model.family}/${result.model.id}` : "-")}`,
     `- Usage: ${usageSummary}`,
     `- Elapsed: ${elapsedSummary}`,
     `- Output Mode: ${outputMode ?? "summary-without-export"}`,

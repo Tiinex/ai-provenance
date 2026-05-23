@@ -38,6 +38,8 @@ export interface TraceableSubagentDetailSnapshot {
     filePath: string;
     title: string;
     occurredAt: string;
+    startedAt?: string;
+    updatedAt?: string;
     finalSummary?: string;
     completionClaim?: string;
     status?: {
@@ -46,7 +48,11 @@ export interface TraceableSubagentDetailSnapshot {
       detail?: string;
     };
     header?: Required<TraceableSubagentStatusHeader>;
+    evidenceFile?: TraceableSubagentEvidenceFileState;
     requestSummary?: TraceableSubagentRequestSummaryItem[];
+    statusHistory?: TraceableSubagentStatusHistoryEvent[];
+    recentTools?: TraceableSubagentToolStatusEvent[];
+    timingSummary?: TraceableSubagentTimingSummary;
     resultSummary?: {
       finalSummary?: string;
       carryStateDisposition?: TraceableCarryStateDisposition;
