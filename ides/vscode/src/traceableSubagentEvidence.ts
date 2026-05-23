@@ -209,6 +209,9 @@ function buildTraceableEvidenceState(
       finalSummary: result.finalSummary,
       validationIssues: result.validationIssues,
       opaqueDelegations: result.opaqueDelegations,
+      evidenceBasis: result.evidenceBasis,
+      runtimeDecisionSummary: result.runtimeDecisionSummary,
+      runtimeFingerprint: result.runtimeFingerprint,
       usage: result.usage,
       timingSummary: result.timingSummary,
       iterationMetrics: result.iterationMetrics,
@@ -673,6 +676,10 @@ export class TraceableSubagentEvidenceController {
       };
       throw error;
     }
+  }
+
+  async pickExportFolderViaDialog(): Promise<string | undefined> {
+    return this.pickExportFolder();
   }
 
   private async beginExport(

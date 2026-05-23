@@ -46,6 +46,9 @@ const STOP_TRACEABLE_SUBAGENT_COMMAND = "tiinex.aiProvenance.stopTraceableSubage
 const OPEN_TRACEABLE_EVIDENCE_EDITOR_COMMAND = "tiinex.aiProvenance.openTraceableEvidenceEditor";
 const REOPEN_TRACEABLE_EVIDENCE_SOURCE_COMMAND = "tiinex.aiProvenance.reopenTraceableEvidenceSource";
 const REOPEN_TRACEABLE_EVIDENCE_PREVIEW_COMMAND = "tiinex.aiProvenance.reopenTraceableEvidencePreview";
+const NEW_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.newTraceableChat";
+const RESUME_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.resumeTraceableChat";
+const SET_DEFAULT_NEW_TRACEABLE_CHAT_EXPORT_FOLDER_COMMAND = "tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder";
 const RUN_TRACEABLE_SUBAGENT_TOOL = "run_traceable_subagent";
 const VIEW_TRACEABLE_SUBAGENT_TOOL = "view_traceable_subagent";
 const TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE = "tiinexTraceableEvidenceEditor";
@@ -73,8 +76,15 @@ const traceableSubagentToolMutex = new QueuedMutex();
 const TRACEABLE_SURFACE_OPTIONS: Array<{ label: string; description: string; surface: TraceableEvidenceSurface }> = [
   { label: "Rendered Output", description: "Render the reconstructed TRACEABLE output surface", surface: "rendered-output" },
   { label: "Request Summary", description: "Bounded request-summary items captured in the evidence snapshot", surface: "request-summary" },
+  { label: "Request Contract", description: "Separate explicit request, inherited state, contextual inputs, and safe implicit defaults", surface: "request-contract" },
   { label: "Summary", description: "Compact overview of the evidence artifact", surface: "summary" },
   { label: "Outcome", description: "Current status, trace status, stop reason, and final summary", surface: "outcome" },
+  { label: "Runtime Decision", description: "Persisted model-selection rationale and runtime fingerprint", surface: "runtime-decision" },
+  { label: "Evidence Basis", description: "Persisted grounding anchors, carried context, and unsupported claims", surface: "evidence-basis" },
+  { label: "Timeline", description: "Replay-oriented activity timeline with status events, recent tools, and decision points", surface: "timeline" },
+  { label: "Carry Handoff", description: "Resolved carry-state disposition plus active or recoverable handoff details", surface: "carry-handoff" },
+  { label: "Tool Forensics", description: "Bounded per-call inputs, typed outputs, metadata, and raw-output capture state", surface: "tool-forensics" },
+  { label: "Lineage", description: "Parent/current/children chain view over continuation and neighboring trace artifacts", surface: "lineage" },
   { label: "Tool Ledger", description: "Latest bounded tool-call ledger", surface: "tool-ledger" },
   { label: "Status History", description: "Latest bounded status events", surface: "status-history" },
   { label: "Tool Summary", description: "Aggregated tool-call counts by tool name", surface: "tool-summary" },
@@ -1178,8 +1188,8 @@ function truncateTraceableViewOutput(content: string, budget: number): string {
   return `${content.slice(0, headBudget).trimEnd()}${suffix}`;
 }
 
-function getProvenanceConfiguration(): vscode.WorkspaceConfiguration {
-  return vscode.workspace.getConfiguration("tiinex.aiProvenance");
+function getProvenanceConfiguration(resource?: vscode.Uri): vscode.WorkspaceConfiguration {
+  return vscode.workspace.getConfiguration("tiinex.aiProvenance", resource);
 }
 
 function getConfiguredEvidenceMaxItems(): number {
@@ -1189,6 +1199,25 @@ function getConfiguredEvidenceMaxItems(): number {
 
 function getConfiguredIncludeSupportArtifacts(): boolean {
   return getProvenanceConfiguration().get<boolean>("includeSupportArtifacts", true);
+}
+
+function resolveConfiguredNewTraceableChatExportFolder(resource?: vscode.Uri): string | undefined {
+  const configured = getProvenanceConfiguration(resource).get<string>("defaultNewTraceableChatExportTo", "").trim();
+  if (!configured) {
+    return undefined;
+  }
+  if (path.isAbsolute(configured)) {
+    return path.resolve(configured);
+  }
+  const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+  if (workspaceFolders.length !== 1) {
+    return undefined;
+  }
+  return path.resolve(workspaceFolders[0].uri.fsPath, configured);
+}
+
+function formatNewTraceableChatExportFolderSettingValue(folderPath: string): string {
+  return path.resolve(folderPath);
 }
 
 async function delayMs(ms: number): Promise<void> {
@@ -1247,6 +1276,11 @@ async function renderTraceableEvidenceSurfaceFromFile(input: {
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Tiinex AI Provenance");
   output.appendLine("Activated Tiinex AI Provenance extension scaffold.");
+  const unsavedTraceableAgentChatState = new Map<string, {
+    priorTurnsSummary?: string;
+    activeCarryForward?: TraceableSubagentRunResult["activeCarryForward"];
+  }>();
+  let activeUnsavedTraceableAgentChatKey: string | undefined;
   let traceablePanelRestoreCommand: string | undefined;
   let traceablePanelPinnedOpen = false;
   void vscode.commands.executeCommand("setContext", TRACEABLE_PANEL_VISIBLE_CONTEXT, false);
@@ -1895,7 +1929,11 @@ export function activate(context: vscode.ExtensionContext): void {
   const traceableStatusPanel = new TraceableSubagentStatusPanelProvider(
     context.extensionUri,
     async () => {
-      await traceableEvidence.exportCurrentSnapshotViaDialog();
+      const exportedState = await traceableEvidence.exportCurrentSnapshotViaDialog();
+      if (exportedState?.filePath && activeUnsavedTraceableAgentChatKey) {
+        unsavedTraceableAgentChatState.delete(activeUnsavedTraceableAgentChatKey);
+        activeUnsavedTraceableAgentChatKey = undefined;
+      }
       const snapshot = await enrichSnapshotWithLineage(traceableEvidence.getSnapshot());
       traceableStatusDetail.update(snapshot);
       traceableStatusPanel.update(snapshot);
@@ -1956,6 +1994,284 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  type NewTraceableChatResolvedTarget =
+    | { kind: "agent"; uri: vscode.Uri }
+    | { kind: "folder"; uri: vscode.Uri; folderPath: string }
+    | { kind: "trace"; uri: vscode.Uri; filePath: string };
+
+  const prepareTraceableRunExecution = async (requestedInput: TraceableSubagentInput) => {
+    const preparedInput = await prepareTraceableSubagentInput(requestedInput);
+    const effectiveInput = preparedInput.input;
+    if (shouldAutoRevealTraceablePanel(effectiveInput.reveal)) {
+      void (async () => {
+        await revealTraceablePanel("auto");
+      })();
+    }
+    const reporter = traceableStatusBar.startRun({
+      agentName: effectiveInput.agentRole?.name
+    });
+    reporter.setRequestSummary?.(buildTraceableRequestSummary(effectiveInput, requestedInput));
+    reporter.update("queued");
+    return {
+      preparedInput,
+      statusReporter: reporter,
+      beforeRun: async () => {
+        await traceableEvidence.prepareRequestedExport(effectiveInput);
+        const snapshot = traceableEvidence.getSnapshot();
+        traceableStatusDetail.update(snapshot);
+        traceableStatusPanel.update(snapshot);
+      },
+      afterRun: async (result: TraceableSubagentRunResult) => {
+        const finalized = await traceableEvidence.finalizeRequestedExport(result, renderTraceableSubagentMarkdown(result));
+        const snapshot = traceableEvidence.getSnapshot();
+        traceableStatusDetail.update(snapshot);
+        traceableStatusPanel.update(snapshot);
+        return finalized;
+      }
+    };
+  };
+
+  const executePreparedTraceableRun = async (
+    requestedInput: TraceableSubagentInput,
+    runHooks: Awaited<ReturnType<typeof prepareTraceableRunExecution>>,
+    token?: vscode.CancellationToken
+  ): Promise<TraceableSubagentRunResult> => {
+    await runHooks.beforeRun();
+    const cancelSource = new vscode.CancellationTokenSource();
+    const activeRunState = {
+      cancelSource,
+      stopSource: "unknown" as "traceable-panel" | "host-cancel" | "unknown",
+      stopRequestedAt: undefined as string | undefined
+    };
+    activeTraceableRun = activeRunState;
+    const hostCancellationSubscription = token?.onCancellationRequested(() => {
+      if (!cancelSource.token.isCancellationRequested) {
+        activeRunState.stopSource = activeRunState.stopSource === "traceable-panel" ? "traceable-panel" : "host-cancel";
+        activeRunState.stopRequestedAt ??= new Date().toISOString();
+        cancelSource.cancel();
+      }
+    }) ?? { dispose() {} };
+    try {
+      const result = await runTraceableSubagent(requestedInput, {
+        accessInformation: context.languageModelAccessInformation,
+        debugLogDir: context.globalStorageUri.fsPath,
+        preparedInput: runHooks.preparedInput,
+        token: cancelSource.token,
+        statusReporter: runHooks.statusReporter,
+        getStopSource: () => activeRunState.stopSource,
+        getStopRequestedAt: () => activeRunState.stopRequestedAt
+      });
+      return await runHooks.afterRun(result);
+    } finally {
+      hostCancellationSubscription.dispose();
+      if (activeTraceableRun === activeRunState) {
+        activeTraceableRun = undefined;
+      }
+      cancelSource.dispose();
+    }
+  };
+
+  const openTraceableCommandResult = async (result: TraceableSubagentRunResult): Promise<void> => {
+    if (result.evidenceFile?.filePath) {
+      await openTraceableEvidenceEditor(result.evidenceFile.filePath);
+      return;
+    }
+    const document = await vscode.workspace.openTextDocument({
+      language: "markdown",
+      content: renderTraceableSubagentMarkdown(result)
+    });
+    await vscode.window.showTextDocument(document, { preview: false });
+  };
+
+  const resolveNewTraceableChatTarget = async (target?: vscode.Uri): Promise<NewTraceableChatResolvedTarget | undefined> => {
+    const candidate = target ?? vscode.window.activeTextEditor?.document.uri;
+    if (!candidate || candidate.scheme !== "file") {
+      void vscode.window.showErrorMessage("Invoke New Traceable Chat from a .agent.md file, a .trace.md file, or a folder in the Explorer.");
+      return undefined;
+    }
+    if (/\.trace\.md$/iu.test(candidate.fsPath)) {
+      return { kind: "trace", uri: candidate, filePath: candidate.fsPath };
+    }
+    if (/\.agent\.md$/iu.test(candidate.fsPath)) {
+      return { kind: "agent", uri: candidate };
+    }
+    try {
+      const stat = await fs.stat(candidate.fsPath);
+      if (stat.isDirectory()) {
+        return { kind: "folder", uri: candidate, folderPath: candidate.fsPath };
+      }
+    } catch {
+      // Fall through to the user-facing error below.
+    }
+    void vscode.window.showErrorMessage("New Traceable Chat currently supports .agent.md files, .trace.md files, and folders only.");
+    return undefined;
+  };
+
+  const promptForTraceableAgentRoleSelection = async (): Promise<{ name: string; filePath: string } | undefined> => {
+    const entries = await listTraceableAgentCatalogEntries();
+    if (entries.length === 0) {
+      void vscode.window.showErrorMessage("No traceable agent roles are currently available in the open workspace.");
+      return undefined;
+    }
+    const picked = await vscode.window.showQuickPick(
+      entries.map((entry) => ({
+        label: entry.displayName,
+        description: entry.workspaceFolderName,
+        detail: entry.filePath,
+        agentName: entry.displayName,
+        agentFilePath: entry.filePath
+      })),
+      {
+        title: "New Traceable Chat",
+        placeHolder: "Choose which traceable agent role to chat with"
+      }
+    );
+    return picked
+      ? { name: picked.agentName, filePath: picked.agentFilePath }
+      : undefined;
+  };
+
+  const promptForFirstTraceableMessage = async (): Promise<string | undefined> => {
+    const value = await vscode.window.showInputBox({
+      title: "New Traceable Chat",
+      prompt: "Enter the first user message for this traceable chat",
+      placeHolder: "Type the first message that should start the traceable lane",
+      validateInput: (candidate) => candidate.trim() ? undefined : "A first message is required to start a traceable chat."
+    });
+    return value?.trim() || undefined;
+  };
+
+  const promptForAgentEntryExportFolder = async (resource: vscode.Uri): Promise<string | null | undefined> => {
+    const configuredFolder = resolveConfiguredNewTraceableChatExportFolder(resource);
+    if (configuredFolder) {
+      return configuredFolder;
+    }
+    const selectedFolder = await traceableEvidence.pickExportFolderViaDialog();
+    return selectedFolder || null;
+  };
+
+  const runTraceableSubagentFromCommand = async (requestedInput: TraceableSubagentInput, logLabel: string): Promise<TraceableSubagentRunResult> => {
+    const prepared = await prepareTraceableRunExecution(requestedInput);
+    const lease = await traceableSubagentToolMutex.acquire(logLabel);
+    try {
+      const result = await executePreparedTraceableRun(requestedInput, prepared);
+      await openTraceableCommandResult(result);
+      output.appendLine(`${logLabel}: completed.`);
+      return result;
+    } finally {
+      lease.release();
+    }
+  };
+
+  const startNewTraceableChat = async (target?: vscode.Uri): Promise<void> => {
+    const resolvedTarget = await resolveNewTraceableChatTarget(target);
+    if (!resolvedTarget) {
+      return;
+    }
+    if (resolvedTarget.kind === "folder") {
+      const selectedRole = await promptForTraceableAgentRoleSelection();
+      if (!selectedRole) {
+        return;
+      }
+      const firstMessage = await promptForFirstTraceableMessage();
+      if (!firstMessage) {
+        return;
+      }
+      await runTraceableSubagentFromCommand({
+        agentRole: {
+          name: selectedRole.name,
+          filePath: selectedRole.filePath
+        },
+        userInput: firstMessage,
+        inputMode: "DIRECT",
+        reveal: true,
+        exportToFolder: resolvedTarget.folderPath
+      }, "New Traceable Chat (folder)");
+      return;
+    }
+    if (resolvedTarget.kind === "trace") {
+      const firstMessage = await promptForFirstTraceableMessage();
+      if (!firstMessage) {
+        return;
+      }
+      await runTraceableSubagentFromCommand({
+        parentTracePath: resolvedTarget.filePath,
+        userInput: firstMessage,
+        inputMode: "DIRECT",
+        reveal: true,
+        exportToFolder: path.dirname(resolvedTarget.filePath)
+      }, "New Traceable Chat (continuation)");
+      return;
+    }
+    const existingUnsavedState = unsavedTraceableAgentChatState.get(resolvedTarget.uri.fsPath);
+    const exportFolder = existingUnsavedState
+      ? null
+      : await promptForAgentEntryExportFolder(resolvedTarget.uri);
+    if (exportFolder === undefined) {
+      return;
+    }
+    const firstMessage = await promptForFirstTraceableMessage();
+    if (!firstMessage) {
+      return;
+    }
+    const result = await runTraceableSubagentFromCommand({
+      agentRole: {
+        name: path.basename(resolvedTarget.uri.fsPath).replace(/\.agent\.md$/iu, "") || path.basename(resolvedTarget.uri.fsPath),
+        filePath: resolvedTarget.uri.fsPath
+      },
+      userInput: firstMessage,
+      inputMode: "DIRECT",
+      reveal: true,
+      ...(existingUnsavedState?.priorTurnsSummary
+        ? {
+          carriedContext: {
+            priorTurnsSummary: existingUnsavedState.priorTurnsSummary
+          }
+        }
+        : {}),
+      ...(existingUnsavedState?.activeCarryForward
+        ? {
+          activeCarryForward: existingUnsavedState.activeCarryForward
+        }
+        : {}),
+      ...(exportFolder ? { exportToFolder: exportFolder } : {})
+    }, "New Traceable Chat (agent)");
+    if (result.evidenceFile?.filePath) {
+      unsavedTraceableAgentChatState.delete(resolvedTarget.uri.fsPath);
+      if (activeUnsavedTraceableAgentChatKey === resolvedTarget.uri.fsPath) {
+        activeUnsavedTraceableAgentChatKey = undefined;
+      }
+      return;
+    }
+    unsavedTraceableAgentChatState.set(resolvedTarget.uri.fsPath, {
+      priorTurnsSummary: result.finalSummary?.trim() || undefined,
+      activeCarryForward: result.activeCarryForward
+    });
+    activeUnsavedTraceableAgentChatKey = resolvedTarget.uri.fsPath;
+  };
+
+  const setDefaultNewTraceableChatExportFolder = async (target?: vscode.Uri): Promise<void> => {
+    const candidate = target;
+    if (!candidate || candidate.scheme !== "file") {
+      void vscode.window.showErrorMessage("Invoke Set Default New Traceable Chat Export Folder from a folder in the Explorer.");
+      return;
+    }
+    let stat;
+    try {
+      stat = await fs.stat(candidate.fsPath);
+    } catch {
+      void vscode.window.showErrorMessage("The selected export target folder could not be read.");
+      return;
+    }
+    if (!stat.isDirectory()) {
+      void vscode.window.showErrorMessage("Set Default New Traceable Chat Export Folder currently supports folders only.");
+      return;
+    }
+    const settingValue = formatNewTraceableChatExportFolderSettingValue(candidate.fsPath);
+    await getProvenanceConfiguration(candidate).update("defaultNewTraceableChatExportTo", settingValue, vscode.ConfigurationTarget.Workspace);
+    void vscode.window.showInformationMessage(`Default New Traceable Chat export folder set to ${candidate.fsPath}`);
+  };
+
   context.subscriptions.push(output);
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE, {
@@ -1993,6 +2309,15 @@ export function activate(context: vscode.ExtensionContext): void {
       const document = await vscode.workspace.openTextDocument(repoReadme);
       await vscode.window.showTextDocument(document, { preview: false });
       output.appendLine(`Opened provenance overview: ${repoReadme.fsPath}`);
+    }),
+    vscode.commands.registerCommand(NEW_TRACEABLE_CHAT_COMMAND, async (target?: vscode.Uri) => {
+      await startNewTraceableChat(target);
+    }),
+    vscode.commands.registerCommand(RESUME_TRACEABLE_CHAT_COMMAND, async (target?: vscode.Uri) => {
+      await startNewTraceableChat(target);
+    }),
+    vscode.commands.registerCommand(SET_DEFAULT_NEW_TRACEABLE_CHAT_EXPORT_FOLDER_COMMAND, async (target?: vscode.Uri) => {
+      await setDefaultNewTraceableChatExportFolder(target);
     })
   );
   context.subscriptions.push(
@@ -2136,79 +2461,18 @@ export function activate(context: vscode.ExtensionContext): void {
         "Run Traceable Subagent",
         (input) => traceableSubagentInvocationMessage(input),
         async (input, _budget, preparedState, token) => {
-          const runHooks = preparedState as {
-            preparedInput?: Awaited<ReturnType<typeof prepareTraceableSubagentInput>>;
-            statusReporter?: ReturnType<TraceableSubagentStatusBarController["startRun"]>;
-            beforeRun?: () => Promise<void>;
-            afterRun?: (result: TraceableSubagentRunResult) => Promise<TraceableSubagentRunResult>;
-          } | undefined;
-          await runHooks?.beforeRun?.();
-          const cancelSource = new vscode.CancellationTokenSource();
-          const activeRunState = {
-            cancelSource,
-            stopSource: "unknown" as "traceable-panel" | "host-cancel" | "unknown",
-            stopRequestedAt: undefined as string | undefined
-          };
-          activeTraceableRun = activeRunState;
-          const hostCancellationSubscription = token?.onCancellationRequested(() => {
-            if (!cancelSource.token.isCancellationRequested) {
-              activeRunState.stopSource = activeRunState.stopSource === "traceable-panel" ? "traceable-panel" : "host-cancel";
-              activeRunState.stopRequestedAt ??= new Date().toISOString();
-              cancelSource.cancel();
-            }
-          }) ?? { dispose() {} };
-          try {
-            const result = await runTraceableSubagent(input, {
+          const runHooks = preparedState as Awaited<ReturnType<typeof prepareTraceableRunExecution>> | undefined;
+          const finalResult = runHooks
+            ? await executePreparedTraceableRun(input, runHooks, token)
+            : await runTraceableSubagent(input, {
               accessInformation: context.languageModelAccessInformation,
               debugLogDir: context.globalStorageUri.fsPath,
-              preparedInput: runHooks?.preparedInput,
-              token: cancelSource.token,
-              statusReporter: runHooks?.statusReporter,
-              getStopSource: () => activeRunState.stopSource,
-              getStopRequestedAt: () => activeRunState.stopRequestedAt
+              token
             });
-            const finalResult = runHooks?.afterRun ? await runHooks.afterRun(result) : result;
-            return renderTraceableSubagentMarkdown(finalResult);
-          } finally {
-            hostCancellationSubscription.dispose();
-            if (activeTraceableRun === activeRunState) {
-              activeTraceableRun = undefined;
-            }
-            cancelSource.dispose();
-          }
+          return renderTraceableSubagentMarkdown(finalResult);
         },
         traceableSubagentToolMutex,
-        async (input) => {
-          const preparedInput = await prepareTraceableSubagentInput(input);
-          const effectiveInput = preparedInput.input;
-          if (shouldAutoRevealTraceablePanel(effectiveInput.reveal)) {
-            void (async () => {
-              await revealTraceablePanel("auto");
-            })();
-          }
-          const reporter = traceableStatusBar.startRun({
-            agentName: effectiveInput.agentRole?.name
-          });
-          reporter.setRequestSummary?.(buildTraceableRequestSummary(effectiveInput, input));
-          reporter.update("queued");
-          return {
-            preparedInput,
-            statusReporter: reporter,
-            beforeRun: async () => {
-              await traceableEvidence.prepareRequestedExport(effectiveInput);
-              const snapshot = traceableEvidence.getSnapshot();
-              traceableStatusDetail.update(snapshot);
-              traceableStatusPanel.update(snapshot);
-            },
-            afterRun: async (result: TraceableSubagentRunResult) => {
-              const finalized = await traceableEvidence.finalizeRequestedExport(result, renderTraceableSubagentMarkdown(result));
-              const snapshot = traceableEvidence.getSnapshot();
-              traceableStatusDetail.update(snapshot);
-              traceableStatusPanel.update(snapshot);
-              return finalized;
-            }
-          };
-        }
+        async (input) => prepareTraceableRunExecution(input)
       )
     )
   );

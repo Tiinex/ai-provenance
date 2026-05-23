@@ -63,6 +63,12 @@ The current code shape already suggests a few narrow v1 decisions that should re
 - Lineage metadata should be stored in both the durable artifact state and the sanitized result object for continued runs. The state block is the durable truth on disk, while the result object keeps parent-facing rendering and evidence inspection surfaces from needing to rediscover that metadata indirectly.
 - `user_cancelled` should become a real stop reason, but it should map to the existing live-status `warning` phase rather than forcing a new panel phase. The current panel and detail surfaces already understand `warning`, and a user stop is not a clean completion but also not a hard policy failure.
 - The first continuation release should require a durable parent artifact. Temporary or cache-backed continuation should remain out of scope for v1 even if it becomes desirable later.
+- A future operator command such as `New Traceable Chat` should not create an empty `.trace.md` placeholder before the user has supplied the first real message. An empty trace file would look like durable provenance without actually carrying durable truth.
+- For `.agent.md` and folder entry points, the v1 flow should collect the first real user message before the first trace artifact is minted. This keeps the first persisted `.trace.md` grounded in an actual request instead of bootstrap-only state.
+- If the user starts from a folder, the command should first ask for an agent role from the traceable agent catalog, because the folder is already known while the role is not.
+- If the user starts from an existing `.trace.md`, `New Traceable Chat` should mean lineage continuation from that artifact rather than a fresh unrelated lane.
+- Export selection should stay explicit. If the user skips export-folder selection, the first run should stay unsaved rather than emitting a hidden or fake artifact.
+- When export is configured and the first real message has been supplied, the first persisted artifact may be created from that real request. After that, later chat turns should follow the normal lineage model rather than appending multiple lane boundaries into one long-lived file.
 - Carry-state should be split into two levels in v1:
   - `active carry-forward`: the small, selective state that a deferred child inherits by default
   - `recoverable carry-state`: a broader but still bounded package that remains inspectable in the artifact and can be recovered later without becoming automatic inheritance
@@ -531,6 +537,94 @@ Recommended initial M3 slice set:
 - `M3-J` Hidden-host-difference truthfulness.
   - Scenario: examine a case where native Copilot behavior still differs.
   - Expected: TRACEABLE names the remaining difference explicitly and does not manufacture provenance-side magic to imitate an ungrounded native effect.
+
+## Native Chat Comparison Matrix
+
+Use this matrix when the question is not only whether TRACEABLE works, but whether it feels close enough to a fresh native chat that users can compare the two surfaces directly.
+
+Comparison stance:
+
+- treat a fresh native chat as the user-facing reference for startup feel, greeting handling, and first-turn naturalness
+- treat TRACEABLE as the reference for inspectability, lineage, export, and recoverability
+- do not require TRACEABLE to imitate hidden native behavior through ungrounded convenience magic
+- require any remaining difference to be named concretely rather than excused as vague host magic
+
+Recommended fixed comparison axes:
+
+- startup friction: how many explicit steps occur before the first useful answer
+- first-turn naturalness: whether trivial or low-signal first turns are handled gracefully
+- bounded usefulness: whether a simple real task closes cleanly on turn one
+- continuation quality: whether turn two remains coherent without hidden session magic
+- failure readability: whether a failed or filtered turn is understandable to a human operator
+- inspectability and recovery: whether the surface leaves enough durable truth behind to debug or continue safely
+
+Recommended recurring scenarios:
+
+- `NC-1` Greeting only.
+  - Native prompt: `hi` or `hello`
+  - TRACEABLE prompt: the same first message through `New Traceable Chat`
+  - Compare: whether the first reply is socially normal, whether the lane avoids bizarre escalation, and whether a low-signal start leaves a confusing artifact state
+
+- `NC-2` Simple real question.
+  - Native prompt: one short, concrete request that should usually not require tools
+  - TRACEABLE prompt: the same request through the same role and model when possible
+  - Compare: startup friction, answer usefulness, and whether TRACEABLE remains competitive on a low-complexity slice instead of feeling much heavier than native chat
+
+- `NC-3` Anchored file question.
+  - Native prompt: one short question with one explicit file anchor
+  - TRACEABLE prompt: the same bounded question with the same file anchor or parent artifact context
+  - Compare: whether both surfaces answer the anchored question correctly, and whether TRACEABLE leaves better inspectable evidence without introducing misleading extra complexity
+
+- `NC-4` Follow-up turn.
+  - Native prompt: one greeting or short acknowledgment followed by one real follow-up
+  - TRACEABLE prompt: the same first turn followed by `Resume Traceable Chat`
+  - Compare: whether the second turn preserves enough context to feel coherent, and whether TRACEABLE continuation remains understandable from the saved lineage rather than from hidden session memory alone
+
+- `NC-5` Failure or filter case.
+  - Native prompt: one input known or suspected to trigger refusal, filtering, or an odd no-op response
+  - TRACEABLE prompt: the same input through the same role when practical
+  - Compare: whether TRACEABLE exposes the failure more truthfully than native chat, and whether the saved artifact makes the failure easier to inspect without overstating what happened
+
+Recommended evaluation rule:
+
+- judge TRACEABLE primarily against native chat on startup feel and first-turn usability
+- judge native chat primarily against TRACEABLE on inspectability and recoverability only when a turn goes wrong or needs continuation
+- treat a scenario as a meaningful TRACEABLE win only when the extra provenance surface pays for its extra friction in a way a human operator can actually use
+
+Initial observed comparison log:
+
+| Scenario | Trace artifact | Current read | What this does prove | What this does not prove yet |
+| --- | --- | --- | --- | --- |
+| `NC-1` Greeting only from `.agent.md` | `04-anchor.trace.md` | The first-turn artifact was created in the configured export folder, but the run ended `trace-incomplete` with `tool_blocked`, `Runtime Tool Calls: 0`, and final summary `Response got filtered.` | The new-chat operator flow, multi-root export targeting, and saved artifact creation worked end to end for an agent entry point. | It does not yet prove that greeting handling is native-chat-like or that the stop classification is the best available label for a filtered greeting-only response. |
+| `NC-4` Greeting then resume | `03-01-claude-haiku-4-5.trace.md` | The continuation child inherited parent context, stayed in DIRECT mode, made `Runtime Tool Calls: 0`, and closed with a coherent bounded summary rather than losing the lineage thread. | `Resume Traceable Chat` can preserve enough inherited context to make a lightweight follow-up turn technically coherent and inspectable. | It does not yet prove fresh re-grounding on turn two, because the child explicitly relied on carried context and did not need a new read. |
+
+Interpretation rule for early rows:
+
+- use the first few rows mainly to separate workflow success from answer-quality success
+- when a row shows `Runtime Tool Calls: 0`, do not overstate it as evidence of fresh grounding unless the scenario was explicitly designed to avoid new reads
+- treat greeting-only rows as startup-feel evidence first, not as broad proof about role quality on substantive tasks
+
+First runnable baseline set:
+
+- Role baseline: start with `Anchor (Any) (Live Feedback Loop) (Experimental)` because it is already the role used in the first observed new-chat entry case.
+- Model baseline: do not force a different model for the first pass; compare the default native surface against the default TRACEABLE role-driven surface first, then tighten model parity only after the workflow comparison shape is stable.
+
+- `NC-2` first concrete baseline.
+  - Native prompt: `In one short paragraph, explain what your role is supposed to optimize for.`
+  - TRACEABLE prompt: `In one short paragraph, explain what your role is supposed to optimize for.`
+  - Reason for this prompt: it is concrete, low-tool, and should expose startup feel plus first-turn coherence without requiring a file read.
+  - Compare first: startup friction, social normalness, answer usefulness, and whether the answer stays role-shaped without collapsing into generic filler.
+
+- `NC-5` first concrete baseline.
+  - Native prompt: `hi`
+  - TRACEABLE prompt: `hi`
+  - Reason for this prompt: it is the cheapest low-signal greeting case and already has one TRACEABLE observation row, so it gives a stable first failure-or-filter comparison point.
+  - Compare first: whether the surface handles a greeting gracefully, whether any refusal/filter path is readable, and whether TRACEABLE leaves behind a more truthful postmortem than native chat.
+
+- Logging rule for the first runnable set:
+  - capture the exact role, visible model label when available, first response shape, and whether tools were used
+  - avoid grading style too early; record concrete differences in startup steps, answer shape, and failure readability first
+  - if native and TRACEABLE differ because the visible model is different, mark that as a confound rather than forcing a stronger product conclusion than the evidence supports
 
 Recommended milestone-closing rule:
 

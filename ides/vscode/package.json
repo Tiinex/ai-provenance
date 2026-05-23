@@ -20,6 +20,9 @@
   },
   "activationEvents": [
     "onStartupFinished",
+    "onCommand:tiinex.aiProvenance.newTraceableChat",
+    "onCommand:tiinex.aiProvenance.resumeTraceableChat",
+    "onCommand:tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
     "onLanguageModelTool:list_traceable_agents",
     "onLanguageModelTool:list_traceable_models",
     "onLanguageModelTool:view_traceable_subagent",
@@ -275,7 +278,7 @@
         "name": "view_traceable_subagent",
         "displayName": "View Traceable Subagent",
         "userDescription": "Inspect a stored TRACEABLE evidence artifact with bounded output and optional reconstructed-view reveal.",
-        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, request summary, outcome, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by run_traceable_subagent, start with `surface: \"summary\"` or `surface: \"outcome\"`, then inspect `tool-ledger` or `state-json` only when you need debugging detail. Prefer this over rerunning the same child lane when evidence already exists.",
+        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, request summary, request contract, outcome, runtime decision, evidence basis, a replay-oriented timeline, carry handoff, tool forensics, lineage, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by run_traceable_subagent, start with `surface: \"summary\"` or `surface: \"outcome\"`, then inspect `request-contract`, `runtime-decision`, `evidence-basis`, `timeline`, `carry-handoff`, `tool-forensics`, `lineage`, `tool-ledger`, or `state-json` only when you need deeper provenance detail. Prefer this over rerunning the same child lane when evidence already exists.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "viewTraceableSubagent",
         "inputSchema": {
@@ -304,8 +307,15 @@
               "enum": [
                 "rendered-output",
                 "request-summary",
+                "request-contract",
                 "summary",
                 "outcome",
+                "runtime-decision",
+                "evidence-basis",
+                "timeline",
+                "carry-handoff",
+                "tool-forensics",
+                "lineage",
                 "tool-ledger",
                 "status-history",
                 "tool-summary",
@@ -319,7 +329,7 @@
             },
             "offset": {
               "type": "number",
-              "description": "Optional zero-based start offset for paging list-like surfaces such as request-summary, tool-ledger, status-history, tool-summary, and file-summary."
+              "description": "Optional zero-based start offset for paging list-like surfaces such as request-summary, timeline, tool-forensics, tool-ledger, status-history, tool-summary, and file-summary."
             },
             "includeSupportArtifacts": {
               "type": "boolean",
@@ -346,6 +356,18 @@
         "title": "Tiinex: Stop TRACEABLE Run"
       },
       {
+        "command": "tiinex.aiProvenance.newTraceableChat",
+        "title": "New Traceable Chat"
+      },
+      {
+        "command": "tiinex.aiProvenance.resumeTraceableChat",
+        "title": "Resume Traceable Chat"
+      },
+      {
+        "command": "tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
+        "title": "Set Default New Traceable Chat Export Folder"
+      },
+      {
         "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
         "title": "Open Reconstructed Traceable View",
         "shortTitle": "Open Traceable View",
@@ -370,9 +392,29 @@
     "menus": {
       "explorer/context": [
         {
+          "command": "tiinex.aiProvenance.newTraceableChat",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.agent\\.md$/",
+          "group": "navigation"
+        },
+        {
+          "command": "tiinex.aiProvenance.resumeTraceableChat",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "navigation@-1001"
+        },
+        {
+          "command": "tiinex.aiProvenance.newTraceableChat",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation"
+        },
+        {
+          "command": "tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "navigation@1"
+        },
+        {
           "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
           "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
-          "group": "navigation"
+          "group": "navigation@-1000"
         }
       ],
       "editor/title": [
@@ -461,6 +503,12 @@
           ],
           "default": "traceable",
           "description": "Control what the TRACEABLE View button and parent-trace openings use for `.trace.md` artifacts. `traceable` opens the reconstructed TRACEABLE evidence view, `markdown` opens the markdown preview, and `source` opens the source file directly."
+        },
+        "tiinex.aiProvenance.defaultNewTraceableChatExportTo": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Optional default export folder for New Traceable Chat when it starts from an `.agent.md` file. The command surface writes an absolute path so multi-root workspaces do not have to guess which repo a relative path belongs to. Relative values are only resolved automatically in single-root workspaces; an empty value means ask whether to pick a folder or start unsaved."
         },
         "tiinex.aiProvenance.traceablePreferredModels": {
           "type": "array",

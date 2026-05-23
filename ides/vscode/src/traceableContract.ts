@@ -314,6 +314,48 @@ export interface TraceableSubagentIterationMetric {
   usage?: TraceableSubagentUsageSummary;
 }
 
+export interface TraceableRuntimeModelSelectionSummary {
+  requestedModel?: string;
+  selectionMode: "explicit-selector" | "role-declared" | "parent-inherited" | "implicit-default" | "unavailable";
+  matchedSelector?: TraceableModelSelector;
+  selectedModelDisplayName?: string;
+  selectedModelId?: string;
+  availableCandidateCount?: number;
+  sendableCandidateCount?: number;
+  rationale: string[];
+}
+
+export interface TraceableRuntimeDecisionSummary {
+  modelSelection: TraceableRuntimeModelSelectionSummary;
+}
+
+export interface TraceableRuntimeFingerprint {
+  extensionVersion?: string;
+  hostSurface: "vscode-lm-tool";
+  platform: string;
+  workspaceFolders: string[];
+  relevantConfig: {
+    traceablePreferredModels: string[];
+    traceableBlockedModels: string[];
+    traceableUndeclaredMaxIterations: number;
+    traceableUndeclaredMaxToolCalls: number;
+  };
+}
+
+export interface TraceableEvidenceAnchor {
+  path: string;
+  kind: "file" | "artifact";
+  usedFor: Array<"observed-grounding" | "final-summary" | "missing-signal" | "request-context" | "lineage-context">;
+  readCount?: number;
+}
+
+export interface TraceableEvidenceBasis {
+  primaryAnchors: TraceableEvidenceAnchor[];
+  secondaryAnchors: TraceableEvidenceAnchor[];
+  unsupportedClaims: string[];
+  note?: string;
+}
+
 export interface TraceableSubagentRunResult {
   request: Record<string, unknown>;
   outputMode?: TraceableSubagentOutputMode;
@@ -344,6 +386,9 @@ export interface TraceableSubagentRunResult {
   finalSummary: string;
   validationIssues: string[];
   opaqueDelegations: TraceableOpaqueDelegation[];
+  evidenceBasis?: TraceableEvidenceBasis;
+  runtimeDecisionSummary?: TraceableRuntimeDecisionSummary;
+  runtimeFingerprint?: TraceableRuntimeFingerprint;
   usage?: TraceableSubagentUsageSummary;
   timingSummary?: TraceableSubagentTimingSummary;
   iterationMetrics?: TraceableSubagentIterationMetric[];
@@ -1510,6 +1555,12 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
   appendBoundedJsonPreview(lines, "### Runtime Tool Ledger Preview", result.toolCalls);
   lines.push("");
   appendBoundedJsonPreview(lines, "### Usage Summary", result.usage ?? { provenance: "unavailable", note: "No token usage surfaced on this surface." });
+  lines.push("");
+  appendBoundedJsonPreview(lines, "### Evidence Basis", result.evidenceBasis ?? {});
+  lines.push("");
+  appendBoundedJsonPreview(lines, "### Runtime Decision Summary", result.runtimeDecisionSummary ?? {});
+  lines.push("");
+  appendBoundedJsonPreview(lines, "### Runtime Fingerprint", result.runtimeFingerprint ?? {});
   lines.push("");
   appendBoundedJsonPreview(lines, "### Iteration Metrics Preview", result.iterationMetrics ?? []);
   lines.push("");

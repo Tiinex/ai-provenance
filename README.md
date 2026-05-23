@@ -7,6 +7,7 @@
 Contribution guide:
 
 - [CONTRIBUTING.md](CONTRIBUTING.md)
+- [TRACEABLE_PROVENANCE_COMPLETENESS_REVIEW.md](TRACEABLE_PROVENANCE_COMPLETENESS_REVIEW.md)
 
 `ai-provenance` is the home for provenance-first tooling that should remain useful even after it is separated from the more experimental, VS Code-specific workflow tooling in `ai-vscode-tools`.
 

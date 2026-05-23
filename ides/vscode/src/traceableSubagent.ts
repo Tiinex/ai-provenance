@@ -209,6 +209,91 @@ function isAutomaticTraceableModelSelector(selector: TraceableModelSelector | un
   return (selector?.id?.trim().toLowerCase() || "") === "auto";
 }
 
+function buildTraceableRuntimeFingerprint(): TraceableRuntimeFingerprint {
+  const config = vscode.workspace.getConfiguration("tiinex.aiProvenance");
+  const extensionVersion = vscode.extensions.getExtension("tiinex.ai-provenance")?.packageJSON?.version;
+  return {
+    extensionVersion: typeof extensionVersion === "string" ? extensionVersion : undefined,
+    hostSurface: "vscode-lm-tool",
+    platform: process.platform,
+    workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.name),
+    relevantConfig: {
+      traceablePreferredModels: config.get<string[]>("traceablePreferredModels", []).map((value) => value.trim()).filter((value) => value.length > 0),
+      traceableBlockedModels: config.get<string[]>("traceableBlockedModels", []).map((value) => value.trim()).filter((value) => value.length > 0),
+      traceableUndeclaredMaxIterations: config.get<number>(TRACEABLE_UNDECLARED_MAX_ITERATIONS_SETTING, DEFAULT_UNDECLARED_MAX_ITERATIONS),
+      traceableUndeclaredMaxToolCalls: config.get<number>(TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING, DEFAULT_UNDECLARED_MAX_TOOL_CALLS)
+    }
+  };
+}
+
+function summarizeMatchedTraceableSelector(selector: vscode.LanguageModelChatSelector | undefined): TraceableModelSelector | undefined {
+  if (!selector) {
+    return undefined;
+  }
+  return {
+    vendor: typeof selector.vendor === "string" && selector.vendor.trim() ? selector.vendor.trim() : undefined,
+    family: typeof selector.family === "string" && selector.family.trim() ? selector.family.trim() : undefined,
+    id: typeof selector.id === "string" && selector.id.trim() ? selector.id.trim() : undefined,
+    version: typeof selector.version === "string" && selector.version.trim() ? selector.version.trim() : undefined
+  };
+}
+
+function buildTraceableRuntimeDecisionSummary(
+  input: TraceableSubagentInput,
+  resolvedAgentArtifact: ResolvedTraceableAgentArtifact | undefined,
+  matchedSelector: vscode.LanguageModelChatSelector | undefined,
+  model: vscode.LanguageModelChat | undefined,
+  availableCandidateCount: number,
+  sendableCandidateCount: number
+): TraceableRuntimeDecisionSummary {
+  const normalizedSelector = normalizeModelSelector(input.modelSelector);
+  const requestedModel = normalizedSelector.id?.trim() || undefined;
+  const matchedSelectorSummary = summarizeMatchedTraceableSelector(matchedSelector);
+  const rationale: string[] = [];
+  let selectionMode: TraceableRuntimeModelSelectionSummary["selectionMode"];
+
+  if (hasExactModelSelector(normalizedSelector)) {
+    selectionMode = "explicit-selector";
+    rationale.push(`Used explicit modelSelector.id ${JSON.stringify(normalizedSelector.id.trim())}.`);
+  } else if (resolvedAgentArtifact?.modelDeclaration?.trim()) {
+    selectionMode = "role-declared";
+    rationale.push(`Resolved role ${JSON.stringify(resolvedAgentArtifact.resolvedName)} declared model source ${JSON.stringify(resolvedAgentArtifact.modelDeclaration.trim())}.`);
+  } else if (input.parentTracePath?.trim()) {
+    selectionMode = "parent-inherited";
+    rationale.push(`Continuation from parent trace ${JSON.stringify(input.parentTracePath.trim())} allowed inherited model context.`);
+  } else if (model) {
+    selectionMode = "implicit-default";
+    rationale.push("No explicit modelSelector, role model declaration, or parent trace model source was available.");
+    rationale.push("Selected from the unblocked sendable runtime model pool.");
+  } else {
+    selectionMode = "unavailable";
+    rationale.push("No sendable runtime model satisfied the resolved selection path.");
+  }
+
+  if (isAutomaticTraceableModelSelector(normalizedSelector)) {
+    rationale.push("modelSelector.id=auto was treated as automatic selection rather than as an exact model id.");
+  }
+  if (matchedSelectorSummary) {
+    rationale.push(`Runtime matched selector ${JSON.stringify(matchedSelectorSummary)}.`);
+  }
+  if (model?.name?.trim() || model?.id?.trim()) {
+    rationale.push(`Selected runtime model ${JSON.stringify(model.name?.trim() || model.id.trim())}.`);
+  }
+
+  return {
+    modelSelection: {
+      requestedModel,
+      selectionMode,
+      matchedSelector: matchedSelectorSummary,
+      selectedModelDisplayName: model?.name?.trim() || model?.id?.trim() || undefined,
+      selectedModelId: model?.id?.trim() || undefined,
+      availableCandidateCount,
+      sendableCandidateCount,
+      rationale
+    }
+  };
+}
+
 function normalizeTraceableInputMode(mode: unknown): TraceableSubagentInputMode | undefined {
   const normalized = typeof mode === "string" ? mode.trim().toUpperCase() : "";
   switch (normalized) {
@@ -351,6 +436,48 @@ export interface TraceableSubagentIterationMetric {
   usage?: TraceableSubagentUsageSummary;
 }
 
+export interface TraceableRuntimeModelSelectionSummary {
+  requestedModel?: string;
+  selectionMode: "explicit-selector" | "role-declared" | "parent-inherited" | "implicit-default" | "unavailable";
+  matchedSelector?: TraceableModelSelector;
+  selectedModelDisplayName?: string;
+  selectedModelId?: string;
+  availableCandidateCount?: number;
+  sendableCandidateCount?: number;
+  rationale: string[];
+}
+
+export interface TraceableRuntimeDecisionSummary {
+  modelSelection: TraceableRuntimeModelSelectionSummary;
+}
+
+export interface TraceableRuntimeFingerprint {
+  extensionVersion?: string;
+  hostSurface: "vscode-lm-tool";
+  platform: string;
+  workspaceFolders: string[];
+  relevantConfig: {
+    traceablePreferredModels: string[];
+    traceableBlockedModels: string[];
+    traceableUndeclaredMaxIterations: number;
+    traceableUndeclaredMaxToolCalls: number;
+  };
+}
+
+export interface TraceableEvidenceAnchor {
+  path: string;
+  kind: "file" | "artifact";
+  usedFor: Array<"observed-grounding" | "final-summary" | "missing-signal" | "request-context" | "lineage-context">;
+  readCount?: number;
+}
+
+export interface TraceableEvidenceBasis {
+  primaryAnchors: TraceableEvidenceAnchor[];
+  secondaryAnchors: TraceableEvidenceAnchor[];
+  unsupportedClaims: string[];
+  note?: string;
+}
+
 export interface TraceableSubagentRunResult {
   request: Record<string, unknown>;
   outputMode?: TraceableSubagentOutputMode;
@@ -381,6 +508,9 @@ export interface TraceableSubagentRunResult {
   finalSummary: string;
   validationIssues: string[];
   opaqueDelegations: TraceableOpaqueDelegation[];
+  evidenceBasis?: TraceableEvidenceBasis;
+  runtimeDecisionSummary?: TraceableRuntimeDecisionSummary;
+  runtimeFingerprint?: TraceableRuntimeFingerprint;
   usage?: TraceableSubagentUsageSummary;
   timingSummary?: TraceableSubagentTimingSummary;
   iterationMetrics?: TraceableSubagentIterationMetric[];
@@ -2295,6 +2425,27 @@ function normalizeFinalSummaryValue(value: unknown): string {
     .join("\n");
 }
 
+function inferMissingStopReasonFromPayload(input: {
+  completionClaim: TraceableCompletionClaim | undefined;
+  expectedButMissing: TraceableSubagentMissingItem[];
+  finalSummary: string;
+}): TraceableStopReason | undefined {
+  if (input.completionClaim === "complete" || input.completionClaim === "partial") {
+    return "completed";
+  }
+  if (input.expectedButMissing.length > 0) {
+    return "insufficient_grounding";
+  }
+  const normalizedSummary = input.finalSummary.trim().toLowerCase();
+  if (!normalizedSummary) {
+    return undefined;
+  }
+  if (/\binsufficient\b|\bunresolved\b|\bmissing\b|\bnot enough\b|\bnot verified\b|\bnot confirmed\b/u.test(normalizedSummary)) {
+    return "insufficient_grounding";
+  }
+  return undefined;
+}
+
 function buildSalvagedChildPayload(
   value: Record<string, unknown>,
   steps: TraceableSubagentStep[],
@@ -2350,14 +2501,20 @@ function normalizeParsedPayload(value: unknown): TraceableSubagentChildPayload |
   const expectedButMissing = normalizeMissingItems(value.expectedButMissing);
   const opaqueDelegations = normalizeOpaqueDelegations(value.opaqueDelegations);
   const normalizedStopReason = normalizeStopReasonValue(value.stopReason);
-  const stopReason = normalizedStopReason ?? (normalizeCompletionClaimValue(value.completionClaim, normalizedStopReason) === "complete"
+  const rawCompletionClaim = normalizeCompletionClaimValue(value.completionClaim, normalizedStopReason);
+  const provisionalStopReason = normalizedStopReason ?? (rawCompletionClaim === "complete"
     ? "completed"
     : undefined);
   const completionClaim = reconcileCompletionClaimWithSteps(
-    normalizeCompletionClaimValue(value.completionClaim, stopReason),
+    normalizeCompletionClaimValue(value.completionClaim, provisionalStopReason),
     steps
   );
   const finalSummary = normalizeFinalSummaryValue(value.finalSummary);
+  const stopReason = provisionalStopReason ?? inferMissingStopReasonFromPayload({
+    completionClaim,
+    expectedButMissing,
+    finalSummary
+  });
   const activeCarryForward = normalizeTraceableCarryForwardState(value.activeCarryForward);
   const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState);
   const derivedRecoverableCarryState = !activeCarryForward
@@ -2624,6 +2781,133 @@ function summarizeObservedScope(targets: string[]): string {
   return `${targets.slice(0, 3).join(", ")} +${targets.length - 3} more`;
 }
 
+function normalizeTraceableEvidenceText(value: string | undefined): string {
+  return (value ?? "")
+    .replace(/\\+/g, "/")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function buildTraceablePathReferenceCandidates(filePath: string): string[] {
+  const normalizedPath = filePath.replace(/\\+/g, "/").trim();
+  if (!normalizedPath) {
+    return [];
+  }
+  const basename = path.basename(normalizedPath);
+  const parent = path.basename(path.dirname(normalizedPath));
+  const candidates = [
+    normalizedPath.toLowerCase(),
+    basename.toLowerCase()
+  ];
+  if (parent && basename) {
+    candidates.push(`${parent}/${basename}`.toLowerCase());
+  }
+  return uniqueStrings(candidates);
+}
+
+function traceableTextReferencesPath(text: string, filePath: string): boolean {
+  if (!text) {
+    return false;
+  }
+  return buildTraceablePathReferenceCandidates(filePath).some((candidate) => candidate.length >= 3 && text.includes(candidate));
+}
+
+function isTraceableArtifactPath(filePath: string): boolean {
+  return /\.trace\.md$/iu.test(filePath.trim());
+}
+
+function isTraceablePathLikeAnchor(value: string): boolean {
+  const trimmed = value.trim();
+  return /[\\/]/.test(trimmed) || /^[A-Za-z]:/.test(trimmed) || /\.[A-Za-z0-9]+$/u.test(trimmed);
+}
+
+function extractObservedReadTargetCounts(toolCalls: TraceableSubagentToolCallRecord[]): Array<{ filePath: string; readCount: number }> {
+  const counts = new Map<string, number>();
+  for (const entry of toolCalls) {
+    if (entry.result !== "success" || !/readfile/i.test(entry.toolName)) {
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(entry.argsSummary);
+      if (!parsed || typeof parsed !== "object") {
+        continue;
+      }
+      const parsedRecord = parsed as Record<string, unknown>;
+      const filePathValue = parsedRecord.filePath;
+      const filePath = typeof filePathValue === "string"
+        ? filePathValue.trim()
+        : "";
+      if (!filePath) {
+        continue;
+      }
+      counts.set(filePath, (counts.get(filePath) ?? 0) + 1);
+    } catch {
+      continue;
+    }
+  }
+  return [...counts.entries()]
+    .map(([filePath, readCount]) => ({ filePath, readCount }))
+    .sort((left, right) => right.readCount - left.readCount || left.filePath.localeCompare(right.filePath));
+}
+
+function buildTraceableEvidenceBasis(
+  input: TraceableSubagentInput,
+  result: Pick<TraceableSubagentRunResult, "toolCalls" | "expectedButMissing" | "finalSummary" | "parentTracePath">
+): TraceableEvidenceBasis | undefined {
+  const normalizedFinalSummary = normalizeTraceableEvidenceText(result.finalSummary);
+  const missingTexts = result.expectedButMissing.map((item) => normalizeTraceableEvidenceText(`${item.label} ${item.reason}`));
+  const carriedFileContext = uniqueStrings((input.carriedContext?.fileContext ?? [])
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0 && isTraceablePathLikeAnchor(value)));
+  const readTargets = extractObservedReadTargetCounts(result.toolCalls);
+  const primaryAnchors: TraceableEvidenceAnchor[] = readTargets.map(({ filePath, readCount }) => {
+    const usedFor = uniqueStrings([
+      ...(traceableTextReferencesPath(normalizedFinalSummary, filePath) ? ["final-summary"] : []),
+      ...(missingTexts.some((text) => traceableTextReferencesPath(text, filePath)) ? ["missing-signal"] : []),
+      ...(carriedFileContext.some((entry) => entry.localeCompare(filePath, undefined, { sensitivity: "accent" }) === 0) ? ["request-context"] : []),
+      "observed-grounding"
+    ]) as TraceableEvidenceAnchor["usedFor"];
+    return {
+      path: filePath,
+      kind: isTraceableArtifactPath(filePath) ? "artifact" : "file",
+      usedFor,
+      readCount
+    };
+  });
+  const primaryAnchorKeys = new Set(primaryAnchors.map((anchor) => anchor.path.toLowerCase()));
+  const secondaryAnchors: TraceableEvidenceAnchor[] = [];
+  if (result.parentTracePath?.trim()) {
+    secondaryAnchors.push({
+      path: result.parentTracePath.trim(),
+      kind: "artifact",
+      usedFor: ["lineage-context"]
+    });
+  }
+  for (const filePath of carriedFileContext) {
+    if (primaryAnchorKeys.has(filePath.toLowerCase())) {
+      continue;
+    }
+    secondaryAnchors.push({
+      path: filePath,
+      kind: isTraceableArtifactPath(filePath) ? "artifact" : "file",
+      usedFor: ["request-context"]
+    });
+  }
+  const unsupportedClaims = uniqueStrings(result.expectedButMissing
+    .map((item) => `${item.label?.trim() || "Missing signal"}: ${item.reason?.trim() || "No reason recorded."}`.trim())
+    .filter((value) => value.length > 0));
+  if (primaryAnchors.length === 0 && secondaryAnchors.length === 0 && unsupportedClaims.length === 0) {
+    return undefined;
+  }
+  return {
+    primaryAnchors,
+    secondaryAnchors,
+    unsupportedClaims,
+    note: "Derived from observed read-file calls, carried file context, parent-trace lineage, and explicit missing items. v1 does not yet persist direct child claim-to-anchor assertions."
+  };
+}
+
 function summarizeMissingSignal(items: TraceableSubagentMissingItem[]): string {
   if (items.length === 0) {
     return "No explicit missing item was recorded.";
@@ -2803,6 +3087,8 @@ function fallbackResult(
     finalSummary,
     validationIssues: extra.validationIssues ?? [],
     opaqueDelegations: extra.opaqueDelegations ?? [],
+    runtimeDecisionSummary: extra.runtimeDecisionSummary,
+    runtimeFingerprint: extra.runtimeFingerprint,
     rawModelText: extra.rawModelText
   };
 }
@@ -3118,6 +3404,7 @@ export async function runTraceableSubagent(
 
   setStatus("starting");
   publishTimingSummary(startedAtMs);
+  const runtimeFingerprint = buildTraceableRuntimeFingerprint();
   const finalizeResult = async (
     result: TraceableSubagentRunResult,
     phase: string,
@@ -3136,10 +3423,14 @@ export async function runTraceableSubagent(
         }
       }
       : result;
+    const evidenceBasis = continuationAwareResult.evidenceBasis
+      ?? buildTraceableEvidenceBasis(input, continuationAwareResult);
     const elapsedMs = Date.now() - startedAtMs;
     const timingSummary = continuationAwareResult.timingSummary ?? captureTimingSummary(Date.now(), false);
     const resultWithDebugPath = {
       ...continuationAwareResult,
+      evidenceBasis,
+      runtimeFingerprint: continuationAwareResult.runtimeFingerprint ?? runtimeFingerprint,
       debugLogPath,
       elapsedMs,
       timingSummary
@@ -3367,6 +3658,14 @@ export async function runTraceableSubagent(
 
   if (!model && selectors.length === 0) {
     const broadRuntimeModels = await loadBroadRuntimeModels();
+    const runtimeDecisionSummary = buildTraceableRuntimeDecisionSummary(
+      input,
+      resolvedAgentArtifact,
+      matchedSelector,
+      model,
+      broadRuntimeModels.available.length,
+      broadRuntimeModels.sendable.length
+    );
     return finalizeResult(fallbackResult(
       input,
       toolCalls,
@@ -3377,7 +3676,8 @@ export async function runTraceableSubagent(
       "unresolved",
       {
         allowedToolNames: selectedToolNames,
-        validationIssues
+        validationIssues,
+        runtimeDecisionSummary
       }
     ), "model_selector_unavailable", {
       resolvedAgentArtifact: resolvedAgentArtifact ? {
@@ -3430,6 +3730,14 @@ export async function runTraceableSubagent(
     }
   } catch (error) {
     const broadRuntimeModels = await loadBroadRuntimeModels();
+    const runtimeDecisionSummary = buildTraceableRuntimeDecisionSummary(
+      input,
+      resolvedAgentArtifact,
+      matchedSelector,
+      model,
+      broadRuntimeModels.available.length,
+      broadRuntimeModels.sendable.length
+    );
     return finalizeResult(fallbackResult(
       input,
       toolCalls,
@@ -3438,7 +3746,8 @@ export async function runTraceableSubagent(
       "unresolved",
       {
         allowedToolNames: selectedToolNames,
-        validationIssues
+        validationIssues,
+        runtimeDecisionSummary
       }
     ), "model_selection_failed", {
       selectorAttempts: selectors,
@@ -3459,6 +3768,14 @@ export async function runTraceableSubagent(
     const broadAvailableSummary = summarizeModelCandidates(broadRuntimeModels.available);
     const broadSendableSummary = summarizeModelCandidates(broadRuntimeModels.sendable);
     const accessMode = options.accessInformation ? "access-filtered" : "unfiltered";
+    const runtimeDecisionSummary = buildTraceableRuntimeDecisionSummary(
+      input,
+      resolvedAgentArtifact,
+      matchedSelector,
+      model,
+      broadRuntimeModels.available.length,
+      broadRuntimeModels.sendable.length
+    );
     return finalizeResult(fallbackResult(
       input,
       toolCalls,
@@ -3467,7 +3784,8 @@ export async function runTraceableSubagent(
       "unresolved",
       {
         allowedToolNames: selectedToolNames,
-        validationIssues
+        validationIssues,
+        runtimeDecisionSummary
       }
     ), "model_unavailable", {
       selectorAttempts: selectors,
@@ -3709,6 +4027,14 @@ export async function runTraceableSubagent(
       }
 
       const allOpaqueDelegations = [...opaqueDelegations, ...(parsedPayload.opaqueDelegations ?? [])];
+      const runtimeDecisionSummary = buildTraceableRuntimeDecisionSummary(
+        input,
+        resolvedAgentArtifact,
+        matchedSelector,
+        model,
+        availableModels.length,
+        sendableModels.length
+      );
       return finalizeResult({
         request: buildTraceableSubagentRequestEnvelope(input),
         model: modelInfo,
@@ -3730,6 +4056,7 @@ export async function runTraceableSubagent(
         finalSummary: parsedPayload.finalSummary,
         validationIssues,
         opaqueDelegations: allOpaqueDelegations,
+        runtimeDecisionSummary,
         usage: summarizeAggregateUsage(iterationMetrics),
         timingSummary: captureTimingSummary(Date.now(), false),
         iterationMetrics,
@@ -4633,6 +4960,12 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
   appendBoundedJsonPreview(lines, "### Runtime Tool Ledger Preview", result.toolCalls);
   lines.push("");
   appendBoundedJsonPreview(lines, "### Usage Summary", result.usage ?? { provenance: "unavailable", note: "No token usage surfaced on this surface." });
+  lines.push("");
+  appendBoundedJsonPreview(lines, "### Evidence Basis", result.evidenceBasis ?? {});
+  lines.push("");
+  appendBoundedJsonPreview(lines, "### Runtime Decision Summary", result.runtimeDecisionSummary ?? {});
+  lines.push("");
+  appendBoundedJsonPreview(lines, "### Runtime Fingerprint", result.runtimeFingerprint ?? {});
   lines.push("");
   appendBoundedJsonPreview(lines, "### Iteration Metrics Preview", result.iterationMetrics ?? []);
   lines.push("");
