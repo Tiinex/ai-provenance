@@ -86,32 +86,38 @@ Current research read:
 
 The first continuation surface should stay narrow.
 
-Recommended new public inputs for `run_traceable_subagent`:
+Recommended public inputs for `run_traceable_subagent`:
 
+- `inputMode?: "OPERATIVE" | "EPISTEMIC" | "NON_LEADING_EPISTEMIC" | "DIRECT" | "RESUME"`
 - `parentTracePath?: string`
   - Absolute or workspace-relative path to an existing parent `.trace.md` artifact.
   - When provided, the runtime treats the request as a continuation from that artifact.
 
-The rest of the request stays on the existing surface.
+Expected continuation behavior is now mode-specific:
 
-Expected continuation behavior:
+- `OPERATIVE`, `EPISTEMIC`, and `NON_LEADING_EPISTEMIC`
+  - `userInput` remains required and becomes the new follow-up input.
+  - `parentTask` remains required as the bounded contract.
+  - If `parentTracePath` is present, the child may inherit the parent request contract by default.
+- `DIRECT`
+  - `userInput` remains required and becomes the only fresh prompt.
+  - `parentTask` and `parentFrame` must not be injected or inherited into the prompt surface.
+  - `parentTracePath` may still carry lineage, carry state, and bounded continuation metadata.
+- `RESUME`
+  - `parentTracePath` becomes required.
+  - `userInput`, `parentTask`, and `parentFrame` must not be supplied.
+  - The run resumes from the existing trace, carry state, and continuation context without a fresh prompt.
 
-- `userInput` remains required and becomes the new follow-up input.
-- If `parentTracePath` is present, the child inherits the parent request contract by default.
-- Any explicitly provided field on the new request overrides the inherited parent value.
-- If `exportToFolder` is omitted during continuation, the child should export beside the parent by default.
+Fields that should inherit by default when present on the parent for classic continuation modes and prompt-free resume:
 
-Fields that should inherit by default when present on the parent:
-
-- `parentTask`
 - `outputMode`
-- `inputMode`
+- `inputMode` when the caller does not explicitly choose a new one
 - `validationMode`
 - `agentRole`
 - `parentExpectations`
 - `carriedContext`
 - `wrapperPolicy`
-- `budgetPolicy`
+- `budgetPolicy` only when it was explicitly declared on the parent request and the caller does not override it
 - `modelSelector`
 - `allowedToolNames`
 - `blockedToolNames`
@@ -124,6 +130,9 @@ Active carry-forward that should inherit by default when present on the parent:
 Fields that should not inherit blindly:
 
 - `userInput`
+- `parentTask` for `DIRECT` and `RESUME`
+- `parentFrame` for `DIRECT` and `RESUME`
+- undeclared runtime fail-safe budgets that were never part of the public request contract
 - `exportToFolder` when the caller explicitly overrides it
 - any future stop or replay control fields
 - recoverable-but-inactive carry-state from older completed traces
@@ -135,10 +144,11 @@ This section translates the current design read into the smallest concrete contr
 
 ### `TraceableSubagentInput`
 
-Current shape already includes the full bounded request contract. The recommended v1 continuation change is intentionally small.
+Current shape already includes the full bounded request contract. The recommended v1 continuation change remains intentionally small, but input-mode semantics now need to distinguish between classic prompted continuation, user-only direct continuation, and strict prompt-free resume.
 
 Add:
 
+- `inputMode` variants: `DIRECT`, `RESUME`
 - `parentTracePath?: string`
 
 Do not add in v1:
@@ -150,8 +160,44 @@ Do not add in v1:
 Recommended interpretation:
 
 - If `parentTracePath` is absent, the run behaves like today's one-shot traceable lane.
-- If `parentTracePath` is present, the run becomes a continuation request and inherits the parent contract by default.
-- Explicitly present request fields override inherited values.
+- If `parentTracePath` is present with `OPERATIVE`, `EPISTEMIC`, or `NON_LEADING_EPISTEMIC`, the run becomes a prompted continuation request and may inherit the parent contract by default.
+- If `parentTracePath` is present with `DIRECT`, the run becomes a user-only continuation request and must not inherit parent prompt framing.
+- If `parentTracePath` is present with `RESUME`, the run becomes a strict prompt-free resume request.
+- Explicitly present request fields override inherited values, except that `DIRECT` and `RESUME` must not reintroduce parent prompt framing through inheritance.
+
+### Declared Budget Versus Hidden Runtime Guard
+
+The budget surface should distinguish between a caller-declared child budget and a runtime-only fail-safe.
+
+Recommended interpretation:
+
+- `budgetPolicy` remains the only public, child-visible budget contract.
+- If the caller provides `budgetPolicy`, the runtime may surface that budget in the request contract, request summary, and prompt framing.
+- If the caller omits `budgetPolicy`, the runtime should still protect itself against runaway execution, but that guard should remain internal rather than being surfaced as if the parent explicitly declared a child budget.
+- The hidden runtime guard exists to approximate native live-chat conditions more closely: the child should not optimize its reasoning around a synthetic budget that the caller never provided.
+
+Recommended v1 behavior for undeclared budgets:
+
+- use a separate runtime fail-safe setting instead of the same public `budgetPolicy` path
+- keep that fail-safe out of the request envelope and request summary when `budgetPolicy` was omitted
+- treat the fail-safe as a safety brake rather than as an instruction to the child about how to pace itself
+
+Recommended configuration direction:
+
+- add one or two numeric settings for undeclared TRACEABLE runtime limits
+- start with high defaults intended as fail-safe rather than as practical delegation budgets
+- keep those settings semantically separate from caller-declared `budgetPolicy`
+
+Recommended `RESUME` budget resolution order when no explicit budget is passed by the caller:
+
+- first use a child-provided recommended next budget if a deferred parent explicitly emitted one
+- otherwise fall back to an inherited parent `budgetPolicy` only when that budget was explicitly declared on the parent request
+- otherwise use the hidden runtime fail-safe
+
+Recommended `RESUME` guardrails:
+
+- do not let `RESUME` expose a hidden fail-safe budget to the child as if it were a declared parent contract
+- keep room for a future resume-specific clamp or cap if long resume chains become a real failure mode
 
 ### `TraceableStopReason`
 

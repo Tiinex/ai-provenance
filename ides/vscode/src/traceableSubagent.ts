@@ -144,7 +144,7 @@ export interface TraceableAgentRole {
   filePath?: string;
 }
 
-export type TraceableSubagentInputMode = "OPERATIVE" | "EPISTEMIC" | "NON_LEADING_EPISTEMIC";
+export type TraceableSubagentInputMode = "OPERATIVE" | "EPISTEMIC" | "NON_LEADING_EPISTEMIC" | "DIRECT" | "RESUME";
 export type TraceableSubagentValidationMode = "NONE" | "WARN" | "ERROR";
 export type TraceableSubagentOutputMode = "summary-with-evidence-path" | "full-markdown-with-evidence-path" | "evidence-path-only";
 
@@ -193,10 +193,24 @@ function normalizeTraceableInputMode(mode: unknown): TraceableSubagentInputMode 
     case "OPERATIVE":
     case "EPISTEMIC":
     case "NON_LEADING_EPISTEMIC":
+    case "DIRECT":
+    case "RESUME":
       return normalized;
     default:
       return undefined;
   }
+}
+
+function isDirectTraceableInputMode(mode: TraceableSubagentInputMode | undefined): boolean {
+  return mode === "DIRECT";
+}
+
+function isResumeTraceableInputMode(mode: TraceableSubagentInputMode | undefined): boolean {
+  return mode === "RESUME";
+}
+
+function usesLegacyTraceablePromptContract(mode: TraceableSubagentInputMode | undefined): boolean {
+  return !mode || (mode !== "DIRECT" && mode !== "RESUME");
 }
 
 function normalizeTraceableValidationMode(mode: unknown): TraceableSubagentValidationMode | undefined {
@@ -224,7 +238,7 @@ export function normalizeTraceableOutputMode(mode: unknown): TraceableSubagentOu
 }
 
 export interface TraceableSubagentInput {
-  userInput: string;
+  userInput?: string;
   parentTracePath?: string;
   parentFrame?: string;
   parentTask?: string;
@@ -716,8 +730,37 @@ async function resolveTraceableContinuationParentPath(parentTracePath: string): 
 }
 
 export async function prepareTraceableSubagentInput(input: TraceableSubagentInput): Promise<TraceablePreparedSubagentInput> {
+  const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
+  const trimmedUserInput = input.userInput?.trim();
+  const trimmedParentTask = input.parentTask?.trim();
+  const trimmedParentFrame = input.parentFrame?.trim();
   const requestedParentTracePath = input.parentTracePath?.trim();
+
+  if (isDirectTraceableInputMode(normalizedInputMode)) {
+    if (!trimmedUserInput) {
+      throw new Error("TRACEABLE DIRECT mode requires a non-empty userInput.");
+    }
+    if (trimmedParentTask || trimmedParentFrame) {
+      throw new Error("TRACEABLE DIRECT mode does not allow parentTask or parentFrame; use the userInput as the only fresh prompt.");
+    }
+  }
+
+  if (isResumeTraceableInputMode(normalizedInputMode)) {
+    if (!requestedParentTracePath) {
+      throw new Error("TRACEABLE RESUME mode requires parentTracePath.");
+    }
+    if (trimmedUserInput || trimmedParentTask || trimmedParentFrame) {
+      throw new Error("TRACEABLE RESUME mode does not allow userInput, parentTask, or parentFrame.");
+    }
+  }
+
   if (!requestedParentTracePath) {
+    if (!isResumeTraceableInputMode(normalizedInputMode) && !trimmedUserInput) {
+      throw new Error("run_traceable_subagent requires a non-empty userInput unless inputMode is RESUME.");
+    }
+    if (usesLegacyTraceablePromptContract(normalizedInputMode) && !resolveTraceableParentFrame(input)) {
+      throw new Error("run_traceable_subagent requires parentTask or parentFrame for OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC runs.");
+    }
     return { input };
   }
 
@@ -745,14 +788,20 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
   const inheritedCarriedContext = normalizeInheritedCarriedContext(parentRequest.carriedContext);
   const inheritedActiveCarryForward = normalizeTraceableCarryForwardState(parsed.result?.activeCarryForward);
   const continuationSummary = buildParentContinuationSummary(resolvedParentTracePath, parsed.result);
+  const inheritedInputMode = normalizeTraceableInputMode(parentRequest.inputMode);
+  const effectiveInputMode = normalizedInputMode ?? inheritedInputMode;
   const effectiveInput: TraceableSubagentInput = {
-    userInput: input.userInput,
+    userInput: isResumeTraceableInputMode(effectiveInputMode) ? undefined : trimmedUserInput,
     parentTracePath: resolvedParentTracePath,
-    parentFrame: input.parentFrame ?? getTrimmedString(parentRequest.parentFrame),
-    parentTask: input.parentTask ?? getTrimmedString(parentRequest.parentTask),
+    parentFrame: isDirectTraceableInputMode(effectiveInputMode) || isResumeTraceableInputMode(effectiveInputMode)
+      ? undefined
+      : (trimmedParentFrame || getTrimmedString(parentRequest.parentFrame)),
+    parentTask: isDirectTraceableInputMode(effectiveInputMode) || isResumeTraceableInputMode(effectiveInputMode)
+      ? undefined
+      : (trimmedParentTask || getTrimmedString(parentRequest.parentTask)),
     outputMode: input.outputMode ?? normalizeTraceableOutputMode(parentRequest.outputMode),
     exportToFolder: input.exportToFolder?.trim() || path.dirname(resolvedParentTracePath),
-    inputMode: input.inputMode ?? normalizeTraceableInputMode(parentRequest.inputMode),
+    inputMode: effectiveInputMode,
     validationMode: input.validationMode ?? normalizeTraceableValidationMode(parentRequest.validationMode),
     reveal: input.reveal,
     agentRole: input.agentRole ?? normalizeInheritedAgentRole(parentRequest.agentRole),
@@ -765,6 +814,13 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
     allowedToolNames: input.allowedToolNames ?? getTrimmedStringArray(parentRequest.allowedToolNames),
     blockedToolNames: input.blockedToolNames ?? getTrimmedStringArray(parentRequest.blockedToolNames)
   };
+
+  if (!isResumeTraceableInputMode(effectiveInputMode) && !effectiveInput.userInput?.trim()) {
+    throw new Error("run_traceable_subagent requires a non-empty userInput unless inputMode is RESUME.");
+  }
+  if (usesLegacyTraceablePromptContract(effectiveInputMode) && !resolveTraceableParentFrame(effectiveInput)) {
+    throw new Error("run_traceable_subagent requires parentTask or parentFrame for OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC runs.");
+  }
 
   return {
     input: effectiveInput,
@@ -1548,11 +1604,16 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   const parentTracePath = input.parentTracePath?.trim();
   const parentFrame = resolveTraceableParentFrame(input);
   const request: Record<string, unknown> = {
-    userInput: input.userInput,
-    parentFrame,
     wrapperPolicy,
     budgetPolicy
   };
+
+  if (input.userInput?.trim()) {
+    request.userInput = input.userInput.trim();
+  }
+  if (parentFrame) {
+    request.parentFrame = parentFrame;
+  }
 
   if (parentTracePath) {
     request.parentTracePath = parentTracePath;
@@ -1651,7 +1712,11 @@ export function buildTraceableSubagentPromptSections(
     [
       "Traceable subagent runtime contract:",
       "- This is a bounded Tiinex child lane.",
-      "- Keep the original user input distinct from the parent frame.",
+      isResumeTraceableInputMode(normalizedInputMode)
+        ? "- This run is RESUME mode: do not invent a fresh userInput, parentTask, or parentFrame; continue from the inherited trace context and carry state only."
+        : isDirectTraceableInputMode(normalizedInputMode)
+          ? "- This run is DIRECT mode: treat userInput as the only fresh prompt and do not infer or inject parentTask or parentFrame from lineage."
+          : "- Keep the original user input distinct from the parent frame.",
       normalizedInputMode
         ? `- Declared input mode for this run: ${normalizedInputMode}.`
         : "- When the parent separates source wording from the bounded task contract, preserve that separation explicitly.",

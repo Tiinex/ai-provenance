@@ -285,6 +285,10 @@ function formatTraceableInputMode(mode: TraceableSubagentInput["inputMode"]): st
       return "E";
     case "NON_LEADING_EPISTEMIC":
       return "NLE";
+    case "DIRECT":
+      return "D";
+    case "RESUME":
+      return "R";
     default:
       return undefined;
   }
@@ -316,6 +320,10 @@ function describeTraceableInputMode(mode: TraceableSubagentInput["inputMode"]): 
       return "Declared input mode: EPISTEMIC\nTreat the input as inquiry-shaped framing rather than as a fixed target conclusion.";
     case "NON_LEADING_EPISTEMIC":
       return "Declared input mode: NON_LEADING_EPISTEMIC\nTreat the input as inquiry-shaped framing and avoid smuggling the target conclusion into the task contract.";
+    case "DIRECT":
+      return "Declared input mode: DIRECT\nTreat userInput as the only fresh prompt and do not inject or inherit parentTask or parentFrame text into the prompt surface.";
+    case "RESUME":
+      return "Declared input mode: RESUME\nResume from parentTracePath and inherited carry only; do not accept fresh userInput, parentTask, or parentFrame text.";
     default:
       return undefined;
   }
@@ -392,12 +400,14 @@ function buildTraceableRequestSummary(input: TraceableSubagentInput): TraceableS
     });
   }
   const parentFrame = input.parentFrame?.trim() || input.parentTask?.trim() || "";
-  summary.push({
-    label: "Parent Frame",
-    value: compactTraceableSummaryText(parentFrame, 54),
-    title: parentFrame
-  });
-  if (input.userInput.trim()) {
+  if (parentFrame) {
+    summary.push({
+      label: "Parent Frame",
+      value: compactTraceableSummaryText(parentFrame, 54),
+      title: parentFrame
+    });
+  }
+  if (input.userInput?.trim()) {
     summary.push({
       label: "User Input",
       value: compactTraceableSummaryText(input.userInput, 54),

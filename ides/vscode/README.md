@@ -57,14 +57,55 @@ Canonical prompt references in chat:
 
 - `#listTraceableAgents`: use this first when you want a grounded role-backed run; copy the exact returned display name or file path into `run_traceable_subagent.agentRole` instead of guessing a role label.
 - `#listTraceableModels`: use this first when you need explicit model control; prefer `sendableOnly: true`, narrow with `query` when useful, and treat entries marked `Policy: blocked` as non-selectable for `run_traceable_subagent`.
-- `#runTraceableSubagent`: keep `userInput` close to the source wording, keep `parentTask` as the bounded contract, keep `budgetPolicy` small, and restrict `allowedToolNames` to the minimum slice needed.
+- `#runTraceableSubagent`: choose the input mode deliberately. `OPERATIVE`, `EPISTEMIC`, and `NON_LEADING_EPISTEMIC` use the classic `userInput` plus `parentTask` form. `DIRECT` uses only `userInput` while still allowing lineage and runtime overrides. `RESUME` requires `parentTracePath` and resumes without any fresh `userInput`, `parentTask`, or `parentFrame`.
 - `#viewTraceableSubagent`: after a run returns an evidence file, inspect that artifact before rerunning the child lane; start with `summary` or `outcome`, then use `tool-ledger` or `state-json` only when deeper debugging is needed.
+
+Input mode quick guide:
+
+- `OPERATIVE`: requires `userInput` and `parentTask`; use this for bounded operational delegation, with optional `parentTracePath` for continuation and handover.
+- `EPISTEMIC`: requires `userInput` and `parentTask`; use this for inquiry-shaped delegation where the parent still carries the bounded task contract.
+- `NON_LEADING_EPISTEMIC`: requires `userInput` and `parentTask`; use this when the child should preserve a non-leading investigative contract and surface input-mode validation explicitly.
+- `DIRECT`: requires only `userInput`; use this for a live-chat-like fresh turn, optionally with `parentTracePath`, but without inheriting or injecting `parentTask` or `parentFrame`.
+- `RESUME`: requires `parentTracePath`; use this for strict prompt-free continuation. Do not pass fresh `userInput`, `parentTask`, or `parentFrame` here.
 
 Canonical examples:
 
 - Role-grounded preflight flow: `#listTraceableAgents` -> `#runTraceableSubagent` with `agentRole` -> `#viewTraceableSubagent` on the returned evidence file.
 - Model-grounded preflight flow: `#listTraceableModels` -> copy one allowed exact model id -> `#runTraceableSubagent` with `modelSelector.id` -> `#viewTraceableSubagent` on the returned evidence file.
 - Recovery flow: if a run already produced `.trace.md` through `exportToFolder` or explicit export, inspect it with `#viewTraceableSubagent` before launching another lane.
+
+Example payloads:
+
+- `OPERATIVE`:
+	```json
+	{
+		"inputMode": "OPERATIVE",
+		"userInput": "Read README.md and summarize the current validation gap.",
+		"parentTask": "Produce a bounded operational summary grounded in the named file.",
+		"allowedToolNames": ["copilot_readFile"],
+		"budgetPolicy": { "maxIterations": 2, "maxToolCalls": 2 }
+	}
+	```
+- `DIRECT`:
+	```json
+	{
+		"inputMode": "DIRECT",
+		"userInput": "What changed in the last trace and what should I inspect next?",
+		"parentTracePath": "ai-provenance/.topics/m3-lineage-chain/01-anchor.trace.md",
+		"modelSelector": { "id": "copilot/gpt-5-mini" }
+	}
+	```
+- `RESUME`:
+	```json
+	{
+		"inputMode": "RESUME",
+		"parentTracePath": "ai-provenance/.topics/m3-lineage-chain/01-anchor.trace.md",
+		"allowedToolNames": ["copilot_readFile", "view_traceable_subagent"],
+		"reveal": true
+	}
+	```
+
+The `DIRECT` and `RESUME` examples above omit `budgetPolicy` intentionally so the child sees live-like conditions and any undeclared runtime fail-safe stays internal. Add `budgetPolicy` only when you want the child to treat that budget as part of the explicit request contract.
 
 Local development loop:
 

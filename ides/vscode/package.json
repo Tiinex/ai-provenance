@@ -87,7 +87,7 @@
         "name": "run_traceable_subagent",
         "displayName": "Run Traceable Subagent",
         "userDescription": "Run an experimental trace-first child lane with explicit request, budget, and tool-ledger output.",
-        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run keeps userInput separate from parentTask, returns a compact runtime tool ledger plus child trace, blocks self-reentry for run_traceable_subagent, and treats native runSubagent delegation as opaque rather than fully trace-supported. Prefer non-leading parent framing: use userInput as the source wording or material to inspect rather than the desired answer shape, and let parentTask carry the bounded investigative contract without smuggling in the target conclusion. When parentTracePath is provided, the runtime treats the run as an artifact-backed continuation: it inherits the parent request contract by default, carries a bounded parent outcome summary forward, and exports the child beside the parent unless exportToFolder is overridden. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration. Canonical usage: keep `userInput` close to the source wording, keep `parentTask` as the bounded contract, set a small `budgetPolicy`, and restrict `allowedToolNames` to only the tool families the slice actually needs. Typical flow: use `list_traceable_agents` to find an exact role or `list_traceable_models` to preflight an explicit model, run a narrow lane, then inspect the returned evidence file with `view_traceable_subagent` instead of rerunning the child immediately.",
+        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run returns a compact runtime tool ledger plus child trace, blocks self-reentry for run_traceable_subagent, and treats native runSubagent delegation as opaque rather than fully trace-supported. OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC keep userInput separate from parentTask; DIRECT uses only userInput as the fresh prompt; RESUME requires parentTracePath and resumes without fresh userInput, parentTask, or parentFrame. When parentTracePath is provided, the runtime treats the run as an artifact-backed continuation: it can carry bounded parent outcome summary and handover context forward, but DIRECT does not inherit prompt framing and RESUME stays prompt-free. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration. Canonical usage: choose the input mode deliberately, keep `budgetPolicy` small, and restrict `allowedToolNames` to only the tool families the slice actually needs. Typical flow: use `list_traceable_agents` to find an exact role or `list_traceable_models` to preflight an explicit model, run a narrow lane, then inspect the returned evidence file with `view_traceable_subagent` instead of rerunning the child immediately.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "runTraceableSubagent",
         "inputSchema": {
@@ -95,15 +95,15 @@
           "properties": {
             "userInput": {
               "type": "string",
-              "description": "The original or near-original user wording or source material for the task being delegated. Keep this distinct from parentTask and do not rely on it as the desired answer shape."
+              "description": "The original or near-original user wording or source material for the task being delegated. Keep this distinct from parentTask and do not rely on it as the desired answer shape. Required for prompt-carrying modes such as OPERATIVE, EPISTEMIC, NON_LEADING_EPISTEMIC, and DIRECT. Omit this in RESUME."
             },
             "parentTracePath": {
               "type": "string",
-              "description": "Optional absolute or workspace-relative path to an existing parent .trace.md artifact. When provided, the runtime treats the run as an artifact-backed continuation, inherits the parent request contract by default, and exports the child beside the parent unless exportToFolder is overridden."
+              "description": "Optional absolute or workspace-relative path to an existing parent .trace.md artifact. When provided, the runtime treats the run as an artifact-backed continuation and exports the child beside the parent unless exportToFolder is overridden. Classic prompted modes may inherit parent request fields by default, DIRECT must not inherit prompt framing, and RESUME stays prompt-free."
             },
             "parentTask": {
               "type": "string",
-              "description": "The exact bounded investigative task that the parent wants the child lane to perform. Prefer non-leading wording that preserves inquiry without baking in the target conclusion."
+              "description": "The exact bounded investigative task that the parent wants the child lane to perform. Prefer non-leading wording that preserves inquiry without baking in the target conclusion. Required for OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC. Omit this in DIRECT and RESUME."
             },
             "outputMode": {
               "type": "string",
@@ -120,11 +120,13 @@
             },
             "inputMode": {
               "type": "string",
-              "description": "Optional posture mode for the child lane.",
+              "description": "Input mode for the child lane. OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC use the classic userInput plus parentTask form. DIRECT uses only userInput without injected parentTask or parentFrame. RESUME requires parentTracePath and resumes without any new userInput, parentTask, or parentFrame.",
               "enum": [
                 "OPERATIVE",
                 "EPISTEMIC",
-                "NON_LEADING_EPISTEMIC"
+                "NON_LEADING_EPISTEMIC",
+                "DIRECT",
+                "RESUME"
               ]
             },
             "validationMode": {
@@ -266,10 +268,7 @@
               }
             }
           },
-          "required": [
-            "userInput",
-            "parentTask"
-          ]
+          "required": []
         }
       },
       {

@@ -300,7 +300,7 @@ Milestone 3 is the point where `run_traceable_subagent` stops being only a one-s
 Current implementation progress:
 
 - [x] Host-surface cancellation now reaches the TRACEABLE runtime and produces explicit stop metadata in saved evidence.
-- [x] `run_traceable_subagent` now exposes artifact-backed continuation through `parentTracePath`, inherits the parent request contract by default, and carries a bounded parent outcome summary forward for the child run.
+- [x] `run_traceable_subagent` now exposes artifact-backed continuation through `parentTracePath`, carries bounded parent outcome summary and lineage forward for the child run, and now distinguishes between classic prompted continuation, DIRECT user-only continuation, and strict RESUME continuation.
 - [x] Continued child exports now allocate next-free lineage filenames beside the parent by default and persist continuation metadata in the saved artifact.
 - [x] Observed on May 22, 2026 with the experimental VS Code live-chat tooling: the chat-side dispatch reached the provenance tool surface, opened TRACEABLE UI state, and exported a truthful parent artifact at `ai-provenance/.topics/m3-observer/01-gpt-5-4.trace.md`.
 - [x] Observed on May 22, 2026 after the model-selector canonicalization fix: a second experimental live-chat rerun selected a sendable `copilot/gpt-5-mini` child lane, executed a real `readFile` tool call against `README.md`, and exported a second truthful artifact at `ai-provenance/.topics/m3-observer/02-gpt-5-mini.trace.md`.

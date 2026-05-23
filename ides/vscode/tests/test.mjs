@@ -27,6 +27,9 @@ async function main() {
   assert.ok(runTraceableTool?.inputSchema?.properties?.inputMode, "run_traceable_subagent is missing the public inputMode input schema property.");
   assert.ok(runTraceableTool?.inputSchema?.properties?.validationMode, "run_traceable_subagent is missing the public validationMode input schema property.");
   assert.ok(runTraceableTool?.inputSchema?.properties?.reveal, "run_traceable_subagent is missing the public reveal input schema property.");
+  assert.ok(runTraceableTool?.inputSchema?.properties?.inputMode?.enum?.includes("DIRECT"), "run_traceable_subagent is missing the public DIRECT inputMode variant.");
+  assert.ok(runTraceableTool?.inputSchema?.properties?.inputMode?.enum?.includes("RESUME"), "run_traceable_subagent is missing the public RESUME inputMode variant.");
+  assert.deepEqual(runTraceableTool?.inputSchema?.required ?? [], [], "run_traceable_subagent should not hard-require userInput and parentTask for every inputMode.");
   assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "run_traceable_subagent")?.modelDescription?.includes("Canonical usage:"), "run_traceable_subagent is missing canonical usage guidance in the public tool description.");
   assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "run_traceable_subagent")?.modelDescription?.includes("artifact-backed continuation"), "run_traceable_subagent is missing truthful continuation guidance in the public tool description.");
   assert.ok(packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "list_traceable_models")?.modelDescription?.includes("sendableOnly: true"), "list_traceable_models is missing exact preflight guidance in the public tool description.");
@@ -107,6 +110,10 @@ async function main() {
   assert.ok(runtimeSource.includes("recoverableCarryState: parsedPayload.recoverableCarryState"), "Traceable runtime source is missing child-payload recoverable carry-state mapping into the final run result.");
   assert.ok(runtimeSource.includes("carryStateDisposition: parsedPayload.carryStateDisposition"), "Traceable runtime source is missing child-payload carry disposition mapping into the final run result.");
   assert.ok(runtimeSource.includes("export async function prepareTraceableSubagentInput"), "Traceable runtime source is missing the public continuation-input preparation helper.");
+  assert.ok(runtimeSource.includes('"DIRECT" | "RESUME"'), "Traceable runtime source is missing the DIRECT/RESUME inputMode contract.");
+  assert.ok(runtimeSource.includes("TRACEABLE DIRECT mode requires a non-empty userInput."), "Traceable runtime source is missing DIRECT-mode userInput enforcement.");
+  assert.ok(runtimeSource.includes("TRACEABLE RESUME mode requires parentTracePath."), "Traceable runtime source is missing RESUME-mode parentTracePath enforcement.");
+  assert.ok(runtimeSource.includes("TRACEABLE RESUME mode does not allow userInput, parentTask, or parentFrame."), "Traceable runtime source is missing strict RESUME prompt rejection.");
   assert.ok(runtimeSource.includes("parseTraceableEvidenceStateMarkdown"), "Traceable runtime source is missing readable parent evidence parsing for continuation.");
   assert.ok(runtimeSource.includes("continuedFromParent: true"), "Traceable runtime source is missing continuation metadata for child runs.");
   assert.ok(runtimeSource.includes("lineageLabel"), "Traceable runtime source is missing lineage metadata handling for continuation runs.");
@@ -141,6 +148,7 @@ async function main() {
   assert.ok(contractSource.includes("lineageLabel?: string"), "Traceable contract source is missing lineageLabel metadata on the run result.");
   assert.ok(contractSource.includes("buildUnparseableChildPayloadFallback"), "Traceable contract source is missing unparseable-payload fallback construction.");
   assert.ok(contractSource.includes("collectTraceableInputValidationIssues"), "Traceable contract source is missing input validation helpers.");
+  assert.ok(contractSource.includes('"DIRECT" | "RESUME"'), "Traceable contract source is missing the DIRECT/RESUME inputMode contract.");
   assert.ok(contractSource.includes("renderTraceableSubagentEvidencePathOnly"), "Traceable contract source is missing evidence-path-only markdown rendering.");
   assert.ok(contractSource.includes("formatTraceablePathReference"), "Traceable contract source is missing path-reference rendering.");
   assert.ok(contractSource.includes("renderTraceableSubagentMarkdown"), "Traceable contract source is missing full markdown rendering.");
@@ -156,6 +164,8 @@ async function main() {
   assert.ok(extensionSource.includes("this.invokeImpl(options.input, budget, preparedState, token)"), "Traceable extension source is missing token threading into queued tool invocations.");
   assert.ok(extensionSource.includes("prepareTraceableSubagentInput(input)"), "Traceable extension source is missing pre-run continuation preparation before export and execution.");
   assert.ok(extensionSource.includes("buildTraceableRequestSummary(effectiveInput)"), "Traceable extension source is missing request-summary rendering for the effective continuation input.");
+  assert.ok(extensionSource.includes("Declared input mode: DIRECT"), "Traceable extension source is missing DIRECT mode summary rendering.");
+  assert.ok(extensionSource.includes("Declared input mode: RESUME"), "Traceable extension source is missing RESUME mode summary rendering.");
   assert.ok(extensionSource.includes("label: \"Carry State\""), "Traceable extension source is missing the separate carry-state request summary item.");
   assert.ok(contractSource.includes("extractObservedReadTargets"), "Traceable contract source is missing observed-read target summaries.");
   console.log("ai-provenance vscode scaffold checks passed");

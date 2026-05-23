@@ -16,7 +16,7 @@ export type TraceableStepStatus = "planned" | "attempted" | "completed" | "faile
 export type TraceableToolResult = "success" | "failure" | "timeout" | "inputNeeded" | "notRun";
 export type TraceableStatus = "trace-supported" | "trace-incomplete" | "trace-conflicted";
 
-export type TraceableSubagentInputMode = "OPERATIVE" | "EPISTEMIC" | "NON_LEADING_EPISTEMIC";
+export type TraceableSubagentInputMode = "OPERATIVE" | "EPISTEMIC" | "NON_LEADING_EPISTEMIC" | "DIRECT" | "RESUME";
 export type TraceableSubagentValidationMode = "NONE" | "WARN" | "ERROR";
 export type TraceableSubagentOutputMode = "summary-with-evidence-path" | "full-markdown-with-evidence-path" | "evidence-path-only";
 
@@ -203,7 +203,7 @@ export interface TraceableBudgetPolicy {
 }
 
 export interface TraceableSubagentInput {
-  userInput: string;
+  userInput?: string;
   parentTracePath?: string;
   parentFrame?: string;
   parentTask?: string;
@@ -353,6 +353,8 @@ export function normalizeTraceableInputMode(mode: unknown): TraceableSubagentInp
     case "OPERATIVE":
     case "EPISTEMIC":
     case "NON_LEADING_EPISTEMIC":
+    case "DIRECT":
+    case "RESUME":
       return normalized;
     default:
       return undefined;
@@ -490,11 +492,16 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   const parentTracePath = input.parentTracePath?.trim();
   const parentFrame = resolveTraceableParentFrame(input);
   const request: Record<string, unknown> = {
-    userInput: input.userInput,
-    parentFrame,
     wrapperPolicy,
     budgetPolicy
   };
+
+  if (input.userInput?.trim()) {
+    request.userInput = input.userInput.trim();
+  }
+  if (parentFrame) {
+    request.parentFrame = parentFrame;
+  }
 
   if (parentTracePath) {
     request.parentTracePath = parentTracePath;
