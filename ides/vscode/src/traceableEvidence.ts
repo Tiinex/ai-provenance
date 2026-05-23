@@ -1,6 +1,8 @@
 import { readdirSync } from "node:fs";
 import path from "node:path";
 import {
+  buildTraceableMarkdownPathRenderOptions,
+  formatTraceablePathReference,
   normalizeTraceableOutputMode,
   renderTraceableSubagentMarkdown,
   type TraceableSubagentRunResult
@@ -37,6 +39,232 @@ export interface ViewTraceableSubagentInput {
   includeSupportArtifacts?: boolean;
 }
 
+function normalizeLegacyStopReason(value: unknown): TraceableSubagentRunResult["stopReason"] | undefined {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "completed" || normalized === "completed_normally" || normalized === "completed normally") {
+    return "completed";
+  }
+  if (normalized === "budget_exhausted") {
+    return "budget_exhausted";
+  }
+  if (normalized === "insufficient_grounding") {
+    return "insufficient_grounding";
+  }
+  if (normalized === "tool_blocked") {
+    return "tool_blocked";
+  }
+  if (normalized === "awaiting_input") {
+    return "awaiting_input";
+  }
+  if (normalized === "user_cancelled") {
+    return "user_cancelled";
+  }
+  if (normalized === "policy_stop") {
+    return "policy_stop";
+  }
+  return undefined;
+}
+
+function normalizeLegacyCompletionClaim(
+  value: unknown,
+  stopReason: TraceableSubagentRunResult["stopReason"] | undefined
+): TraceableSubagentRunResult["completionClaim"] | undefined {
+  const reconcile = (claim: TraceableSubagentRunResult["completionClaim"] | undefined): TraceableSubagentRunResult["completionClaim"] | undefined => {
+    if (!claim || !stopReason) {
+      return claim;
+    }
+    if (stopReason === "completed") {
+      return claim;
+    }
+    if (stopReason === "budget_exhausted" || stopReason === "insufficient_grounding") {
+      return claim === "complete" ? "partial" : claim;
+    }
+    if (stopReason === "tool_blocked" || stopReason === "awaiting_input" || stopReason === "user_cancelled" || stopReason === "policy_stop") {
+      return claim === "complete" ? "unresolved" : claim;
+    }
+    return claim;
+  };
+
+  if (value === true) {
+    return reconcile(stopReason === "insufficient_grounding" ? "partial" : "complete");
+  }
+  if (value === false) {
+    return reconcile("unresolved");
+  }
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "complete" || normalized === "partial" || normalized === "unresolved") {
+    return reconcile(normalized);
+  }
+  if (normalized === "partial_evidence_only" || /\bpartial\b|\bpartial evidence\b/u.test(normalized)) {
+    return reconcile("partial");
+  }
+  if (/(?:^|\b)(artifact|continuation|handoff|seed)(?:_|\s)+(?:created|prepared|ready)(?:\b|$)/u.test(normalized)) {
+    return reconcile("complete");
+  }
+  if (/\bunresolved\b|\bnot verified\b|\bnot confirmed\b|\binsufficient\b/u.test(normalized)) {
+    return reconcile("unresolved");
+  }
+  if (/\bconfirmed\b|\bcomplete\b|\bcompleted\b|\bgrounded\b|\bderived\b|\bverified\b|\bsucceeded\b|\bsuccessful\b|\bsuccess\b/u.test(normalized)) {
+    return reconcile("complete");
+  }
+  return reconcile(stopReason === "completed" ? "complete" : "unresolved");
+}
+
+function extractLegacyRawChildOutputText(markdown: string, result: TraceableSubagentRunResult | undefined): string | undefined {
+  const embedded = result?.rawModelText?.trim();
+  if (embedded) {
+    return embedded;
+  }
+  const match = markdown.match(/### Raw Child Output\s+```text\s*([\s\S]*?)\s*```/u);
+  return match?.[1]?.trim() || undefined;
+}
+
+function extractLegacyRawChildOutputFields(rawText: string): {
+  stopReason?: string;
+  completionClaim?: string;
+  finalSummary?: string;
+} {
+  const fromJson = (() => {
+    try {
+      const parsed = JSON.parse(rawText) as Record<string, unknown>;
+      return {
+        stopReason: getString(parsed.stopReason),
+        completionClaim: getString(parsed.completionClaim),
+        finalSummary: getString(parsed.finalSummary)
+      };
+    } catch {
+      return undefined;
+    }
+  })();
+  if (fromJson?.stopReason || fromJson?.completionClaim || fromJson?.finalSummary) {
+    return fromJson;
+  }
+  const extractQuotedField = (fieldName: string): string | undefined => {
+    const fieldIndex = rawText.indexOf(`"${fieldName}"`);
+    if (fieldIndex < 0) {
+      return undefined;
+    }
+    const colonIndex = rawText.indexOf(":", fieldIndex + fieldName.length + 2);
+    if (colonIndex < 0) {
+      return undefined;
+    }
+    const openingQuoteIndex = rawText.indexOf('"', colonIndex + 1);
+    if (openingQuoteIndex < 0) {
+      return undefined;
+    }
+    let escaped = false;
+    let value = "";
+    for (let index = openingQuoteIndex + 1; index < rawText.length; index += 1) {
+      const character = rawText[index];
+      if (escaped) {
+        value += character === "n"
+          ? "\n"
+          : character === "r"
+            ? "\r"
+            : character === "t"
+              ? "\t"
+              : character;
+        escaped = false;
+        continue;
+      }
+      if (character === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (character === '"') {
+        return value;
+      }
+      value += character;
+    }
+    return undefined;
+  };
+  return {
+    stopReason: extractQuotedField("stopReason"),
+    completionClaim: extractQuotedField("completionClaim"),
+    finalSummary: extractQuotedField("finalSummary")
+  };
+}
+
+function synthesizeLegacyCarryState(
+  result: TraceableSubagentRunResult,
+  rawChildOutput: string | undefined,
+  compatFinalSummary: string | undefined
+): Pick<TraceableSubagentRunResult, "carryStateDisposition" | "activeCarryForward" | "recoverableCarryState"> {
+  if (result.activeCarryForward || result.recoverableCarryState || result.carryStateDisposition) {
+    return {
+      carryStateDisposition: result.carryStateDisposition,
+      activeCarryForward: result.activeCarryForward,
+      recoverableCarryState: result.recoverableCarryState
+    };
+  }
+  const evidenceText = [compatFinalSummary?.trim() || "", rawChildOutput?.trim() || ""]
+    .filter(Boolean)
+    .join("\n");
+  if (!evidenceText) {
+    return {};
+  }
+  const normalized = evidenceText.toLowerCase();
+  if (/\bactive carry-forward\b|\bactivecarryforward\b|\bactivecarryforward"\b|\bactivecarryforward\s*[:=]|\bactivecarryforward\b|\bactive carry forward\b/u.test(normalized)) {
+    return {
+      carryStateDisposition: "active",
+      activeCarryForward: {}
+    };
+  }
+  if (/\brecoverable carry\b|\brecoverablecarrystate\b|\brecoverable carry state\b/u.test(normalized)) {
+    return {
+      carryStateDisposition: "recoverable",
+      recoverableCarryState: {}
+    };
+  }
+  return {};
+}
+
+function backfillLegacyParsedResult(result: TraceableSubagentRunResult | undefined, markdown: string): TraceableSubagentRunResult | undefined {
+  if (!result) {
+    return result;
+  }
+  const existingStopReason = normalizeLegacyStopReason(result.stopReason);
+  const existingCompletionClaim = normalizeLegacyCompletionClaim(result.completionClaim, existingStopReason);
+  const rawChildOutput = extractLegacyRawChildOutputText(markdown, result);
+  if (!rawChildOutput) {
+    return result;
+  }
+  const extractedFields = extractLegacyRawChildOutputFields(rawChildOutput);
+  const compatStopReason = normalizeLegacyStopReason(extractedFields.stopReason);
+  const compatCompletionClaim = normalizeLegacyCompletionClaim(extractedFields.completionClaim, compatStopReason);
+  const compatFinalSummary = extractedFields.finalSummary?.trim();
+  const isStaleSalvageResult = (result.stopReason === "insufficient_grounding" || result.completionClaim === "unresolved")
+    && (result.finalSummary.includes("omitted one or more required TRACEABLE top-level fields")
+      || result.finalSummary.includes("salvaged the observed evidence"));
+  const needsCompatBackfill = (!existingStopReason || !existingCompletionClaim)
+    || (isStaleSalvageResult
+      && compatStopReason === "completed"
+      && compatCompletionClaim === "complete");
+  if (!needsCompatBackfill) {
+    return result;
+  }
+  if (!compatStopReason || !compatCompletionClaim || !compatFinalSummary) {
+    return result;
+  }
+  const synthesizedCarryState = synthesizeLegacyCarryState(result, rawChildOutput, compatFinalSummary);
+
+  return {
+    ...result,
+    stopReason: compatStopReason,
+    completionClaim: compatCompletionClaim,
+    finalSummary: compatFinalSummary,
+    carryStateDisposition: synthesizedCarryState.carryStateDisposition ?? result.carryStateDisposition,
+    activeCarryForward: synthesizedCarryState.activeCarryForward ?? result.activeCarryForward,
+    recoverableCarryState: synthesizedCarryState.recoverableCarryState ?? result.recoverableCarryState
+  };
+}
+
 export function parseTraceableEvidenceStateMarkdown(markdown: string): ParsedTraceableEvidenceState | undefined {
   const match = markdown.match(/## Traceable State\s+```json\s*([\s\S]*?)\s*```/u);
   if (!match?.[1]) {
@@ -62,20 +290,21 @@ export function parseTraceableEvidenceStateMarkdown(markdown: string): ParsedTra
   const parsedResult = record.result && typeof record.result === "object"
     ? record.result as TraceableSubagentRunResult
     : undefined;
+  const compatResult = backfillLegacyParsedResult(parsedResult, markdown);
   const parsedSnapshot = snapshot as TraceableSubagentDetailSnapshot;
   return {
-    snapshot: parsedResult
+    snapshot: compatResult
       ? {
         ...parsedSnapshot,
         resultSummary: parsedSnapshot.resultSummary ?? {
-          finalSummary: parsedResult.finalSummary,
-          carryStateDisposition: parsedResult.carryStateDisposition,
-          activeCarryForward: parsedResult.activeCarryForward,
-          recoverableCarryState: parsedResult.recoverableCarryState
+          finalSummary: compatResult.finalSummary,
+          carryStateDisposition: compatResult.carryStateDisposition,
+          activeCarryForward: compatResult.activeCarryForward,
+          recoverableCarryState: compatResult.recoverableCarryState
         }
       }
       : parsedSnapshot,
-    result: parsedResult
+    result: compatResult
   };
 }
 
@@ -137,6 +366,7 @@ function buildTraceableEvidenceLineageLines(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string[] {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const result = getRecord(input.parsed.result) ?? {};
   const parsedFileName = parseTraceableEvidenceFileName(path.basename(input.filePath));
   const lineageLabel = getString(result.lineageLabel) ?? parsedFileName?.lineageLabel;
@@ -150,9 +380,9 @@ function buildTraceableEvidenceLineageLines(input: {
   const lines = [
     "## Lineage",
     "",
-    `- Current Trace: ${input.filePath}`,
+    `- Current Trace: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Continued From Parent: ${continuedFromParent ?? (parentTracePath ? "yes" : "no")}`,
-    `- Parent Trace: ${parentTracePath ?? "-"}`,
+    `- Parent Trace: ${formatTraceablePathReference(parentTracePath, pathRenderOptions)}`,
     `- Lineage Label: ${lineageLabel ?? "-"}`,
     `- Lineage Depth: ${lineageDepth ?? "-"}`,
     `- Direct Children: ${directChildren.length}`
@@ -160,7 +390,7 @@ function buildTraceableEvidenceLineageLines(input: {
   if (directChildren.length > 0) {
     lines.push("", "### Direct Children", "");
     for (const childPath of directChildren) {
-      lines.push(`- ${childPath}`);
+      lines.push(`- ${formatTraceablePathReference(childPath, pathRenderOptions)}`);
     }
   }
   lines.push("");
@@ -315,6 +545,7 @@ export function renderTraceableEvidenceSummaryMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const snapshot = input.parsed.snapshot;
   const header = getRecord(snapshot.header) ?? {};
   const evidenceFile = getRecord(snapshot.evidenceFile) ?? {};
@@ -326,7 +557,7 @@ export function renderTraceableEvidenceSummaryMarkdown(input: {
   const lines = [
     "# TRACEABLE Evidence Summary",
     "",
-    `- File: ${input.filePath}`,
+    `- File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Schema: ${TRACEABLE_EVIDENCE_STATE_SCHEMA}`,
     `- Title: ${getString(header.displayTitle) ?? getString(header.agentName) ?? "-"}`,
     `- Role: ${getString(header.roleDisplay) ?? "-"}`,
@@ -369,13 +600,14 @@ export function renderTraceableEvidenceRequestSummaryMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const requestSummary = getArray<Record<string, unknown>>(input.parsed.snapshot.requestSummary);
   const maxItems = clampTraceableViewItems(input.maxItems);
   const offset = clampTraceableViewOffset(input.offset);
   const lines = [
     "# Traceable Evidence Request Summary",
     "",
-    `- Evidence File: ${input.filePath}`,
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Requested Summary Items: ${requestSummary.length}`
   ];
   const window = selectTraceableWindow(requestSummary, maxItems, offset);
@@ -400,6 +632,7 @@ export function renderTraceableEvidenceOutcomeMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const snapshot = input.parsed.snapshot;
   const status = getRecord(snapshot.status) ?? {};
   const result = input.parsed.result;
@@ -407,7 +640,7 @@ export function renderTraceableEvidenceOutcomeMarkdown(input: {
   const lines = [
     "# Traceable Evidence Outcome",
     "",
-    `- Evidence File: ${input.filePath}`,
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Updated At: ${getString(snapshot.updatedAt) ?? "-"}`,
     `- Current Status: ${getString(status.phase) ?? "-"} | ${getString(status.message) ?? "-"}`
   ];
@@ -436,12 +669,13 @@ export function renderTraceableEvidenceTraceableMarkdown(input: {
   parsed: ParsedTraceableEvidenceState;
   includeSupportArtifacts?: boolean;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const result = input.parsed.result;
   if (!result) {
     return [
       "# Traceable Evidence Markdown",
       "",
-      `- Evidence File: ${input.filePath}`,
+      `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
       "",
       "This evidence artifact does not contain a final TRACEABLE run result, so markdown reconstruction is unavailable.",
       ""
@@ -449,7 +683,7 @@ export function renderTraceableEvidenceTraceableMarkdown(input: {
   }
 
   const rendered = renderTraceableSubagentMarkdown(result, {
-    mode: "absolute-file-uri-markdown",
+    ...pathRenderOptions,
     includeSupportArtifacts: input.includeSupportArtifacts ?? true
   });
   const lineageLines = buildTraceableEvidenceLineageLines(input);
@@ -464,13 +698,14 @@ export function renderTraceableEvidenceToolLedgerMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const toolCalls = getToolCalls(input.parsed);
   const lines = [
     "# Traceable Evidence Tool Ledger",
     "",
-    `- Evidence File: ${input.filePath}`,
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Tool Calls Recorded: ${toolCalls.length}`
   ];
   if (toolCalls.length === 0) {
@@ -498,13 +733,14 @@ export function renderTraceableEvidenceStatusHistoryMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const history = getStatusHistory(input.parsed);
   const lines = [
     "# Traceable Evidence Status History",
     "",
-    `- Evidence File: ${input.filePath}`,
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Status Events Recorded: ${history.length}`
   ];
   if (history.length === 0) {
@@ -530,13 +766,14 @@ export function renderTraceableEvidenceToolSummaryMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const summaries = summarizeTraceableToolCalls(getToolCalls(input.parsed));
   const lines = [
     "# Traceable Evidence Tool Summary",
     "",
-    `- Evidence File: ${input.filePath}`,
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Distinct Tools: ${summaries.length}`,
     `- Tool Calls Recorded: ${getToolCalls(input.parsed).length}`
   ];
@@ -565,13 +802,14 @@ export function renderTraceableEvidenceFileSummaryMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const summaries = summarizeTraceableReadTargets(getToolCalls(input.parsed));
   const lines = [
     "# Traceable Evidence File Summary",
     "",
-    `- Evidence File: ${input.filePath}`,
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Distinct Read Targets: ${summaries.length}`
   ];
   if (summaries.length === 0) {
@@ -581,7 +819,7 @@ export function renderTraceableEvidenceFileSummaryMarkdown(input: {
   const window = selectTraceableWindow(summaries, maxItems, offset);
   lines.push("");
   for (const summary of window.items) {
-    lines.push(`- ${summary.filePath}`);
+    lines.push(`- ${formatTraceablePathReference(summary.filePath, pathRenderOptions, summary.filePath)}`);
     lines.push(`  - Read Count: ${summary.readCount}`);
   }
   if (window.items.length < summaries.length || offset !== undefined) {
@@ -594,6 +832,7 @@ export function renderTraceableEvidenceStateJsonMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
   const envelope = {
     snapshot: input.parsed.snapshot,
     result: input.parsed.result
@@ -601,7 +840,7 @@ export function renderTraceableEvidenceStateJsonMarkdown(input: {
   return [
     "# Traceable Evidence State JSON",
     "",
-    `- Evidence File: ${input.filePath}`,
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     "",
     "```json",
     JSON.stringify(envelope, null, 2),
@@ -671,7 +910,7 @@ export function renderViewTraceableSubagentMarkdown(input: {
         ...result,
         outputMode
       }, {
-        mode: "absolute-file-uri-markdown",
+        ...buildTraceableMarkdownPathRenderOptions(input.filePath),
         includeSupportArtifacts: input.view.includeSupportArtifacts ?? true
       });
     }

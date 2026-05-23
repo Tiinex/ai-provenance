@@ -1,5 +1,6 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import * as vscode from "vscode";
 
 export type TraceableStopReason =
   | "completed"
@@ -22,10 +23,97 @@ export type TraceableSubagentOutputMode = "summary-with-evidence-path" | "full-m
 export interface TraceableMarkdownPathRenderOptions {
   mode?: "plain" | "relative-markdown" | "absolute-file-uri-markdown";
   baseDir?: string;
+  workspaceRoot?: string;
+  maximumDepthOutsideOfWorkspaceRootForRelativePaths?: number;
 }
 
 export interface TraceableMarkdownRenderOptions extends TraceableMarkdownPathRenderOptions {
   includeSupportArtifacts?: boolean;
+}
+
+const TRACEABLE_MAX_RELATIVE_PATH_DEPTH_SETTING = "maximumDepthOutsideOfWorkspaceRootForRelativePaths";
+
+function normalizeTraceablePathForMarkdown(value: string): string {
+  return value.replace(/\\+/g, "/");
+}
+
+function countLeadingParentSegments(relativePath: string): number {
+  let count = 0;
+  for (const segment of normalizeTraceablePathForMarkdown(relativePath).split("/")) {
+    if (!segment || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      count += 1;
+      continue;
+    }
+    break;
+  }
+  return count;
+}
+
+function findContainingWorkspaceRoot(filePath: string): string | undefined {
+  const candidates = (vscode.workspace.workspaceFolders ?? [])
+    .map((folder) => folder.uri.fsPath)
+    .filter((root) => filePath.toLowerCase().startsWith(root.toLowerCase()));
+  return candidates.sort((left, right) => right.length - left.length)[0];
+}
+
+export function getMaximumDepthOutsideOfWorkspaceRootForRelativePaths(): number {
+  const configured = vscode.workspace
+    .getConfiguration("tiinex.aiProvenance")
+    .get<number>(TRACEABLE_MAX_RELATIVE_PATH_DEPTH_SETTING, 1);
+  if (!Number.isFinite(configured)) {
+    return 1;
+  }
+  return Math.max(0, Math.floor(configured));
+}
+
+export function buildTraceableMarkdownPathRenderOptions(evidenceFilePath: string | undefined): TraceableMarkdownPathRenderOptions {
+  const filePath = evidenceFilePath?.trim();
+  if (!filePath) {
+    return { mode: "plain" };
+  }
+  return {
+    mode: "relative-markdown",
+    baseDir: path.dirname(filePath),
+    workspaceRoot: findContainingWorkspaceRoot(filePath),
+    maximumDepthOutsideOfWorkspaceRootForRelativePaths: getMaximumDepthOutsideOfWorkspaceRootForRelativePaths()
+  };
+}
+
+function renderTraceablePathValue(filePath: string, options: TraceableMarkdownPathRenderOptions | undefined): string {
+  const mode = options?.mode ?? "plain";
+  if (mode === "plain") {
+    return filePath;
+  }
+  if (mode === "absolute-file-uri-markdown") {
+    return pathToFileURL(filePath).toString();
+  }
+  const baseDir = options?.baseDir?.trim();
+  if (!baseDir) {
+    return filePath;
+  }
+  const relativePath = normalizeTraceablePathForMarkdown(path.relative(baseDir, filePath));
+  if (!relativePath) {
+    return path.basename(filePath);
+  }
+  if (path.isAbsolute(relativePath)) {
+    return pathToFileURL(filePath).toString();
+  }
+  const workspaceRoot = options?.workspaceRoot?.trim();
+  if (!workspaceRoot) {
+    return relativePath;
+  }
+  const baseToWorkspace = normalizeTraceablePathForMarkdown(path.relative(baseDir, workspaceRoot));
+  if (path.isAbsolute(baseToWorkspace)) {
+    return pathToFileURL(filePath).toString();
+  }
+  const outsideDepth = Math.max(0, countLeadingParentSegments(relativePath) - countLeadingParentSegments(baseToWorkspace));
+  const maximumDepth = Number.isFinite(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths)
+    ? Math.max(0, Math.floor(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths ?? 0))
+    : 1;
+  return outsideDepth <= maximumDepth ? relativePath : pathToFileURL(filePath).toString();
 }
 
 export interface TraceableSubagentStatusHeader {
@@ -178,10 +266,22 @@ export interface TraceableSubagentUsageSummary {
   note?: string;
 }
 
+export interface TraceableSubagentTimingSummary {
+  provenance: "measured" | "derived";
+  totalElapsedMs: number;
+  runtimeElapsedMs: number;
+  toolElapsedMs: number;
+  llmElapsedMs: number;
+  activeSegmentKind?: "runtime" | "tool" | "llm";
+}
+
 export interface TraceableSubagentIterationMetric {
   iteration: number;
   isFinalRecoveryIteration: boolean;
   elapsedMs: number;
+  runtimeElapsedMs?: number;
+  toolElapsedMs?: number;
+  llmElapsedMs?: number;
   assistantTextLength: number;
   toolCallCount: number;
   requestedToolCallCount?: number;
@@ -222,6 +322,7 @@ export interface TraceableSubagentRunResult {
   validationIssues: string[];
   opaqueDelegations: TraceableOpaqueDelegation[];
   usage?: TraceableSubagentUsageSummary;
+  timingSummary?: TraceableSubagentTimingSummary;
   iterationMetrics?: TraceableSubagentIterationMetric[];
   rawModelText?: string;
   debugLogPath?: string;
@@ -558,7 +659,7 @@ export function normalizeStopReasonValue(value: unknown): TraceableStopReason | 
   if (/\bpolicy\b.*\bstop\b|\bstopped by policy\b/u.test(normalized)) {
     return "policy_stop";
   }
-  if (/\binsufficient\b|\bnot enough\b|\bpartial evidence\b|\bunresolved\b/u.test(normalized)) {
+  if (/\binsufficient\b|\bnot enough\b|\bpartial evidence\b|\bunresolved\b|\binsufficient[_\s:-]*evidence[_\s:-]*for[_\s:-]*full[_\s:-]*proof\b|\bnot fully prov(?:e|en)\b|\bfull proof\b/u.test(normalized)) {
     return "insufficient_grounding";
   }
   if (/\bas requested\b|\bno further reads needed\b|\bbounded-read-complete\b|\bfound and reported\b|\breported as requested\b|\bminimal read sufficient\b|\bread sufficient\b|\bsufficient per contract\b/u.test(normalized)) {
@@ -914,26 +1015,18 @@ export function formatTraceablePathReference(
   if (!trimmed) {
     return fallback;
   }
-  const mode = options?.mode ?? "plain";
-  if (mode === "plain") {
+  if ((options?.mode ?? "plain") === "plain") {
     return trimmed;
   }
   const label = path.basename(trimmed);
-  if (mode === "absolute-file-uri-markdown") {
-    return `[${label}](${pathToFileURL(trimmed).toString()})`;
-  }
-  const baseDir = options?.baseDir?.trim();
-  if (!baseDir) {
+  if (!options?.baseDir?.trim()) {
     return trimmed;
   }
-  const relativePath = path.relative(baseDir, trimmed);
-  if (!relativePath) {
+  if (!path.relative(options.baseDir, trimmed)) {
     return `[${label}](${encodeMarkdownHrefPath(path.join("..", label))})`;
   }
-  if (path.isAbsolute(relativePath)) {
-    return `[${label}](${pathToFileURL(trimmed).toString()})`;
-  }
-  return `[${label}](${encodeMarkdownHrefPath(relativePath)})`;
+  const renderedTarget = renderTraceablePathValue(trimmed, options);
+  return renderedTarget === trimmed ? trimmed : `[${label}](${encodeMarkdownHrefPath(renderedTarget)})`;
 }
 
 export function collectTraceableTextRewritePaths(value: unknown, paths = new Set<string>()): Set<string> {
@@ -1064,10 +1157,7 @@ export function mapPathLikeFields(value: unknown, options: TraceableMarkdownPath
   for (const [key, entry] of Object.entries(record)) {
     if (typeof entry === "string" && /(?:^|_)(file_path|filepath|debug_log_path|debuglogpath|export_to_folder|exporttofolder|parent_trace_path|parenttracepath)$/iu.test(key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`))) {
       mapped[key] = options?.mode === "relative-markdown"
-        ? (() => {
-          const relativePath = path.relative(options.baseDir ?? path.dirname(entry), entry).replace(/\\/g, "/") || path.basename(entry);
-          return path.isAbsolute(relativePath) ? pathToFileURL(entry).toString() : relativePath;
-        })()
+        ? renderTraceablePathValue(entry, options)
         : options?.mode === "absolute-file-uri-markdown"
           ? pathToFileURL(entry).toString()
           : entry;

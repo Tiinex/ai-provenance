@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import path from "node:path";
+import type { TraceableSubagentTimingSummary } from "./traceableContract";
 import type {
   TraceableSubagentRequestSummaryItem,
   TraceableSubagentStatusHeader,
@@ -204,6 +205,17 @@ function formatStatusSegments(message: string): string[] {
   }
 }
 
+function createMeasuredTimingSummary(activeSegmentKind?: TraceableSubagentTimingSummary["activeSegmentKind"]): TraceableSubagentTimingSummary {
+  return {
+    provenance: "measured",
+    totalElapsedMs: 0,
+    runtimeElapsedMs: 0,
+    toolElapsedMs: 0,
+    llmElapsedMs: 0,
+    activeSegmentKind
+  };
+}
+
 export class TraceableSubagentStatusBarController implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
   private readonly openDetailView: (() => Thenable<void> | Promise<void>) | undefined;
@@ -222,6 +234,7 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
   private currentStartedAt = new Date(0).toISOString();
   private currentHeader: Required<TraceableSubagentStatusHeader> = defaultHeaderState();
   private currentRequestSummary: TraceableSubagentRequestSummaryItem[] = [];
+  private currentTimingSummary: TraceableSubagentTimingSummary = createMeasuredTimingSummary();
   private statusHistory: TraceableSubagentStatusHistoryEvent[] = [];
   private nextStatusHistoryId = 1;
 
@@ -244,6 +257,7 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
     this.currentStartedAt = new Date().toISOString();
     this.currentHeader = defaultHeaderState();
     this.currentRequestSummary = [];
+    this.currentTimingSummary = createMeasuredTimingSummary("runtime");
     this.statusHistory = [];
     this.nextStatusHistoryId = 1;
     this.setHeaderState(initialHeader);
@@ -264,6 +278,12 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
       },
       update: (message: string) => {
         this.showSpinner(runId, message);
+      },
+      setTimingSummary: (summary: TraceableSubagentTimingSummary) => {
+        if (runId !== this.activeRunId) {
+          return;
+        }
+        this.setTimingSummary(summary);
       },
       recordToolCall: (event: TraceableSubagentToolStatusEvent) => {
         if (runId !== this.activeRunId) {
@@ -331,6 +351,18 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
         value: item.value.trim(),
         title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : undefined
       }));
+    this.publishDetailView();
+  }
+
+  private setTimingSummary(summary: TraceableSubagentTimingSummary): void {
+    this.currentTimingSummary = {
+      provenance: summary.provenance,
+      totalElapsedMs: Number.isFinite(summary.totalElapsedMs) ? Math.max(0, summary.totalElapsedMs) : 0,
+      runtimeElapsedMs: Number.isFinite(summary.runtimeElapsedMs) ? Math.max(0, summary.runtimeElapsedMs) : 0,
+      toolElapsedMs: Number.isFinite(summary.toolElapsedMs) ? Math.max(0, summary.toolElapsedMs) : 0,
+      llmElapsedMs: Number.isFinite(summary.llmElapsedMs) ? Math.max(0, summary.llmElapsedMs) : 0,
+      activeSegmentKind: summary.activeSegmentKind
+    };
     this.publishDetailView();
   }
 
@@ -488,6 +520,7 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
       requestSummary: [...this.currentRequestSummary],
       statusHistory: [...this.statusHistory],
       recentTools: this.getObservedToolEvents(),
+      timingSummary: { ...this.currentTimingSummary },
       startedAt: this.currentStartedAt,
       updatedAt: new Date().toISOString()
     });

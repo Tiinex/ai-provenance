@@ -6,6 +6,7 @@ import { allocateNextTraceableLineageLabel, parseTraceableEvidenceFileName } fro
 import { isRuntimeAgentArtifactPath, normalizeArtifactPath } from "./tools/runtimeAgentArtifactStructure";
 import { expandToolReferenceKeys, normalizeToolReferenceKey } from "./toolNameNormalization";
 import { appendLineToRollingLog } from "./runtimeFileHygiene";
+import type { TraceableSubagentTimingSummary } from "./traceableContract";
 
 export const TRACEABLE_SUBAGENT_TOOL_NAME = "run_traceable_subagent";
 
@@ -43,6 +44,7 @@ export interface TraceableSubagentStatusReporter {
   finish(message: string, options?: { error?: boolean; warning?: boolean; keepMs?: number; detail?: string }): void;
   setHeader?(header: TraceableSubagentStatusHeader): void;
   setRequestSummary?(summary: TraceableSubagentRequestSummaryItem[]): void;
+  setTimingSummary?(summary: TraceableSubagentTimingSummary): void;
   recordToolCall?(event: TraceableSubagentToolStatusEvent): void;
 }
 
@@ -292,6 +294,9 @@ export interface TraceableSubagentIterationMetric {
   iteration: number;
   isFinalRecoveryIteration: boolean;
   elapsedMs: number;
+  runtimeElapsedMs?: number;
+  toolElapsedMs?: number;
+  llmElapsedMs?: number;
   assistantTextLength: number;
   toolCallCount: number;
   requestedToolCallCount?: number;
@@ -332,6 +337,7 @@ export interface TraceableSubagentRunResult {
   validationIssues: string[];
   opaqueDelegations: TraceableOpaqueDelegation[];
   usage?: TraceableSubagentUsageSummary;
+  timingSummary?: TraceableSubagentTimingSummary;
   iterationMetrics?: TraceableSubagentIterationMetric[];
   rawModelText?: string;
   debugLogPath?: string;
@@ -451,6 +457,8 @@ export interface TraceableModelCatalogEntry {
 export interface TraceableMarkdownPathRenderOptions {
   mode?: "plain" | "relative-markdown" | "absolute-file-uri-markdown";
   baseDir?: string;
+  workspaceRoot?: string;
+  maximumDepthOutsideOfWorkspaceRootForRelativePaths?: number;
 }
 
 export interface TraceableMarkdownRenderOptions extends TraceableMarkdownPathRenderOptions {
@@ -1667,6 +1675,7 @@ export function buildTraceableSubagentPromptSections(
       "- Do not call native runSubagent from inside this lane.",
       "- Final output must be one JSON object and nothing else.",
       "- The JSON object must contain: steps, expectedButMissing, stopReason, completionClaim, finalSummary, and optionally opaqueDelegations, activeCarryForward, recoverableCarryState, and carryStateDisposition.",
+      "- If unresolved work remains, or if the parent explicitly asks for carry-forward or a next trace handoff, include activeCarryForward or recoverableCarryState plus carryStateDisposition. Prefer at least one remainingGoals or openQuestions entry and a nextSuggestedStart when there is real next-trace work to preserve.",
       `- Wrapper policy is explicit and infrastructural only: ${JSON.stringify(wrapperPolicy)}.`
     ].join("\n"),
     `Request contract:\n${JSON.stringify(requestEnvelope, null, 2)}`,
@@ -1800,6 +1809,9 @@ function normalizeStopReasonValue(value: unknown): TraceableStopReason | undefin
   if (!normalized) {
     return undefined;
   }
+  if (normalized === "completed_normally" || normalized === "completed normally") {
+    return "completed";
+  }
   if (/\bcomplete(?:d)?\b|\bsummary produced\b|\bfinished\b/u.test(normalized)) {
     return "completed";
   }
@@ -1818,7 +1830,7 @@ function normalizeStopReasonValue(value: unknown): TraceableStopReason | undefin
   if (/\bpolicy\b.*\bstop\b|\bstopped by policy\b/u.test(normalized)) {
     return "policy_stop";
   }
-  if (/\binsufficient\b|\bnot enough\b|\bpartial evidence\b|\bunresolved\b/u.test(normalized)) {
+  if (/\binsufficient\b|\bnot enough\b|\bpartial evidence\b|\bunresolved\b|\binsufficient[_\s:-]*evidence[_\s:-]*for[_\s:-]*full[_\s:-]*proof\b|\bnot fully prov(?:e|en)\b|\bfull proof\b/u.test(normalized)) {
     return "insufficient_grounding";
   }
   if (/\bas requested\b|\bno further reads needed\b|\bbounded-read-complete\b|\bfound and reported\b|\breported as requested\b|\bminimal read sufficient\b|\bread sufficient\b|\bsufficient per contract\b/u.test(normalized)) {
@@ -1862,6 +1874,9 @@ function normalizeCompletionClaimValue(value: unknown, stopReason: TraceableStop
   const normalized = rawCompletionClaim.toLowerCase();
   if (normalized === "partial_evidence_only" || /\bpartial\b|\bpartial evidence\b/u.test(normalized)) {
     return reconcileWithStopReason("partial");
+  }
+  if (/(?:^|\b)(artifact|continuation|handoff|seed)(?:_|\s)+(?:created|prepared|ready)(?:\b|$)/u.test(normalized)) {
+    return reconcileWithStopReason("complete");
   }
   if (/\bunresolved\b|\bnot verified\b|\bnot confirmed\b|\binsufficient\b/u.test(normalized)) {
     return reconcileWithStopReason("unresolved");
@@ -1965,7 +1980,19 @@ function normalizeParsedPayload(value: unknown): TraceableSubagentChildPayload |
   const completionClaim = normalizeCompletionClaimValue(value.completionClaim, stopReason);
   const finalSummary = normalizeFinalSummaryValue(value.finalSummary);
   const activeCarryForward = normalizeTraceableCarryForwardState(value.activeCarryForward);
-  const recoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState);
+  const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState);
+  const derivedRecoverableCarryState = !activeCarryForward
+    && !explicitRecoverableCarryState
+    && expectedButMissing.length > 0
+    ? normalizeTraceableCarryForwardState({
+      remainingGoals: expectedButMissing
+        .map((item) => item.label.trim())
+        .filter(Boolean)
+        .slice(0, 4),
+      nextSuggestedStart: expectedButMissing[0]?.label?.trim()
+    })
+    : undefined;
+  const recoverableCarryState = explicitRecoverableCarryState ?? derivedRecoverableCarryState;
   const carryStateDisposition = normalizeTraceableCarryStateDisposition(value.carryStateDisposition)
     ?? (activeCarryForward ? "active" : recoverableCarryState ? "recoverable" : undefined);
   if (!stopReason || !completionClaim || !finalSummary) {
@@ -2615,15 +2642,73 @@ export async function runTraceableSubagent(
   input = preparedInput.input;
   const continuation = preparedInput.continuation;
   const startedAtMs = Date.now();
+  type TraceableTimingSegmentKind = "runtime" | "tool" | "llm";
+  let accumulatedRuntimeElapsedMs = 0;
+  let accumulatedToolElapsedMs = 0;
+  let accumulatedLlmElapsedMs = 0;
+  let activeTimingSegmentKind: TraceableTimingSegmentKind = "runtime";
+  let activeTimingSegmentStartedAtMs = startedAtMs;
   const debugLogPath = options.debugLogDir ? path.join(options.debugLogDir, "traceable-subagent-debug.jsonl") : undefined;
   const fileContextAnchors = resolveTraceableFileContextAnchors(input.carriedContext?.fileContext);
   const targetFileCount = fileContextAnchors.length;
+  const captureTimingSummary = (referenceAtMs = Date.now(), includeActiveSegment = true): TraceableSubagentTimingSummary => {
+    let runtimeElapsedMs = accumulatedRuntimeElapsedMs;
+    let toolElapsedMs = accumulatedToolElapsedMs;
+    let llmElapsedMs = accumulatedLlmElapsedMs;
+    if (includeActiveSegment) {
+      const activeElapsedMs = Math.max(0, referenceAtMs - activeTimingSegmentStartedAtMs);
+      switch (activeTimingSegmentKind) {
+        case "runtime":
+          runtimeElapsedMs += activeElapsedMs;
+          break;
+        case "tool":
+          toolElapsedMs += activeElapsedMs;
+          break;
+        case "llm":
+          llmElapsedMs += activeElapsedMs;
+          break;
+      }
+    }
+    return {
+      provenance: "measured",
+      totalElapsedMs: runtimeElapsedMs + toolElapsedMs + llmElapsedMs,
+      runtimeElapsedMs,
+      toolElapsedMs,
+      llmElapsedMs,
+      activeSegmentKind: includeActiveSegment ? activeTimingSegmentKind : undefined
+    };
+  };
+  const publishTimingSummary = (referenceAtMs = Date.now()): void => {
+    try {
+      options.statusReporter?.setTimingSummary?.(captureTimingSummary(referenceAtMs, true));
+    } catch {
+      // Best-effort UI status only; runtime correctness should not depend on it.
+    }
+  };
+  const transitionTimingSegment = (nextKind: TraceableTimingSegmentKind, referenceAtMs = Date.now()): void => {
+    const elapsedMs = Math.max(0, referenceAtMs - activeTimingSegmentStartedAtMs);
+    switch (activeTimingSegmentKind) {
+      case "runtime":
+        accumulatedRuntimeElapsedMs += elapsedMs;
+        break;
+      case "tool":
+        accumulatedToolElapsedMs += elapsedMs;
+        break;
+      case "llm":
+        accumulatedLlmElapsedMs += elapsedMs;
+        break;
+    }
+    activeTimingSegmentKind = nextKind;
+    activeTimingSegmentStartedAtMs = referenceAtMs;
+    publishTimingSummary(referenceAtMs);
+  };
   const setStatus = (message: string): void => {
     try {
       options.statusReporter?.update(message);
     } catch {
       // Best-effort UI status only; runtime correctness should not depend on it.
     }
+    publishTimingSummary();
   };
   const finishStatus = (result: TraceableSubagentRunResult): void => {
     const validationIssues = result.validationIssues ?? [];
@@ -2638,6 +2723,7 @@ export async function runTraceableSubagent(
         : "failed";
     const detail = validationIssues[0] || compactSummary || result.stopReason;
     try {
+      options.statusReporter?.setTimingSummary?.(result.timingSummary ?? captureTimingSummary(Date.now(), false));
       options.statusReporter?.finish(message, {
         error: isHardFailure,
         warning: isIncomplete || hasValidationWarnings,
@@ -2649,6 +2735,7 @@ export async function runTraceableSubagent(
   };
 
   setStatus("starting");
+  publishTimingSummary(startedAtMs);
   const finalizeResult = async (
     result: TraceableSubagentRunResult,
     phase: string,
@@ -2668,10 +2755,12 @@ export async function runTraceableSubagent(
       }
       : result;
     const elapsedMs = Date.now() - startedAtMs;
+    const timingSummary = continuationAwareResult.timingSummary ?? captureTimingSummary(Date.now(), false);
     const resultWithDebugPath = {
       ...continuationAwareResult,
       debugLogPath,
-      elapsedMs
+      elapsedMs,
+      timingSummary
     };
     await appendTraceableSubagentDebugEvent(debugLogPath, {
       phase,
@@ -3039,6 +3128,7 @@ export async function runTraceableSubagent(
     setStatus(isFinalRecoveryIteration ? "final recovery" : iteration === 0 ? "requesting analysis" : "continuing analysis");
     const toolsForIteration = isFinalRecoveryIteration ? [] : selectedTools;
     const iterationStartedAtMs = Date.now();
+    const iterationTimingBaseline = captureTimingSummary(iterationStartedAtMs, false);
     await appendTraceableSubagentDebugEvent(debugLogPath, {
       phase: "pre_send_request",
       iteration,
@@ -3056,6 +3146,7 @@ export async function runTraceableSubagent(
           rawModelText: lastRawModelText
         });
       }
+      transitionTimingSegment("llm");
       response = await model.sendRequest(
         messages,
         {
@@ -3148,6 +3239,7 @@ export async function runTraceableSubagent(
         selectedModel: modelInfo
       });
     }
+    transitionTimingSegment("runtime");
 
     lastRawModelText = textBuffer.trim();
     const iterationElapsedMs = Date.now() - iterationStartedAtMs;
@@ -3187,6 +3279,10 @@ export async function runTraceableSubagent(
     };
     if (toolCallParts.length === 0) {
       setStatus(isFinalRecoveryIteration ? "finalizing" : "synthesizing");
+      const completedTimingSummary = captureTimingSummary(Date.now(), false);
+      currentIterationMetric.runtimeElapsedMs = Math.max(0, completedTimingSummary.runtimeElapsedMs - iterationTimingBaseline.runtimeElapsedMs);
+      currentIterationMetric.toolElapsedMs = Math.max(0, completedTimingSummary.toolElapsedMs - iterationTimingBaseline.toolElapsedMs);
+      currentIterationMetric.llmElapsedMs = Math.max(0, completedTimingSummary.llmElapsedMs - iterationTimingBaseline.llmElapsedMs);
       if (lastRawModelText.length === 0) {
         return finalizeResult(buildEmptyChildResponseFallback(
           input,
@@ -3236,6 +3332,7 @@ export async function runTraceableSubagent(
         validationIssues,
         opaqueDelegations: allOpaqueDelegations,
         usage: summarizeAggregateUsage(iterationMetrics),
+        timingSummary: captureTimingSummary(Date.now(), false),
         iterationMetrics,
         rawModelText: lastRawModelText
       }, "completed", {
@@ -3447,11 +3544,14 @@ export async function runTraceableSubagent(
         continue;
       }
       try {
+        transitionTimingSegment("tool", toolStartedAtMs);
         const toolResult = await vscode.lm.invokeTool(call.name, {
           input: isRecord(call.input) ? call.input : {},
           toolInvocationToken: undefined
         }, options.token);
-        const toolElapsedMs = Date.now() - toolStartedAtMs;
+        const toolFinishedAtMs = Date.now();
+        const toolElapsedMs = toolFinishedAtMs - toolStartedAtMs;
+        transitionTimingSegment("runtime", toolFinishedAtMs);
 
         runnableToolCallsThisIteration += 1;
 
@@ -3475,7 +3575,9 @@ export async function runTraceableSubagent(
           // Best-effort UI status only; runtime correctness should not depend on it.
         }
       } catch (error) {
-        const toolElapsedMs = Date.now() - toolStartedAtMs;
+        const toolFinishedAtMs = Date.now();
+        const toolElapsedMs = toolFinishedAtMs - toolStartedAtMs;
+        transitionTimingSegment("runtime", toolFinishedAtMs);
         const failure = summarizeToolError(error);
         toolCalls.push({
           callId: call.callId,
@@ -3527,6 +3629,12 @@ export async function runTraceableSubagent(
     currentIterationMetric.executedToolCallCount = runnableToolCallsThisIteration;
     currentIterationMetric.deferredToolCallCount = deferredToolCallsThisIteration;
     currentIterationMetric.remainingToolCalls = remainingToolCalls;
+    {
+      const completedTimingSummary = captureTimingSummary(Date.now(), false);
+      currentIterationMetric.runtimeElapsedMs = Math.max(0, completedTimingSummary.runtimeElapsedMs - iterationTimingBaseline.runtimeElapsedMs);
+      currentIterationMetric.toolElapsedMs = Math.max(0, completedTimingSummary.toolElapsedMs - iterationTimingBaseline.toolElapsedMs);
+      currentIterationMetric.llmElapsedMs = Math.max(0, completedTimingSummary.llmElapsedMs - iterationTimingBaseline.llmElapsedMs);
+    }
 
     const shouldGrantPureDeferRetryTurn = !isFinalRecoveryIteration
       && maxPureDeferRetryTurns > 0
@@ -3632,6 +3740,7 @@ export async function runTraceableSubagent(
       validationIssues,
       opaqueDelegations,
       usage: summarizeAggregateUsage(iterationMetrics),
+      timingSummary: captureTimingSummary(Date.now(), false),
       iterationMetrics,
       rawModelText: lastRawModelText,
       traceStatus: toolCalls.some((entry) => entry.result === "notRun") ? "trace-conflicted" : "trace-incomplete"
@@ -3676,12 +3785,40 @@ function formatTraceablePathReference(
   if (!baseDir) {
     return trimmed;
   }
-  const relativePath = path.relative(baseDir, trimmed);
+  const relativePath = normalizeArtifactPath(path.relative(baseDir, trimmed));
   if (!relativePath) {
     return `[${label}](${encodeMarkdownHrefPath(path.join("..", label))})`;
   }
   if (path.isAbsolute(relativePath)) {
     return `[${label}](${vscode.Uri.file(trimmed).toString()})`;
+  }
+  const workspaceRoot = options?.workspaceRoot?.trim();
+  if (workspaceRoot) {
+    const baseToWorkspace = normalizeArtifactPath(path.relative(baseDir, workspaceRoot));
+    if (path.isAbsolute(baseToWorkspace)) {
+      return `[${label}](${vscode.Uri.file(trimmed).toString()})`;
+    }
+    const countLeadingParentSegments = (value: string): number => {
+      let count = 0;
+      for (const segment of value.split("/")) {
+        if (!segment || segment === ".") {
+          continue;
+        }
+        if (segment === "..") {
+          count += 1;
+          continue;
+        }
+        break;
+      }
+      return count;
+    };
+    const outsideDepth = Math.max(0, countLeadingParentSegments(relativePath) - countLeadingParentSegments(baseToWorkspace));
+    const maximumDepth = Number.isFinite(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths)
+      ? Math.max(0, Math.floor(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths ?? 0))
+      : 1;
+    if (outsideDepth > maximumDepth) {
+      return `[${label}](${vscode.Uri.file(trimmed).toString()})`;
+    }
   }
   const normalizedRelativePath = encodeMarkdownHrefPath(relativePath);
   return `[${label}](${normalizedRelativePath})`;
@@ -3701,7 +3838,36 @@ function mapPathLikeFields(value: unknown, options: TraceableMarkdownPathRenderO
       mapped[key] = options?.mode === "relative-markdown"
         ? (() => {
           const relativePath = normalizeArtifactPath(path.relative(options.baseDir ?? path.dirname(entry), entry)) || path.basename(entry);
-          return path.isAbsolute(relativePath) ? vscode.Uri.file(entry).toString() : relativePath;
+          if (path.isAbsolute(relativePath)) {
+            return vscode.Uri.file(entry).toString();
+          }
+          const workspaceRoot = options?.workspaceRoot?.trim();
+          if (!workspaceRoot) {
+            return relativePath;
+          }
+          const baseToWorkspace = normalizeArtifactPath(path.relative(options.baseDir ?? path.dirname(entry), workspaceRoot));
+          if (path.isAbsolute(baseToWorkspace)) {
+            return vscode.Uri.file(entry).toString();
+          }
+          const countLeadingParentSegments = (value: string): number => {
+            let count = 0;
+            for (const segment of value.split("/")) {
+              if (!segment || segment === ".") {
+                continue;
+              }
+              if (segment === "..") {
+                count += 1;
+                continue;
+              }
+              break;
+            }
+            return count;
+          };
+          const outsideDepth = Math.max(0, countLeadingParentSegments(relativePath) - countLeadingParentSegments(baseToWorkspace));
+          const maximumDepth = Number.isFinite(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths)
+            ? Math.max(0, Math.floor(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths ?? 0))
+            : 1;
+          return outsideDepth <= maximumDepth ? relativePath : vscode.Uri.file(entry).toString();
         })()
         : options?.mode === "absolute-file-uri-markdown"
           ? vscode.Uri.file(entry).toString()

@@ -6,6 +6,7 @@ import type {
   TraceableSubagentEvidenceFileState,
   TraceableSubagentRequestSummaryItem,
   TraceableSubagentStatusHeader,
+  TraceableSubagentTimingSummary,
   TraceableSubagentToolStatusEvent
 } from "./traceableContract";
 import { normalizeToolReferenceKey } from "./toolNameNormalization";
@@ -33,6 +34,26 @@ export interface TraceableSubagentDetailSnapshot {
   header: Required<TraceableSubagentStatusHeader>;
   status: TraceableSubagentDetailStatusState;
   evidenceFile?: TraceableSubagentEvidenceFileState;
+  lineageEntries?: Array<{
+    filePath: string;
+    title: string;
+    occurredAt: string;
+    finalSummary?: string;
+    completionClaim?: string;
+    status?: {
+      phase: DetailPhase;
+      message: string;
+      detail?: string;
+    };
+    header?: Required<TraceableSubagentStatusHeader>;
+    requestSummary?: TraceableSubagentRequestSummaryItem[];
+    resultSummary?: {
+      finalSummary?: string;
+      carryStateDisposition?: TraceableCarryStateDisposition;
+      activeCarryForward?: TraceableCarryForwardState;
+      recoverableCarryState?: TraceableCarryForwardState;
+    };
+  }>;
   resultSummary?: {
     finalSummary?: string;
     carryStateDisposition?: TraceableCarryStateDisposition;
@@ -42,6 +63,7 @@ export interface TraceableSubagentDetailSnapshot {
   requestSummary: TraceableSubagentRequestSummaryItem[];
   statusHistory: TraceableSubagentStatusHistoryEvent[];
   recentTools: TraceableSubagentToolStatusEvent[];
+  timingSummary?: TraceableSubagentTimingSummary;
   startedAt: string;
   updatedAt: string;
 }

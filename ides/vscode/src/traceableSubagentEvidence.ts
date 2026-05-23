@@ -2,6 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import * as vscode from "vscode";
 import { allocateNextTraceableLineageLabel, buildTraceableEvidenceFileName, computeStoredParentTracePath, parseTraceableEvidenceFileName } from "./traceableLineage";
+import { buildTraceableMarkdownPathRenderOptions, formatTraceablePathReference } from "./traceableContract";
 import type {
   TraceableMarkdownPathRenderOptions,
   TraceableSubagentEvidenceFileState,
@@ -174,6 +175,7 @@ function buildTraceableEvidenceState(
       validationIssues: result.validationIssues,
       opaqueDelegations: result.opaqueDelegations,
       usage: result.usage,
+      timingSummary: result.timingSummary,
       iterationMetrics: result.iterationMetrics,
       elapsedMs: result.elapsedMs,
       evidenceFile: result.evidenceFile
@@ -392,65 +394,8 @@ function summarizeActivityTimeline(
     .map((entry) => entry.line);
 }
 
-function encodeMarkdownHrefPath(value: string): string {
-  return value
-    .replace(/\\/g, "/")
-    .split("/")
-    .map((segment) => segment === "." || segment === ".." ? segment : encodeURIComponent(segment))
-    .join("/");
-}
-
-function findContainingWorkspaceRoot(filePath: string): string | undefined {
-  const candidates = (vscode.workspace.workspaceFolders ?? [])
-    .map((folder) => folder.uri.fsPath)
-    .filter((root) => filePath.toLowerCase().startsWith(root.toLowerCase()));
-  return candidates.sort((left, right) => right.length - left.length)[0];
-}
-
-function countRelativeDepth(rootPath: string, targetDirPath: string): number {
-  const relativeDir = path.relative(rootPath, targetDirPath);
-  if (!relativeDir || relativeDir === ".") {
-    return 0;
-  }
-  return relativeDir.split(/[\\/]+/u).filter(Boolean).length;
-}
-
 function buildPathRenderOptions(evidenceFilePath: string | undefined): TraceableMarkdownPathRenderOptions {
-  const filePath = evidenceFilePath?.trim();
-  if (!filePath) {
-    return { mode: "plain" };
-  }
-  const baseDir = path.dirname(filePath);
-  const workspaceRoot = findContainingWorkspaceRoot(filePath);
-  if (workspaceRoot && countRelativeDepth(workspaceRoot, baseDir) > 2) {
-    return {
-      mode: "absolute-file-uri-markdown",
-      baseDir
-    };
-  }
-  return {
-    mode: "relative-markdown",
-    baseDir
-  };
-}
-
-function formatTraceablePathReference(filePath: string | undefined, options: TraceableMarkdownPathRenderOptions, fallback = "-"): string {
-  const trimmed = filePath?.trim();
-  if (!trimmed) {
-    return fallback;
-  }
-  const label = path.basename(trimmed);
-  if (options.mode === "absolute-file-uri-markdown") {
-    return `[${label}](${vscode.Uri.file(trimmed).toString()})`;
-  }
-  const relativePath = path.relative(options.baseDir ?? path.dirname(trimmed), trimmed);
-  if (!relativePath) {
-    return `[${label}](${encodeMarkdownHrefPath(path.join("..", label))})`;
-  }
-  if (path.isAbsolute(relativePath)) {
-    return `[${label}](${vscode.Uri.file(trimmed).toString()})`;
-  }
-  return `[${label}](${encodeMarkdownHrefPath(relativePath)})`;
+  return buildTraceableMarkdownPathRenderOptions(evidenceFilePath);
 }
 
 function renderEvidenceMarkdown(
@@ -707,10 +652,18 @@ export class TraceableSubagentEvidenceController {
     }
     const exportState = await renameEvidenceFileForSnapshot(this.snapshot, this.exportState);
     this.exportState = exportState;
-    const outputMode = exportState.outputMode ?? "summary-with-evidence-path";
-    const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, exportState, outputMode, this.lastResultMarkdown, this.lastResult);
+    const expectedFilePath = exportState.filePath;
+    const expectedStatus = exportState.status;
     this.writeQueue = this.writeQueue.then(async () => {
-      await this.writeEvidenceFile(exportState.filePath!, evidenceMarkdown);
+      if (!expectedFilePath
+        || this.exportState.filePath !== expectedFilePath
+        || this.exportState.status !== expectedStatus
+        || this.exportState.status !== "writing") {
+        return;
+      }
+      const outputMode = this.exportState.outputMode ?? "summary-with-evidence-path";
+      const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, this.exportState, outputMode, this.lastResultMarkdown, this.lastResult);
+      await this.writeEvidenceFile(expectedFilePath, evidenceMarkdown);
     }).catch(() => {
       // Keep the write queue usable after a failed best-effort live update.
     });

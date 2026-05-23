@@ -35,7 +35,7 @@ Current status:
 Current included surface:
 
 - `Tiinex: Inspect TRACEABLE Evidence` parses the embedded `Traceable State` block from a `.trace.md` file and lets you choose a bounded surface without rerunning the child lane
-- `Tiinex: Open Reconstructed Traceable View` opens a provenance-owned reconstructed viewer for a `.trace.md` artifact and can reopen back into source or markdown preview
+- `Open Reconstructed Traceable View` opens a provenance-owned reconstructed viewer for a `.trace.md` artifact and can reopen back into source or markdown preview
 - `list_traceable_agents` exposes the bounded workspace-supported traceable agent catalog from the provenance side
 - `list_traceable_models` exposes the bounded runtime-discoverable traceable model catalog from the provenance side
 - `run_traceable_subagent` runs the provenance-owned TRACEABLE child-lane runtime with optional evidence export support

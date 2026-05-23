@@ -30,6 +30,19 @@ interface PanelDisplayEvent {
 
 type PanelActivityEntry =
   | {
+    kind: "ancestor";
+    id: string;
+    occurredAt: string;
+    title: string;
+    filePath: string;
+    finalSummary?: string;
+    completionClaim?: string;
+    status?: TraceableSubagentDetailSnapshot["status"];
+    header?: TraceableSubagentDetailSnapshot["header"];
+    requestSummary?: TraceableSubagentDetailSnapshot["requestSummary"];
+    resultSummary?: TraceableSubagentDetailSnapshot["resultSummary"];
+  }
+  | {
     kind: "request";
     id: string;
     occurredAt: string;
@@ -58,8 +71,13 @@ type PanelActivityEntry =
     kind: "handoff";
     id: string;
     occurredAt: string;
+    summary: string;
     note: string;
     detail?: string;
+    disposition: "none" | "active" | "recoverable" | "consumed" | "expired";
+    goalCount: number;
+    questionCount: number;
+    hasNextStart: boolean;
   }
   | {
     kind: "tool";
@@ -388,6 +406,36 @@ function runningToolStartTimes(snapshot: TraceableSubagentDetailSnapshot): strin
   return snapshot.recentTools
     .filter((event) => event.phase === "running" && typeof event.occurredAt === "string" && event.occurredAt.trim())
     .map((event) => event.occurredAt!.trim());
+}
+
+function resolveTimingSummary(snapshot: TraceableSubagentDetailSnapshot): {
+  provenance: "measured" | "derived";
+  totalElapsedMs: number;
+  runtimeElapsedMs: number;
+  toolElapsedMs: number;
+  llmElapsedMs: number;
+  activeSegmentKind?: "runtime" | "tool" | "llm";
+} {
+  if (snapshot.timingSummary) {
+    return {
+      provenance: snapshot.timingSummary.provenance,
+      totalElapsedMs: Math.max(0, snapshot.timingSummary.totalElapsedMs),
+      runtimeElapsedMs: Math.max(0, snapshot.timingSummary.runtimeElapsedMs),
+      toolElapsedMs: Math.max(0, snapshot.timingSummary.toolElapsedMs),
+      llmElapsedMs: Math.max(0, snapshot.timingSummary.llmElapsedMs),
+      activeSegmentKind: snapshot.timingSummary.activeSegmentKind
+    };
+  }
+  const totalElapsedMs = totalTraceElapsedMs(snapshot);
+  const toolElapsedMs = totalToolElapsedMs(snapshot);
+  return {
+    provenance: "derived",
+    totalElapsedMs,
+    runtimeElapsedMs: 0,
+    toolElapsedMs,
+    llmElapsedMs: Math.max(0, totalElapsedMs - toolElapsedMs),
+    activeSegmentKind: undefined
+  };
 }
 
 function isFinishedSnapshot(snapshot: TraceableSubagentDetailSnapshot): boolean {
@@ -904,6 +952,21 @@ function renderRequestDetailValue(item: PanelRequestSummaryItem): string {
 
 function buildActivityEntries(snapshot: TraceableSubagentDetailSnapshot): PanelActivityEntry[] {
   const activities: PanelActivityEntry[] = [];
+  for (const lineageEntry of snapshot.lineageEntries ?? []) {
+    activities.push({
+      kind: "ancestor",
+      id: `ancestor:${lineageEntry.filePath}`,
+      occurredAt: lineageEntry.occurredAt,
+      title: lineageEntry.title,
+      filePath: lineageEntry.filePath,
+      finalSummary: lineageEntry.finalSummary,
+      completionClaim: lineageEntry.completionClaim,
+      status: lineageEntry.status,
+      header: lineageEntry.header,
+      requestSummary: lineageEntry.requestSummary,
+      resultSummary: lineageEntry.resultSummary
+    });
+  }
   if (snapshot.requestSummary.length > 0) {
     activities.push({
       kind: "request",
@@ -974,9 +1037,87 @@ function buildActivityEntries(snapshot: TraceableSubagentDetailSnapshot): PanelA
     if (leftOccurredAtMs !== rightOccurredAtMs) {
       return leftOccurredAtMs - rightOccurredAtMs;
     }
-    const order = { request: 0, status: 1, tool: 2, output: 3, handoff: 4 } as const;
+    const order = { ancestor: 0, request: 1, status: 2, tool: 3, output: 4, handoff: 5 } as const;
     return order[left.kind] - order[right.kind];
   });
+}
+
+function renderAncestorActivity(entry: Extract<PanelActivityEntry, { kind: "ancestor" }>): string {
+  const summaryText = entry.finalSummary?.trim() || "Earlier trace in this continuation chain.";
+  const statusChip = entry.status?.message?.trim()
+    ? [`<span class="chip chip-lineage-claim" title="Earlier trace status">${escapeHtml(entry.status.message.trim())}</span>`]
+    : entry.completionClaim?.trim()
+      ? [`<span class="chip chip-lineage-claim" title="Earlier trace completion claim">${escapeHtml(entry.completionClaim.trim())}</span>`]
+      : [];
+  const lineageSnapshot: TraceableSubagentDetailSnapshot = {
+    header: entry.header ?? {
+      agentName: "Trace lane",
+      agentFilePath: "",
+      agentResolved: false,
+      modelLabel: "model",
+      candidate: false,
+      experimental: false,
+      humanRole: false,
+      toolsetNames: [],
+      selectedToolNames: [],
+      toolSelectionRestricted: false
+    },
+    status: entry.status ?? {
+      phase: "completed",
+      message: entry.completionClaim?.trim() || "completed",
+      detail: summaryText
+    },
+    requestSummary: entry.requestSummary ?? [],
+    statusHistory: [],
+    recentTools: [],
+    startedAt: entry.occurredAt,
+    updatedAt: entry.occurredAt,
+    resultSummary: entry.resultSummary
+  };
+  const childRows: string[] = [];
+  if ((entry.requestSummary?.length ?? 0) > 0) {
+    childRows.push(renderRequestActivity({
+      kind: "request",
+      id: `${entry.id}:request`,
+      occurredAt: entry.occurredAt,
+      requestSummary: entry.requestSummary ?? [],
+      snapshot: lineageSnapshot
+    }));
+  }
+  if (summaryText) {
+    childRows.push(renderOutputActivity({
+      kind: "output",
+      id: `${entry.id}:output`,
+      occurredAt: entry.occurredAt,
+      text: summaryText
+    }));
+  }
+  const lineageHandoff = buildCarryHandoffActivity(lineageSnapshot);
+  if (lineageHandoff) {
+    childRows.push(renderHandoffActivity({
+      ...lineageHandoff,
+      id: `${entry.id}:handoff`
+    }));
+  }
+  if (childRows.length === 0) {
+    return [
+      `<li class="event-row event-ancestor" title="${escapeHtml(entry.filePath)}">`,
+      `<div class="event-body"><div class="event-main"><span class="event-icon">↥</span><span class="event-label">Earlier Trace</span><span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(entry.title)}</span></span></div><div class="event-note">${escapeHtml(summaryText)}</div></div>`,
+      renderActivityMeta(entry.occurredAt, "", statusChip),
+      `</li>`
+    ].join("");
+  }
+  return [
+    `<li class="ancestor-group-item">`,
+    `<details class="ancestor-group" data-ancestor-group-id="${escapeHtml(entry.id)}" open>`,
+    `<summary class="event-row event-ancestor" title="${escapeHtml(entry.filePath)}">`,
+    `<div class="event-body"><div class="event-main"><span class="event-icon event-ancestor-toggle">${renderCodicon("chevron-right")}</span><span class="event-label">Earlier Trace</span><span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(entry.title)}</span></span></div><div class="event-note">${escapeHtml(summaryText)}</div></div>`,
+    renderActivityMeta(entry.occurredAt, "", statusChip),
+    `</summary>`,
+    `<ul class="ancestor-group-children">${childRows.join("")}</ul>`,
+    `</details>`,
+    `</li>`
+  ].join("");
 }
 
 function buildCarryHandoffActivity(snapshot: TraceableSubagentDetailSnapshot): Extract<PanelActivityEntry, { kind: "handoff" }> | undefined {
@@ -991,25 +1132,35 @@ function buildCarryHandoffActivity(snapshot: TraceableSubagentDetailSnapshot): E
   if (!disposition && !activeCarryForward && !recoverableCarryState) {
     return undefined;
   }
+  const resolvedDisposition = disposition ?? "none";
   const noteParts: string[] = [];
-  switch (disposition) {
+  let summary = "Carry state changed.";
+  switch (resolvedDisposition) {
     case "active":
-      noteParts.push("Next trace inherits active carry-forward.");
+      summary = "Next trace inherits active carry-forward.";
+      noteParts.push(summary);
       break;
     case "recoverable":
-      noteParts.push("Carry state was preserved for inspection, not auto-inheritance.");
+      summary = "Carry state was preserved for inspection, not auto-inheritance.";
+      noteParts.push(summary);
       break;
     case "consumed":
-      noteParts.push("Carry state was consumed in this run.");
+      summary = "Carry state was consumed in this run.";
+      noteParts.push(summary);
       break;
     case "expired":
-      noteParts.push("Carry state expired at this boundary.");
+      summary = "Carry state expired at this boundary.";
+      noteParts.push(summary);
       break;
     case "none":
-      noteParts.push("No carry state remains after this run.");
+      summary = "No carry state remains after this run.";
+      noteParts.push(summary);
       break;
   }
   const summaryState = activeCarryForward ?? recoverableCarryState;
+  const goalCount = Array.isArray(summaryState?.remainingGoals) ? summaryState.remainingGoals.length : 0;
+  const questionCount = Array.isArray(summaryState?.openQuestions) ? summaryState.openQuestions.length : 0;
+  const hasNextStart = Boolean(summaryState?.nextSuggestedStart?.trim());
   if (summaryState?.nextSuggestedStart?.trim()) {
     noteParts.push(`Next start: ${summaryState.nextSuggestedStart.trim()}`);
   }
@@ -1033,8 +1184,13 @@ function buildCarryHandoffActivity(snapshot: TraceableSubagentDetailSnapshot): E
     kind: "handoff",
     id: "carry-handoff",
     occurredAt: snapshot.updatedAt,
+    summary,
     note: noteParts.join(" "),
-    detail: detailParts.join("\n") || undefined
+    detail: detailParts.join("\n") || undefined,
+    disposition: resolvedDisposition,
+    goalCount,
+    questionCount,
+    hasNextStart
   };
 }
 
@@ -1242,13 +1398,13 @@ function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "reque
     ...metadataDetailSections
   ].filter(Boolean).join("");
   const expandable = detailSections.length > 0;
-  const expandableAttributes = expandable ? ' data-request-expandable="true" tabindex="0" role="button" aria-expanded="false"' : "";
+  const expandableAttributes = expandable ? ` data-request-expandable="true" data-request-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
   const summaryMarkup = noteText
     ? `<span class="event-summary-inline"><span class="event-summary-preview"${noteTitleAttribute}>${escapeHtml(noteText)}</span>${expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : ""}</span>`
     : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
   return [
     `<li class="event-row event-request" title="Traceable input"${expandableAttributes}>`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon">${renderCodicon("mail")}</span><span class="event-label">Input</span>${summaryMarkup}${metadataInlineMarkup}</div><div class="event-note"${noteTitleAttribute}>${escapeHtml(noteText)}</div>${detailSections ? `<div class="event-request-detail">${detailSections}</div>` : ""}</div>`,
+    `<div class="event-body event-request-body"><div class="event-request-copy"><div class="event-main"><span class="event-icon">${renderCodicon("mail")}</span><span class="event-label">Input</span>${summaryMarkup}</div>${detailSections ? `<div class="event-request-detail">${detailSections}</div>` : ""}</div>${metadataInlineMarkup}</div>`,
     `</li>`
   ].join("");
 }
@@ -1256,26 +1412,38 @@ function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "reque
 function renderOutputActivity(entry: Extract<PanelActivityEntry, { kind: "output" }>): string {
   const noteText = entry.text.trim();
   const expandable = noteText.length > 0;
-  const expandableAttributes = expandable ? ' data-output-expandable="true" tabindex="0" role="button" aria-expanded="false"' : "";
+  const expandableAttributes = expandable ? ` data-output-expandable="true" data-output-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
   const summaryMarkup = noteText
     ? `<span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(noteText)}</span>${expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : ""}</span>`
     : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
   return [
     `<li class="event-row event-output" title="Final output returned to the parent lane"${expandableAttributes}>`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon">↩</span><span class="event-label">Output</span>${summaryMarkup}</div><div class="event-note">${escapeHtml(noteText)}</div>${expandable ? `<div class="event-output-detail">${escapeHtml(noteText)}</div>` : ""}</div>`,
-    renderActivityMeta(undefined, "", []),
+    `<div class="event-body"><div class="event-main"><span class="event-icon">↩</span><span class="event-label">Output</span>${summaryMarkup}</div>${expandable ? `<div class="event-output-detail">${escapeHtml(noteText)}</div>` : ""}</div>`,
+    renderActivityMeta(entry.occurredAt, "", []),
     `</li>`
   ].join("");
 }
 
 function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "handoff" }>): string {
-  const detailMarkup = entry.detail?.trim()
-    ? `<div class="event-handoff-detail">${escapeHtml(entry.detail.trim())}</div>`
+  const detailText = [entry.note.trim(), entry.detail?.trim() || ""].filter(Boolean).join("\n\n");
+  const expandable = detailText.length > 0;
+  const expandableAttributes = expandable ? ` data-handoff-expandable="true" data-handoff-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
+  const summaryMarkup = entry.summary
+    ? `<span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(entry.summary)}</span>${expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : ""}</span>`
+    : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
+  const metaChips = [
+    `<span class="chip chip-handoff-kind" title="Carry package type">${escapeHtml(entry.disposition)}</span>`,
+    entry.goalCount > 0 ? `<span class="chip chip-handoff-scope" title="Remaining goals carried forward">${escapeHtml(String(entry.goalCount))} goal${entry.goalCount === 1 ? "" : "s"}</span>` : "",
+    entry.questionCount > 0 ? `<span class="chip chip-handoff-scope" title="Open questions carried forward">${escapeHtml(String(entry.questionCount))} question${entry.questionCount === 1 ? "" : "s"}</span>` : "",
+    entry.hasNextStart ? `<span class="chip chip-handoff-scope" title="A next suggested start is included">next start</span>` : ""
+  ].filter(Boolean);
+  const detailMarkup = detailText
+    ? `<div class="event-handoff-detail">${escapeHtml(detailText)}</div>`
     : "";
   return [
-    `<li class="event-row event-handoff" title="Carry state left behind for the next trace lane">`,
-    `<div class="event-body"><div class="event-main"><span class="event-icon">⇢</span><span class="event-label">Handoff</span></div><div class="event-note">${escapeHtml(entry.note)}</div>${detailMarkup}</div>`,
-    renderActivityMeta(entry.occurredAt, "", []),
+    `<li class="event-row event-handoff" title="Carry state left behind for the next trace lane"${expandableAttributes}>`,
+    `<div class="event-body"><div class="event-main"><span class="event-icon">↪</span><span class="event-label">Handoff</span>${summaryMarkup}</div>${detailMarkup}</div>`,
+    renderActivityMeta(undefined, "", metaChips),
     `</li>`
   ].join("");
 }
@@ -1302,6 +1470,9 @@ function renderToolActivity(entry: Extract<PanelActivityEntry, { kind: "tool" }>
 function renderActivityRow(entry: PanelRenderedEntry): string {
   if (entry.kind === "status-group") {
     return renderStatusGroupActivity(entry);
+  }
+  if (entry.kind === "ancestor") {
+    return renderAncestorActivity(entry);
   }
   if (entry.kind === "request") {
     return renderRequestActivity(entry);
@@ -1738,45 +1909,63 @@ export function renderTraceableSubagentPanelHtml(
     : renderPanelEmptyState(snapshot);
   const updatedLabel = formatPanelUpdatedAt(snapshot.updatedAt);
   const runningState = snapshot.status.phase === "running" ? "true" : "false";
-  const totalElapsedMs = totalTraceElapsedMs(snapshot);
-  const toolElapsedMs = totalToolElapsedMs(snapshot);
-  const thinkElapsedMs = Math.max(0, totalElapsedMs - toolElapsedMs);
-  const runningToolStarts = runningToolStartTimes(snapshot).join("|");
+  const timingSummary = resolveTimingSummary(snapshot);
+  const totalElapsedMs = timingSummary.totalElapsedMs;
+  const runtimeElapsedMs = timingSummary.runtimeElapsedMs;
+  const toolElapsedMs = timingSummary.toolElapsedMs;
+  const llmElapsedMs = timingSummary.llmElapsedMs;
+  const activeSegmentKind = timingSummary.activeSegmentKind;
   const totalStopwatch = renderMetaStopwatch(
     "Total",
     formatToolElapsedMs(totalElapsedMs),
     {
       timerKind: "total",
-      startedAt: snapshot.startedAt,
+      baseElapsedMs: String(totalElapsedMs),
+      activeSegmentKind,
       updatedAt: snapshot.updatedAt,
       running: runningState
     },
     "Total elapsed wall-clock time for this trace"
+  );
+  const runtimeStopwatch = renderMetaStopwatch(
+    "Runtime",
+    formatToolElapsedMs(runtimeElapsedMs),
+    {
+      timerKind: "runtime",
+      baseElapsedMs: String(runtimeElapsedMs),
+      activeSegmentKind,
+      updatedAt: snapshot.updatedAt,
+      running: runningState
+    },
+    "Measured runtime orchestration time outside model waits and tool execution"
   );
   const toolStopwatch = renderMetaStopwatch(
     "Tools",
     formatToolElapsedMs(toolElapsedMs),
     {
       timerKind: "tools",
-      baseElapsedMs: String(totalToolElapsedMs(snapshot, snapshot.updatedAt) - activeToolElapsedMs(snapshot, snapshot.updatedAt)),
-      activeStarts: runningToolStarts,
+      baseElapsedMs: String(toolElapsedMs),
+      activeSegmentKind,
       updatedAt: snapshot.updatedAt,
       running: runningState
     },
-    "Accumulated runtime tool time recorded in this trace"
+    timingSummary.provenance === "measured"
+      ? "Measured tool execution time recorded in this trace"
+      : "Derived tool time recorded in this trace"
   );
-  const thinkStopwatch = renderMetaStopwatch(
-    "Think",
-    formatToolElapsedMs(thinkElapsedMs),
+  const llmStopwatch = renderMetaStopwatch(
+    "LLM",
+    formatToolElapsedMs(llmElapsedMs),
     {
-      timerKind: "think",
-      startedAt: snapshot.startedAt,
+      timerKind: "llm",
+      baseElapsedMs: String(llmElapsedMs),
+      activeSegmentKind,
       updatedAt: snapshot.updatedAt,
-      baseElapsedMs: String(totalToolElapsedMs(snapshot, snapshot.updatedAt) - activeToolElapsedMs(snapshot, snapshot.updatedAt)),
-      activeStarts: runningToolStarts,
       running: runningState
     },
-    "Derived time: total wall-clock minus recorded tool time"
+    timingSummary.provenance === "measured"
+      ? "Measured LLM wait time recorded in this trace"
+      : "Derived LLM time: total wall-clock minus recorded tool time"
   );
   const metaLead = hasActivityFeed
     ? [
@@ -1784,7 +1973,7 @@ export function renderTraceableSubagentPanelHtml(
       renderHeaderBadge("Updated", updatedLabel, "header-badge-meta", `Updated ${updatedLabel}`)
     ].join("")
     : `<span>${snapshot.status.phase === "running" ? "Preparing trace lane..." : "Ready"}</span>`;
-  const metaStopwatches = hasActivityFeed ? `${totalStopwatch}${toolStopwatch}${thinkStopwatch}` : "";
+  const metaStopwatches = hasActivityFeed ? `${totalStopwatch}${runtimeStopwatch}${toolStopwatch}${llmStopwatch}` : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -2416,7 +2605,7 @@ export function renderTraceableSubagentPanelHtml(
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
-      align-items: center;
+      align-items: start;
       padding: 8px 2px;
       border-bottom: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
     }
@@ -2559,21 +2748,47 @@ export function renderTraceableSubagentPanelHtml(
       transform: rotate(90deg);
       color: color-mix(in srgb, var(--accent) 78%, var(--fg));
     }
+    .event-handoff[data-handoff-expandable="true"] {
+      cursor: pointer;
+    }
+    .event-handoff[data-handoff-expandable="true"]:hover {
+      background: color-mix(in srgb, var(--chip-bg) 42%, transparent);
+    }
+    .event-handoff[data-handoff-expandable="true"]:focus-visible {
+      outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+      outline-offset: 2px;
+    }
     .event-handoff .event-label {
       color: color-mix(in srgb, var(--accent-soft) 82%, var(--fg));
       letter-spacing: 0.02em;
     }
     .event-handoff .event-note {
       color: color-mix(in srgb, var(--fg) 86%, var(--muted));
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 1;
       white-space: normal;
-      -webkit-line-clamp: unset;
     }
     .event-handoff-detail {
+      display: none;
       margin-top: 6px;
       padding-left: 20px;
       color: color-mix(in srgb, var(--fg) 82%, var(--muted));
       white-space: pre-wrap;
       line-height: 1.45;
+    }
+    .event-handoff.handoff-expanded .event-note {
+      display: none;
+    }
+    .event-handoff.handoff-expanded .event-summary-preview {
+      display: none;
+    }
+    .event-handoff.handoff-expanded .event-handoff-detail {
+      display: block;
+    }
+    .event-handoff.handoff-expanded .event-expand-indicator {
+      transform: rotate(90deg);
+      color: color-mix(in srgb, var(--accent) 78%, var(--fg));
     }
     .event-request-detail-section {
       display: grid;
@@ -2594,13 +2809,25 @@ export function renderTraceableSubagentPanelHtml(
       align-items: start;
       grid-template-columns: minmax(0, 1fr);
     }
+    .event-request-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      column-gap: 10px;
+      row-gap: 2px;
+      align-items: start;
+    }
+    .event-request-copy {
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }
     .event-request .event-main {
-      flex-wrap: wrap;
       align-items: flex-start;
-      row-gap: 6px;
+      min-width: 0;
     }
     .event-request .event-summary-inline {
-      flex: 1 1 20rem;
+      flex: 1 1 auto;
+      min-width: 0;
     }
     .event-request .event-label {
       color: color-mix(in srgb, var(--accent) 78%, var(--fg));
@@ -2610,12 +2837,35 @@ export function renderTraceableSubagentPanelHtml(
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      align-items: center;
+      justify-content: flex-end;
+      align-self: start;
+      align-items: flex-start;
+      align-content: flex-start;
       min-width: 0;
-      flex: 1 1 18rem;
+      max-width: min(42rem, 55vw);
+    }
+    .event-request .event-request-detail {
+      padding-left: 20px;
+    }
+    .event-request.request-expanded .event-request-body {
+      grid-template-columns: minmax(0, 1fr);
     }
     .status-group-item {
       list-style: none;
+    }
+    .ancestor-group-item {
+      list-style: none;
+    }
+    .ancestor-group {
+      display: grid;
+      gap: 0;
+    }
+    .ancestor-group > summary {
+      list-style: none;
+      cursor: pointer;
+    }
+    .ancestor-group > summary::-webkit-details-marker {
+      display: none;
     }
     .status-group {
       display: grid;
@@ -2623,9 +2873,19 @@ export function renderTraceableSubagentPanelHtml(
     }
     .status-group > summary {
       list-style: none;
+      cursor: pointer;
     }
     .status-group > summary::-webkit-details-marker {
       display: none;
+    }
+    .ancestor-group > summary:hover,
+    .status-group > summary:hover {
+      background: color-mix(in srgb, var(--chip-bg) 42%, transparent);
+    }
+    .ancestor-group > summary:focus-visible,
+    .status-group > summary:focus-visible {
+      outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+      outline-offset: 2px;
     }
     .event-status-group-summary {
       cursor: pointer;
@@ -2639,6 +2899,13 @@ export function renderTraceableSubagentPanelHtml(
       align-items: center;
       justify-content: center;
       color: color-mix(in srgb, var(--muted) 92%, transparent);
+      transition: transform 140ms ease;
+    }
+    .event-ancestor-toggle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: color-mix(in srgb, var(--accent) 70%, var(--muted));
       transition: transform 140ms ease;
     }
     .status-group.status-group-severity-running .event-status-group-toggle {
@@ -2656,6 +2923,9 @@ export function renderTraceableSubagentPanelHtml(
     .status-group[open] .event-status-group-toggle {
       transform: rotate(90deg);
     }
+    .ancestor-group[open] .event-ancestor-toggle {
+      transform: rotate(90deg);
+    }
     .status-group-children {
       display: grid;
       gap: 0;
@@ -2666,12 +2936,24 @@ export function renderTraceableSubagentPanelHtml(
     .status-group-children .event-row {
       padding-left: 22px;
     }
+    .ancestor-group-children {
+      display: grid;
+      gap: 0;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .ancestor-group-children .event-row {
+      padding-left: 22px;
+    }
     .event-chips {
       display: flex;
       flex-wrap: wrap;
       justify-content: flex-end;
       gap: 6px;
-      align-items: center;
+      align-self: start;
+      align-items: flex-start;
+      align-content: flex-start;
       min-width: 0;
     }
     .chip-separator {
@@ -2777,8 +3059,16 @@ export function renderTraceableSubagentPanelHtml(
     }
     .chip-button:hover { text-decoration: underline; }
     .event-request .event-icon,
+    .event-ancestor .event-icon,
     .event-status .event-icon {
       color: color-mix(in srgb, var(--accent) 74%, var(--muted));
+    }
+    .event-ancestor .event-label {
+      color: color-mix(in srgb, var(--accent-soft) 76%, var(--fg));
+      letter-spacing: 0.02em;
+    }
+    .chip-lineage-claim {
+      color: color-mix(in srgb, var(--fg) 82%, var(--muted));
     }
     .event-status-running.event-status-live .event-icon {
       color: var(--vscode-progressBar-background);
@@ -2870,8 +3160,9 @@ export function renderTraceableSubagentPanelHtml(
       followLatest: true,
       scrollTop: 0,
       toolsetDisclosureOpen: false,
-      requestExpanded: false,
-      outputExpanded: false,
+      requestExpandedById: {},
+      outputExpandedById: {},
+      handoffExpandedById: {},
       namespaceOpenById: {},
       statusGroupOpenById: {},
       runId: ''
@@ -2884,8 +3175,15 @@ export function renderTraceableSubagentPanelHtml(
             followLatest: state.followLatest !== false,
             scrollTop: typeof state.scrollTop === 'number' ? state.scrollTop : 0,
             toolsetDisclosureOpen: state.toolsetDisclosureOpen === true,
-            requestExpanded: state.requestExpanded === true,
-            outputExpanded: state.outputExpanded === true,
+            requestExpandedById: state.requestExpandedById && typeof state.requestExpandedById === 'object'
+              ? Object.fromEntries(Object.entries(state.requestExpandedById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
+              : {},
+            outputExpandedById: state.outputExpandedById && typeof state.outputExpandedById === 'object'
+              ? Object.fromEntries(Object.entries(state.outputExpandedById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
+              : {},
+            handoffExpandedById: state.handoffExpandedById && typeof state.handoffExpandedById === 'object'
+              ? Object.fromEntries(Object.entries(state.handoffExpandedById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
+              : {},
             namespaceOpenById: state.namespaceOpenById && typeof state.namespaceOpenById === 'object'
               ? Object.fromEntries(Object.entries(state.namespaceOpenById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
               : {},
@@ -2903,8 +3201,9 @@ export function renderTraceableSubagentPanelHtml(
     const namespaceGroups = Array.from(document.querySelectorAll('.toolset-namespace-group[data-namespace-id]'));
     const statusGroups = Array.from(document.querySelectorAll('.status-group[data-status-group-id]'));
     const timerNodes = Array.from(document.querySelectorAll('[data-timer-kind]'));
-    const requestRow = document.querySelector('.event-request[data-request-expandable="true"]');
-    const outputRow = document.querySelector('.event-output[data-output-expandable="true"]');
+    const requestRows = Array.from(document.querySelectorAll('.event-request[data-request-expandable="true"][data-request-id]'));
+    const outputRows = Array.from(document.querySelectorAll('.event-output[data-output-expandable="true"][data-output-id]'));
+    const handoffRows = Array.from(document.querySelectorAll('.event-handoff[data-handoff-expandable="true"][data-handoff-id]'));
 
     const persistPanelState = (nextState) => {
       panelState = { ...panelState, ...nextState };
@@ -2914,6 +3213,9 @@ export function renderTraceableSubagentPanelHtml(
     if (panelState.runId !== currentRunId) {
       persistPanelState({
         runId: currentRunId,
+        requestExpandedById: {},
+        outputExpandedById: {},
+        handoffExpandedById: {},
         namespaceOpenById: {},
         statusGroupOpenById: {}
       });
@@ -2964,21 +3266,26 @@ export function renderTraceableSubagentPanelHtml(
         ? (referenceIso || updatedAt || new Date().toISOString())
         : (updatedAt || referenceIso || new Date().toISOString());
       const baseElapsedMs = Number(timerNode.dataset.baseElapsedMs || '0');
-      const activeStarts = parseActiveStarts(timerNode.dataset.activeStarts || '');
+      const activeSegmentKind = timerNode.dataset.activeSegmentKind || '';
+      const updatedAtMs = parseTimestampMs(updatedAt);
+      const referenceAtMs = parseTimestampMs(effectiveReferenceIso);
+      const activeSegmentExtraMs = timerNode.dataset.running === 'true'
+        && activeSegmentKind
+        && Number.isFinite(updatedAtMs)
+        && Number.isFinite(referenceAtMs)
+        ? Math.max(0, referenceAtMs - updatedAtMs)
+        : 0;
       if (timerKind === 'total') {
-        const startedAtMs = parseTimestampMs(startedAt);
-        const referenceAtMs = parseTimestampMs(effectiveReferenceIso);
-        return Number.isFinite(startedAtMs) && Number.isFinite(referenceAtMs) ? Math.max(0, referenceAtMs - startedAtMs) : 0;
+        return Math.max(0, baseElapsedMs + activeSegmentExtraMs);
+      }
+      if (timerKind === 'runtime') {
+        return Math.max(0, baseElapsedMs + (activeSegmentKind === 'runtime' ? activeSegmentExtraMs : 0));
       }
       if (timerKind === 'tools') {
-        return Math.max(0, baseElapsedMs + computeActiveToolElapsedMs(activeStarts, effectiveReferenceIso));
+        return Math.max(0, baseElapsedMs + (activeSegmentKind === 'tool' ? activeSegmentExtraMs : 0));
       }
-      if (timerKind === 'think') {
-        const startedAtMs = parseTimestampMs(startedAt);
-        const referenceAtMs = parseTimestampMs(effectiveReferenceIso);
-        const totalElapsedMs = Number.isFinite(startedAtMs) && Number.isFinite(referenceAtMs) ? Math.max(0, referenceAtMs - startedAtMs) : 0;
-        const toolElapsedMs = Math.max(0, baseElapsedMs + computeActiveToolElapsedMs(activeStarts, effectiveReferenceIso));
-        return Math.max(0, totalElapsedMs - toolElapsedMs);
+      if (timerKind === 'llm') {
+        return Math.max(0, baseElapsedMs + (activeSegmentKind === 'llm' ? activeSegmentExtraMs : 0));
       }
       if (timerKind === 'event') {
         if (timerNode.dataset.running === 'true') {
@@ -3114,18 +3421,31 @@ export function renderTraceableSubagentPanelHtml(
     }
 
     const applyRequestExpansion = () => {
-      if (!(requestRow instanceof HTMLElement)) {
-        return;
+      for (const requestRow of requestRows) {
+        if (!(requestRow instanceof HTMLElement)) {
+          continue;
+        }
+        const requestId = requestRow.dataset.requestId || '';
+        const expanded = panelState.requestExpandedById?.[requestId] === true;
+        requestRow.classList.toggle('request-expanded', expanded);
+        requestRow.setAttribute('aria-expanded', expanded ? 'true' : 'false');
       }
-      requestRow.classList.toggle('request-expanded', panelState.requestExpanded === true);
-      requestRow.setAttribute('aria-expanded', panelState.requestExpanded === true ? 'true' : 'false');
     };
 
     applyRequestExpansion();
 
-    if (requestRow instanceof HTMLElement) {
+    for (const requestRow of requestRows) {
+      if (!(requestRow instanceof HTMLElement)) {
+        continue;
+      }
       const toggleRequestExpansion = () => {
-        persistPanelState({ requestExpanded: panelState.requestExpanded !== true });
+        const requestId = requestRow.dataset.requestId || '';
+        persistPanelState({
+          requestExpandedById: {
+            ...panelState.requestExpandedById,
+            [requestId]: panelState.requestExpandedById?.[requestId] !== true
+          }
+        });
         applyRequestExpansion();
       };
       requestRow.addEventListener('click', (event) => {
@@ -3145,18 +3465,31 @@ export function renderTraceableSubagentPanelHtml(
     }
 
     const applyOutputExpansion = () => {
-      if (!(outputRow instanceof HTMLElement)) {
-        return;
+      for (const outputRow of outputRows) {
+        if (!(outputRow instanceof HTMLElement)) {
+          continue;
+        }
+        const outputId = outputRow.dataset.outputId || '';
+        const expanded = panelState.outputExpandedById?.[outputId] === true;
+        outputRow.classList.toggle('output-expanded', expanded);
+        outputRow.setAttribute('aria-expanded', expanded ? 'true' : 'false');
       }
-      outputRow.classList.toggle('output-expanded', panelState.outputExpanded === true);
-      outputRow.setAttribute('aria-expanded', panelState.outputExpanded === true ? 'true' : 'false');
     };
 
     applyOutputExpansion();
 
-    if (outputRow instanceof HTMLElement) {
+    for (const outputRow of outputRows) {
+      if (!(outputRow instanceof HTMLElement)) {
+        continue;
+      }
       const toggleOutputExpansion = () => {
-        persistPanelState({ outputExpanded: panelState.outputExpanded !== true });
+        const outputId = outputRow.dataset.outputId || '';
+        persistPanelState({
+          outputExpandedById: {
+            ...panelState.outputExpandedById,
+            [outputId]: panelState.outputExpandedById?.[outputId] !== true
+          }
+        });
         applyOutputExpansion();
       };
       outputRow.addEventListener('click', (event) => {
@@ -3172,6 +3505,50 @@ export function renderTraceableSubagentPanelHtml(
         }
         event.preventDefault();
         toggleOutputExpansion();
+      });
+    }
+
+    const applyHandoffExpansion = () => {
+      for (const handoffRow of handoffRows) {
+        if (!(handoffRow instanceof HTMLElement)) {
+          continue;
+        }
+        const handoffId = handoffRow.dataset.handoffId || '';
+        const expanded = panelState.handoffExpandedById?.[handoffId] === true;
+        handoffRow.classList.toggle('handoff-expanded', expanded);
+        handoffRow.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      }
+    };
+
+    applyHandoffExpansion();
+
+    for (const handoffRow of handoffRows) {
+      if (!(handoffRow instanceof HTMLElement)) {
+        continue;
+      }
+      const toggleHandoffExpansion = () => {
+        const handoffId = handoffRow.dataset.handoffId || '';
+        persistPanelState({
+          handoffExpandedById: {
+            ...panelState.handoffExpandedById,
+            [handoffId]: panelState.handoffExpandedById?.[handoffId] !== true
+          }
+        });
+        applyHandoffExpansion();
+      };
+      handoffRow.addEventListener('click', (event) => {
+        const target = event.target;
+        if (target instanceof HTMLElement && target.closest('[data-message], button, a')) {
+          return;
+        }
+        toggleHandoffExpansion();
+      });
+      handoffRow.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') {
+          return;
+        }
+        event.preventDefault();
+        toggleHandoffExpansion();
       });
     }
 

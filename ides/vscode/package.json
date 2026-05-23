@@ -348,7 +348,7 @@
       },
       {
         "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
-        "title": "Tiinex: Open Reconstructed Traceable View",
+        "title": "Open Reconstructed Traceable View",
         "shortTitle": "Open Traceable View",
         "icon": {
           "light": "assets/logo-transparent.png",
@@ -379,7 +379,7 @@
       "editor/title": [
         {
           "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
-          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && activeWebviewPanelId != markdown.preview && activeCustomEditorId != vscode.markdown.preview.editor",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && activeWebviewPanelId != markdown.preview && activeCustomEditorId != vscode.markdown.preview.editor && activeCustomEditorId != tiinexTraceableEvidenceEditor",
           "group": "navigation@-1000"
         },
         {
@@ -389,12 +389,12 @@
         },
         {
           "command": "tiinex.aiProvenance.reopenTraceableEvidencePreview",
-          "when": "activeWebviewPanelId == tiinexTraceableEvidenceEditor",
+          "when": "activeWebviewPanelId == tiinexTraceableEvidenceEditor || activeCustomEditorId == tiinexTraceableEvidenceEditor",
           "group": "navigation@-975"
         },
         {
           "command": "tiinex.aiProvenance.reopenTraceableEvidenceSource",
-          "when": "activeWebviewPanelId == tiinexTraceableEvidenceEditor",
+          "when": "activeWebviewPanelId == tiinexTraceableEvidenceEditor || activeCustomEditorId == tiinexTraceableEvidenceEditor",
           "group": "navigation@-950"
         }
       ]
@@ -419,6 +419,18 @@
         }
       ]
     },
+    "customEditors": [
+      {
+        "viewType": "tiinexTraceableEvidenceEditor",
+        "displayName": "TRACEABLE Evidence",
+        "selector": [
+          {
+            "filenamePattern": "*.trace.md"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
     "configuration": {
       "title": "Tiinex AI Provenance",
       "properties": {
@@ -476,6 +488,12 @@
           "type": "boolean",
           "default": true,
           "description": "Include support-artifact references such as debug logs in reconstructed TRACEABLE markdown when available."
+        },
+        "tiinex.aiProvenance.maximumDepthOutsideOfWorkspaceRootForRelativePaths": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "description": "Maximum number of directory levels a TRACEABLE markdown path may travel above the containing workspace root before the extension falls back to an absolute file URI. This only affects extension-authored markdown output."
         }
       }
     }

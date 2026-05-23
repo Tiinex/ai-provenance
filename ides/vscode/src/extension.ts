@@ -130,6 +130,9 @@ function isTraceableEvidenceFileUri(uri: vscode.Uri | undefined): uri is vscode.
 
 function isRelatedTraceableEvidenceTab(tab: { label?: string; input?: unknown }, resolvedUri: vscode.Uri): boolean {
   const input = tab.input;
+  if (readTabInputViewType(input) === TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE) {
+    return false;
+  }
   const resolvedKey = getTraceableEvidenceResourceKey(resolvedUri);
   const sourceUri = readTabInputUri(input, "uri");
   if (sourceUri?.scheme === resolvedUri.scheme && getTraceableEvidenceResourceKey(sourceUri) === resolvedKey) {
@@ -139,12 +142,42 @@ function isRelatedTraceableEvidenceTab(tab: { label?: string; input?: unknown },
   if (modifiedUri?.scheme === resolvedUri.scheme && getTraceableEvidenceResourceKey(modifiedUri) === resolvedKey) {
     return true;
   }
-  if (readTabInputViewType(input) === TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE) {
-    return false;
-  }
   const normalizedLabel = typeof tab.label === "string" ? tab.label.trim().toLowerCase() : "";
   const resolvedBaseName = path.basename(resolvedUri.fsPath).toLowerCase();
   return normalizedLabel === resolvedBaseName || normalizedLabel === `preview ${resolvedBaseName}`;
+}
+
+function getActiveTraceableEvidenceTab(): vscode.Tab | undefined {
+  const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  if (!activeTab) {
+    return undefined;
+  }
+  return readTabInputViewType(activeTab.input) === TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE ? activeTab : undefined;
+}
+
+function isActiveTabForResource(resolvedUri: vscode.Uri): boolean {
+  const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  if (!activeTab) {
+    return false;
+  }
+  const resolvedKey = getTraceableEvidenceResourceKey(resolvedUri);
+  const directUri = readTabInputUri(activeTab.input, "uri") ?? readTabInputUri(activeTab.input, "modified");
+  if (directUri?.scheme === resolvedUri.scheme && getTraceableEvidenceResourceKey(directUri) === resolvedKey) {
+    return true;
+  }
+  const normalizedLabel = normalizeTraceableEvidenceTabLabel(activeTab.label);
+  return normalizedLabel === path.basename(resolvedUri.fsPath).toLowerCase();
+}
+
+async function closeTabIfStillOpen(targetTab: vscode.Tab | undefined): Promise<void> {
+  if (!targetTab) {
+    return;
+  }
+  const stillOpen = (vscode.window.tabGroups.all ?? []).some((group) => group.tabs.includes(targetTab));
+  if (!stillOpen) {
+    return;
+  }
+  await vscode.window.tabGroups.close(targetTab, false);
 }
 
 function normalizeTraceableEvidenceTabLabel(label: string | undefined): string | undefined {
@@ -541,6 +574,36 @@ function getTraceableEvidenceOpenTarget(): TraceableEvidenceOpenTarget {
     return configured;
   }
   return "traceable";
+}
+
+async function narrowTraceableMarkdownEditorAssociation(resource: vscode.Uri): Promise<boolean> {
+  const config = vscode.workspace.getConfiguration("workbench", resource);
+  const inspected = config.inspect<Record<string, string>>("editorAssociations");
+  const migrateAssociation = async (
+    value: Record<string, string> | undefined,
+    target: vscode.ConfigurationTarget
+  ): Promise<boolean> => {
+    if (!value || value["*.md"] !== TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE) {
+      return false;
+    }
+    const nextValue: Record<string, string> = { ...value };
+    delete nextValue["*.md"];
+    if (!nextValue["*.trace.md"]) {
+      nextValue["*.trace.md"] = TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE;
+    }
+    await config.update("editorAssociations", nextValue, target);
+    return true;
+  };
+  if (await migrateAssociation(inspected?.workspaceFolderValue, vscode.ConfigurationTarget.WorkspaceFolder)) {
+    return true;
+  }
+  if (await migrateAssociation(inspected?.workspaceValue, vscode.ConfigurationTarget.Workspace)) {
+    return true;
+  }
+  if (await migrateAssociation(inspected?.globalValue, vscode.ConfigurationTarget.Global)) {
+    return true;
+  }
+  return false;
 }
 
 function shouldAutoRevealTraceablePanel(inputReveal: boolean | undefined): boolean {
@@ -1019,6 +1082,83 @@ export function activate(context: vscode.ExtensionContext): void {
   let activeTraceableEvidencePanelKey: string | undefined;
 
   const getTraceableEvidencePanelKey = (uri: vscode.Uri): string => getTraceableEvidenceResourceKey(uri);
+  const resolveStoredTraceableReference = (currentFilePath: string, reference: string | undefined): string | undefined => {
+    const normalized = reference?.trim();
+    if (!normalized) {
+      return undefined;
+    }
+    return path.isAbsolute(normalized)
+      ? path.resolve(normalized)
+      : path.resolve(path.dirname(currentFilePath), normalized);
+  };
+  const buildTraceableLineageEntriesFromParent = async (initialParentTracePath: string | undefined, currentFilePath?: string): Promise<TraceableSubagentDetailSnapshot["lineageEntries"]> => {
+    const entries: NonNullable<TraceableSubagentDetailSnapshot["lineageEntries"]> = [];
+    const resolvedInitialParent = currentFilePath
+      ? resolveStoredTraceableReference(currentFilePath, initialParentTracePath)
+      : initialParentTracePath?.trim();
+    if (!resolvedInitialParent) {
+      return undefined;
+    }
+    let parentTracePath: string | undefined = resolvedInitialParent;
+    let parentCurrentFilePath = parentTracePath;
+    const seen = new Set<string>(currentFilePath ? [path.resolve(currentFilePath)] : []);
+    for (let depth = 0; depth < 6; depth += 1) {
+      if (!parentTracePath) {
+        break;
+      }
+      const normalizedParentPath = path.resolve(parentTracePath);
+      if (seen.has(normalizedParentPath)) {
+        break;
+      }
+      seen.add(normalizedParentPath);
+      const markdown = await fs.readFile(normalizedParentPath, "utf8").catch(() => undefined);
+      if (!markdown) {
+        break;
+      }
+      const parentParsed = parseTraceableEvidenceStateMarkdown(markdown);
+      if (!parentParsed) {
+        break;
+      }
+      entries.unshift({
+        filePath: normalizedParentPath,
+        title: path.basename(normalizedParentPath),
+        occurredAt: parentParsed.snapshot.updatedAt,
+        finalSummary: parentParsed.result?.finalSummary ?? parentParsed.snapshot.resultSummary?.finalSummary,
+        completionClaim: typeof parentParsed.result?.completionClaim === "string" ? parentParsed.result.completionClaim : undefined,
+        status: parentParsed.snapshot.status,
+        header: parentParsed.snapshot.header,
+        requestSummary: parentParsed.snapshot.requestSummary,
+        resultSummary: parentParsed.snapshot.resultSummary
+      });
+      parentCurrentFilePath = normalizedParentPath;
+      parentTracePath = resolveStoredTraceableReference(parentCurrentFilePath, parentParsed.result?.parentTracePath);
+    }
+    return entries.length > 0 ? entries : undefined;
+  };
+  const extractSnapshotParentTracePath = (snapshot: TraceableSubagentDetailSnapshot): string | undefined => {
+    for (const item of snapshot.requestSummary) {
+      if (item.label.trim().toLowerCase() === "parent trace") {
+        const candidate = item.title?.trim() || item.value.trim();
+        if (candidate) {
+          return candidate;
+        }
+      }
+    }
+    return undefined;
+  };
+  const enrichSnapshotWithLineage = async (
+    snapshot: TraceableSubagentDetailSnapshot,
+    currentFilePath?: string
+  ): Promise<TraceableSubagentDetailSnapshot> => {
+    const lineageEntries = await buildTraceableLineageEntriesFromParent(
+      extractSnapshotParentTracePath(snapshot),
+      currentFilePath ?? snapshot.evidenceFile?.filePath
+    );
+    return {
+      ...snapshot,
+      lineageEntries
+    };
+  };
   const readTraceableEvidenceViewState = async (resolvedUri: vscode.Uri): Promise<{
     sourceDocument: vscode.TextDocument | undefined;
     parsedState: ReturnType<typeof parseTraceableEvidenceStateMarkdown>;
@@ -1028,8 +1168,13 @@ export function activate(context: vscode.ExtensionContext): void {
       document.uri.scheme === resolvedUri.scheme
       && getTraceableEvidencePanelKey(document.uri) === panelKey
     ));
-    const markdown = sourceDocument ? sourceDocument.getText() : await fs.readFile(resolvedUri.fsPath, "utf8");
+    const markdown = sourceDocument?.isDirty
+      ? sourceDocument.getText()
+      : await fs.readFile(resolvedUri.fsPath, "utf8");
     const parsedState = parseTraceableEvidenceStateMarkdown(markdown);
+    if (parsedState) {
+      parsedState.snapshot = await enrichSnapshotWithLineage(parsedState.snapshot, resolvedUri.fsPath);
+    }
     return { sourceDocument, parsedState };
   };
   const renderTraceableEvidencePanel = (panel: vscode.WebviewPanel, resolvedUri: vscode.Uri, snapshot: TraceableSubagentDetailSnapshot): void => {
@@ -1042,10 +1187,62 @@ export function activate(context: vscode.ExtensionContext): void {
       hideToolbarControls: true
     });
   };
+  const renderTraceableEvidenceErrorPanel = (panel: vscode.WebviewPanel, resolvedUri: vscode.Uri, message: string): void => {
+    panel.title = path.basename(resolvedUri.fsPath);
+    panel.webview.html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: var(--vscode-editor-background);
+      --fg: var(--vscode-editor-foreground);
+      --muted: var(--vscode-descriptionForeground);
+      --border: var(--vscode-panel-border);
+      --error: var(--vscode-errorForeground);
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--vscode-font-family);
+    }
+    .traceable-error {
+      border: 1px solid color-mix(in srgb, var(--error) 48%, var(--border));
+      border-radius: 10px;
+      padding: 16px;
+      background: color-mix(in srgb, var(--error) 10%, transparent);
+    }
+    .traceable-error-title {
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .traceable-error-copy {
+      color: var(--muted);
+      line-height: 1.45;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="traceable-error">
+    <div class="traceable-error-title">TRACEABLE evidence view unavailable</div>
+    <div class="traceable-error-copy">${message.replace(/[&<>]/g, (value) => value === "&" ? "&amp;" : value === "<" ? "&lt;" : "&gt;")}</div>
+  </div>
+</body>
+</html>`;
+  };
   const refreshTraceableEvidencePanel = async (panelKey: string, resolvedUri: vscode.Uri, panel: vscode.WebviewPanel): Promise<boolean> => {
     const latestState = await readTraceableEvidenceViewState(resolvedUri);
-    if (!latestState.parsedState || traceableEvidencePanels.get(panelKey) !== panel) {
+    if (traceableEvidencePanels.get(panelKey) !== panel) {
       return false;
+    }
+    if (!latestState.parsedState) {
+      renderTraceableEvidenceErrorPanel(panel, resolvedUri, "This TRACEABLE evidence file does not contain a readable Traceable State block.");
+      return true;
     }
     renderTraceableEvidencePanel(panel, resolvedUri, latestState.parsedState.snapshot);
     return true;
@@ -1062,16 +1259,18 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const sourceUri = traceableEvidencePanelSources.get(panelKey);
-    const panel = traceableEvidencePanels.get(panelKey);
-    if (!sourceUri || !panel) {
+    if (!sourceUri || !traceableEvidencePanels.get(panelKey)) {
       void vscode.window.showWarningMessage("The active TRACEABLE evidence view is no longer available.");
       return;
     }
-    await vscode.commands.executeCommand("vscode.open", sourceUri, {
+    if (isActiveTabForResource(sourceUri)) {
+      await vscode.commands.executeCommand("reopenActiveEditorWith", "default");
+      return;
+    }
+    await vscode.commands.executeCommand("vscode.openWith", sourceUri, "default", {
       preview: false,
       preserveFocus: false
     });
-    panel.dispose();
   };
   const reopenTraceableEvidencePreview = async (): Promise<void> => {
     const panelKey = activeTraceableEvidencePanelKey;
@@ -1080,13 +1279,19 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const sourceUri = traceableEvidencePanelSources.get(panelKey);
-    const panel = traceableEvidencePanels.get(panelKey);
-    if (!sourceUri || !panel) {
+    if (!sourceUri || !traceableEvidencePanels.get(panelKey)) {
       void vscode.window.showWarningMessage("The active TRACEABLE evidence view is no longer available.");
       return;
     }
+    if (isActiveTabForResource(sourceUri)) {
+      try {
+        await vscode.commands.executeCommand("reopenActiveEditorWith", "vscode.markdown.preview.editor");
+      } catch {
+        await vscode.commands.executeCommand("markdown.reopenAsPreview");
+      }
+      return;
+    }
     await openMarkdownPreviewLikeSource(sourceUri);
-    panel.dispose();
   };
   const openTraceableFile = async (filePath: string, startLine?: number, endLine?: number): Promise<void> => {
     const normalizedPath = filePath.trim();
@@ -1126,37 +1331,41 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showWarningMessage("Open a .trace.md evidence file first, or pass one explicitly.");
       return;
     }
-    const panelKey = getTraceableEvidencePanelKey(resolvedUri);
-    const { sourceDocument, parsedState } = await readTraceableEvidenceViewState(resolvedUri);
-    if (!parsedState) {
-      void vscode.window.showErrorMessage("This TRACEABLE evidence file does not contain a readable Traceable State block.");
-      return;
-    }
+    const { sourceDocument } = await readTraceableEvidenceViewState(resolvedUri);
     const tabsToReplace = getRelatedTraceableTabsToReplace(resolvedUri);
-    const existingPanel = traceableEvidencePanels.get(panelKey);
-    if (existingPanel) {
-      traceableEvidencePanelSources.set(panelKey, resolvedUri);
-      activeTraceableEvidencePanelKey = panelKey;
-      renderTraceableEvidencePanel(existingPanel, resolvedUri, parsedState.snapshot);
-      existingPanel.reveal(vscode.ViewColumn.Active, false);
-      if (tabsToReplace.length > 0 && !sourceDocument?.isDirty) {
-        await vscode.window.tabGroups.close(tabsToReplace, false);
-      }
+    if (isActiveTabForResource(resolvedUri)) {
+      await vscode.commands.executeCommand("reopenActiveEditorWith", TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE);
       return;
     }
-    const panel = vscode.window.createWebviewPanel(
-      TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE,
-      path.basename(resolvedUri.fsPath),
-      {
-        viewColumn: vscode.ViewColumn.Active,
+    await vscode.commands.executeCommand("vscode.openWith", resolvedUri, TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE, {
+      preview: false,
+      preserveFocus: false
+    });
+    if (tabsToReplace.length > 0 && !sourceDocument?.isDirty) {
+      await vscode.window.tabGroups.close(tabsToReplace, false);
+    }
+  };
+  const resolveTraceableEvidenceCustomEditor = async (document: { uri: vscode.Uri }, panel: vscode.WebviewPanel): Promise<void> => {
+    const resolvedUri = document.uri;
+    if (!resolvedUri.fsPath.toLowerCase().endsWith(".trace.md")) {
+      const narrowedAssociation = await narrowTraceableMarkdownEditorAssociation(resolvedUri).catch(() => false);
+      void vscode.window.showInformationMessage(
+        narrowedAssociation
+          ? "TRACEABLE Evidence is only for .trace.md files. Narrowed the editor association from *.md to *.trace.md and reopened this markdown file with the default editor."
+          : "TRACEABLE Evidence is only for .trace.md files. Reopening this markdown file with the default editor."
+      );
+      await vscode.commands.executeCommand("vscode.openWith", resolvedUri, "default", {
+        preview: false,
         preserveFocus: false
-      },
-      {
-        enableScripts: true,
-        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "node_modules", "@vscode", "codicons", "dist")],
-        retainContextWhenHidden: true
-      }
-    );
+      });
+      panel.dispose();
+      return;
+    }
+    const panelKey = getTraceableEvidencePanelKey(resolvedUri);
+    panel.webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "node_modules", "@vscode", "codicons", "dist")]
+    };
     traceableEvidencePanels.set(panelKey, panel);
     traceableEvidencePanelSources.set(panelKey, resolvedUri);
     activeTraceableEvidencePanelKey = panelKey;
@@ -1225,7 +1434,6 @@ export function activate(context: vscode.ExtensionContext): void {
         activeTraceableEvidencePanelKey = undefined;
       }
     });
-    renderTraceableEvidencePanel(panel, resolvedUri, parsedState.snapshot);
     panel.webview.onDidReceiveMessage(async (message) => {
       if (!message || typeof message.type !== "string") {
         return;
@@ -1236,9 +1444,12 @@ export function activate(context: vscode.ExtensionContext): void {
         await openTraceableFile(message.filePath, startLine, endLine);
       }
     });
-    if (tabsToReplace.length > 0 && !sourceDocument?.isDirty) {
-      await vscode.window.tabGroups.close(tabsToReplace, false);
+    const initialState = await readTraceableEvidenceViewState(resolvedUri);
+    if (!initialState.parsedState) {
+      renderTraceableEvidenceErrorPanel(panel, resolvedUri, "This TRACEABLE evidence file does not contain a readable Traceable State block.");
+      return;
     }
+    renderTraceableEvidencePanel(panel, resolvedUri, initialState.parsedState.snapshot);
   };
   const hideTraceablePanel = async (options: { restoreFocus?: boolean; hideStatusBar?: boolean; resetKeepOpen?: boolean } = {}): Promise<void> => {
     await vscode.commands.executeCommand("setContext", TRACEABLE_PANEL_VISIBLE_CONTEXT, false);
@@ -1257,7 +1468,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.extensionUri,
     async () => {
       await traceableEvidence.exportCurrentSnapshotViaDialog();
-      const snapshot = traceableEvidence.getSnapshot();
+      const snapshot = await enrichSnapshotWithLineage(traceableEvidence.getSnapshot());
       traceableStatusDetail.update(snapshot);
       traceableStatusPanel.update(snapshot);
     },
@@ -1308,13 +1519,32 @@ export function activate(context: vscode.ExtensionContext): void {
     },
     updateDetailView: (snapshot) => {
       const enrichedSnapshot = traceableEvidence.updateSnapshot(snapshot);
-      traceableStatusDetail.update(enrichedSnapshot);
-      traceableStatusPanel.update(enrichedSnapshot);
+      void (async () => {
+        const lineageEnrichedSnapshot = await enrichSnapshotWithLineage(enrichedSnapshot);
+        traceableStatusDetail.update(lineageEnrichedSnapshot);
+        traceableStatusPanel.update(lineageEnrichedSnapshot);
+      })();
     }
   });
 
   context.subscriptions.push(output);
   context.subscriptions.push(
+    vscode.window.registerCustomEditorProvider(TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE, {
+      async openCustomDocument(uri: vscode.Uri): Promise<vscode.CustomDocument> {
+        return {
+          uri,
+          dispose: () => undefined
+        };
+      },
+      async resolveCustomEditor(document: vscode.CustomDocument, webviewPanel: vscode.WebviewPanel): Promise<void> {
+        await resolveTraceableEvidenceCustomEditor(document, webviewPanel);
+      }
+    }, {
+      webviewOptions: {
+        retainContextWhenHidden: true
+      },
+      supportsMultipleEditorsPerDocument: false
+    }),
     vscode.workspace.registerTextDocumentContentProvider("tiinex-traceable-subagent-status", traceableStatusDetail),
     vscode.commands.registerCommand(OPEN_TRACEABLE_SUBAGENT_STATUS_DETAIL_COMMAND, async () => {
       await revealTraceablePanel("manual");
