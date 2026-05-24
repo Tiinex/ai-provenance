@@ -540,6 +540,12 @@
           "scope": "resource",
           "description": "Control which roles the optional chat sender picker exposes for TRACEABLE chat turns and New Traceable Chat. `false` limits the sender list to human roles only, and `true` exposes every traceable role as a possible sender."
         },
+        "tiinex.aiProvenance.defaultChatSenderRole": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Optional default sender role hint for the TRACEABLE chat composer UI only. The UX resolves exact display-name matches first, then exact or unique prefix matches on the simplified sender label such as `Sigma` or `Sig`. Ambiguous values are ignored instead of guessing. This does not change tooling validation or runtime parentRoles semantics."
+        },
         "tiinex.aiProvenance.traceablePreferredModels": {
           "type": "array",
           "items": {

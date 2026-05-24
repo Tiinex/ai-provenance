@@ -1951,8 +1951,13 @@ function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "s
 
 function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "request" }>): string {
   const { task, userInput, prominentMetadata, secondaryMetadata } = splitRequestSummary(entry.requestSummary, entry.snapshot);
-  const noteText = task?.value?.trim() || "Compact launch parameters for this trace lane.";
-  const noteTitleAttribute = task?.title ? ` title="${escapeHtml(task.title)}"` : "";
+  const previewSource = userInput ?? task;
+  const noteText = summarizeChatProjectionText(userInput?.title)
+    || summarizeChatProjectionText(userInput?.value)
+    || summarizeChatProjectionText(task?.title)
+    || summarizeChatProjectionText(task?.value)
+    || "Compact launch parameters for this trace lane.";
+  const noteTitleAttribute = previewSource?.title ? ` title="${escapeHtml(previewSource.title)}"` : "";
   const orderedMetadata = [...prominentMetadata, ...secondaryMetadata];
   const metadataInlineMarkup = orderedMetadata.length > 0
     ? `<div class="event-chips event-request-inline-chips">${renderRequestSummaryChips(orderedMetadata, entry.snapshot)}</div>`
@@ -2896,6 +2901,78 @@ function renderChatComposer(
   ].join("");
 }
 
+function extractSingleDirectParentRoleFromRequestSummary(summary: PanelRequestSummaryItem[]): string | undefined {
+  let modeTitle = "";
+  let parentRolesItem: PanelRequestSummaryItem | undefined;
+  for (const item of summary) {
+    const normalizedLabel = item.label.trim().toLowerCase();
+    if (!modeTitle && normalizedLabel === "mode") {
+      modeTitle = item.title?.trim() || item.value?.trim() || "";
+      continue;
+    }
+    if (!parentRolesItem && normalizedLabel === "parent roles") {
+      parentRolesItem = item;
+    }
+  }
+  if (!/Declared input mode:\s*DIRECT\b/u.test(modeTitle)) {
+    return undefined;
+  }
+  const titleLines = (parentRolesItem?.title || "")
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const explicitRoles = titleLines.length > 1 ? titleLines.slice(1) : [];
+  if (explicitRoles.length === 1) {
+    return explicitRoles[0];
+  }
+  const compactValue = parentRolesItem?.value?.trim() || "";
+  if (!compactValue || /[·,]/u.test(compactValue)) {
+    return undefined;
+  }
+  return compactValue;
+}
+
+function normalizePanelChatSenderRoleIdentity(value: string): string {
+  return value
+    .replace(/\s*\([^)]*\)\s*/gu, " ")
+    .trim()
+    .normalize("NFKC")
+    .toLowerCase();
+}
+
+function resolveAvailableChatSenderRoleValue(
+  candidateValue: string | undefined,
+  chatSenderRoleOptions: readonly PanelChatSenderRoleOption[]
+): string | undefined {
+  const normalizedCandidateValue = candidateValue?.trim();
+  if (!normalizedCandidateValue) {
+    return undefined;
+  }
+  const exactMatch = chatSenderRoleOptions.find((option) => option.value === normalizedCandidateValue);
+  if (exactMatch) {
+    return exactMatch.value;
+  }
+  const normalizedIdentity = normalizePanelChatSenderRoleIdentity(normalizedCandidateValue);
+  if (!normalizedIdentity) {
+    return undefined;
+  }
+  const identityMatches = chatSenderRoleOptions.filter((option) => normalizePanelChatSenderRoleIdentity(option.label) === normalizedIdentity);
+  return identityMatches.length === 1 ? identityMatches[0].value : undefined;
+}
+
+function resolveInitialChatSenderRole(
+  snapshot: TraceableSubagentDetailSnapshot,
+  chatSenderRoleOptions: readonly PanelChatSenderRoleOption[],
+  configuredDefaultValue: string | undefined
+): string {
+  const previousDirectParentRole = extractSingleDirectParentRoleFromRequestSummary(snapshot.requestSummary);
+  const resolvedPreviousDirectParentRole = resolveAvailableChatSenderRoleValue(previousDirectParentRole, chatSenderRoleOptions);
+  if (resolvedPreviousDirectParentRole) {
+    return resolvedPreviousDirectParentRole;
+  }
+  return resolveAvailableChatSenderRoleValue(configuredDefaultValue, chatSenderRoleOptions) || "";
+}
+
 function evidenceViewState(snapshot: TraceableSubagentDetailSnapshot): {
   showExport: boolean;
   showView: boolean;
@@ -2955,6 +3032,7 @@ export function renderTraceableSubagentPanelHtml(
     showChatToggle?: boolean;
     initialChatViewEnabled?: boolean;
     chatSenderRoleOptions?: ReadonlyArray<PanelChatSenderRoleOption>;
+    defaultChatSenderRole?: string;
     loadedToolDetailsByCallId?: ReadonlyMap<string, PanelLoadedToolDetail>;
   } = {}
 ): string {
@@ -2966,6 +3044,11 @@ export function renderTraceableSubagentPanelHtml(
   const showChatToggle = options.showChatToggle !== false;
   const initialChatViewEnabled = options.initialChatViewEnabled === true;
   const chatSenderRoleOptions = Array.isArray(options.chatSenderRoleOptions) ? options.chatSenderRoleOptions : [];
+  const initialChatSenderRole = resolveInitialChatSenderRole(
+    snapshot,
+    chatSenderRoleOptions,
+    typeof options.defaultChatSenderRole === "string" ? options.defaultChatSenderRole : undefined
+  );
   const loadedToolDetailsByCallId = options.loadedToolDetailsByCallId ?? new Map<string, PanelLoadedToolDetail>();
   const evidenceState = evidenceViewState(snapshot);
   const eventRows = hasActivityFeed
@@ -4846,7 +4929,7 @@ export function renderTraceableSubagentPanelHtml(
       statusGroupOpenById: {},
       chatViewEnabled: ${initialChatViewEnabled ? "true" : "false"},
       chatComposerDraft: '',
-      chatSenderRole: '',
+      chatSenderRole: ${JSON.stringify(initialChatSenderRole)},
       runId: ''
     };
 
@@ -4991,7 +5074,8 @@ export function renderTraceableSubagentPanelHtml(
         ancestorGroupOpenById: {},
         namespaceOpenById: {},
         statusGroupOpenById: {},
-        chatComposerDraft: ''
+        chatComposerDraft: '',
+        chatSenderRole: defaultPanelState.chatSenderRole
       });
     }
 
@@ -6230,6 +6314,7 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     private readonly onOpenFile: (target: string | TraceableResolvedPathTarget, startLine?: number, endLine?: number, baseDir?: string) => Promise<void>,
     private readonly onSubmitChatTurn: (input: { parentTracePath: string; userInput: string; parentRoles?: string | string[] }) => Promise<void>,
     private readonly getChatSenderRoleOptions: () => Promise<PanelChatSenderRoleOption[]>,
+    private readonly getDefaultChatSenderRole: () => Promise<string | undefined>,
     private readonly onLoadToolDetail: (callId: string) => Promise<PanelLoadedToolDetail | undefined>,
     private readonly onStopRun: () => Promise<void>,
     private readonly onClosePanel: () => Promise<void>,
@@ -6413,11 +6498,13 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
       return;
     }
     const chatSenderRoleOptions = await this.getChatSenderRoleOptions();
+    const defaultChatSenderRole = await this.getDefaultChatSenderRole();
     this.view.title = "Traceable";
     this.view.description = this.snapshot.status.message;
     this.view.webview.html = renderTraceableSubagentPanelHtml(this.snapshot, this.codiconCssHref, {
       pinnedOpen: this.pinnedOpen,
       chatSenderRoleOptions,
+      defaultChatSenderRole,
       loadedToolDetailsByCallId: this.loadedToolDetailsByCallId
     });
   }
