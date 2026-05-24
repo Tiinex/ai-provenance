@@ -22,7 +22,7 @@ import {
   type TraceableSubagentToolDetail
 } from "./traceableSubagent";
 import { TraceableSubagentEvidenceController } from "./traceableSubagentEvidence";
-import { QueuedMutex } from "./mutex";
+import { QueuedMutex, type MutexLease } from "./mutex";
 import { TraceableSubagentStatusBarController } from "./traceableSubagentStatusBar";
 import { TraceableSubagentStatusDetailController, type TraceableSubagentDetailSnapshot } from "./traceableSubagentStatusDetail";
 import {
@@ -55,6 +55,22 @@ const TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE = "tiinexTraceableEvidenceEditor";
 const TRACEABLE_EVIDENCE_REFRESH_DEBOUNCE_MS = 250;
 const TRACEABLE_PANEL_VISIBLE_CONTEXT = "tiinex.aiProvenance.traceablePanelVisible";
 const TRACEABLE_PANEL_FALLBACK_COMMAND = "workbench.action.terminal.focus";
+const TOGGLE_MAXIMIZED_PANEL_COMMAND = "workbench.action.toggleMaximizedPanel";
+const TRACEABLE_BUSY_MESSAGE = "Another TRACEABLE run is already starting or running. Wait for it to settle before sending another turn.";
+
+function isTraceableResolvedPathTarget(value: unknown): value is TraceableResolvedPathTarget {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<TraceableResolvedPathTarget>;
+  if (candidate.kind === "absolute") {
+    return typeof candidate.path === "string";
+  }
+  if (candidate.kind === "relative") {
+    return typeof candidate.path === "string" && typeof candidate.baseDir === "string";
+  }
+  return false;
+}
 
 type TraceableAutoRevealMode = "yes" | "no" | "always";
 type TraceableAutoHideMode = "yes" | "no";
@@ -906,7 +922,8 @@ class QueuedReadOnlyTool<TInput> implements vscode.LanguageModelTool<TInput> {
     private readonly invocationMessage: (input: TInput) => string,
     private readonly invokeImpl: (input: TInput, budget: number, preparedState?: unknown, token?: vscode.CancellationToken) => Promise<string>,
     private readonly mutex: QueuedMutex,
-    private readonly prepareInvoke?: (input: TInput) => Promise<unknown> | unknown
+    private readonly prepareInvoke?: (input: TInput) => Promise<unknown> | unknown,
+    private readonly rejectIfBusy = false
   ) {}
 
   prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<TInput>): vscode.PreparedToolInvocation {
@@ -916,10 +933,13 @@ class QueuedReadOnlyTool<TInput> implements vscode.LanguageModelTool<TInput> {
   }
 
   async invoke(options: vscode.LanguageModelToolInvocationOptions<TInput>, token: vscode.CancellationToken): Promise<vscode.LanguageModelToolResult> {
-    const preparedState = await this.prepareInvoke?.(options.input);
+    if (this.rejectIfBusy && this.mutex.isLocked()) {
+      throw new Error(TRACEABLE_BUSY_MESSAGE);
+    }
     const lease = await this.mutex.acquire(`${this.displayName} invocation`);
     const budget = outputBudget(options.tokenizationOptions?.tokenBudget);
     try {
+      const preparedState = await this.prepareInvoke?.(options.input);
       const content = await this.invokeImpl(options.input, budget, preparedState, token);
       return textResult(content);
     } finally {
@@ -1292,6 +1312,7 @@ export function activate(context: vscode.ExtensionContext): void {
       stopRequestedAt?: string;
     }
     | undefined;
+  let traceablePanelMaximizedByEditorContinuation = false;
   const traceableEvidence = new TraceableSubagentEvidenceController({
     header: {
       agentName: "Trace lane",
@@ -1316,6 +1337,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const traceableEvidencePanels = new Map<string, vscode.WebviewPanel>();
   const traceableEvidencePanelSources = new Map<string, vscode.Uri>();
   const traceableEvidenceLoadedToolDetails = new Map<string, Map<string, TraceableSubagentToolDetail>>();
+  const traceableEvidencePanelInitialChatViewByKey = new Map<string, boolean>();
   let activeTraceableEvidencePanelKey: string | undefined;
 
   const getTraceableEvidencePanelKey = (uri: vscode.Uri): string => getTraceableEvidenceResourceKey(uri);
@@ -1432,8 +1454,20 @@ export function activate(context: vscode.ExtensionContext): void {
     panel.webview.html = renderTraceableSubagentPanelHtml(snapshot, codiconCssHref, {
       pinnedOpen: true,
       hideToolbarControls: true,
+      initialChatViewEnabled: traceableEvidencePanelInitialChatViewByKey.get(getTraceableEvidencePanelKey(resolvedUri)) === true,
       loadedToolDetailsByCallId
     });
+  };
+
+  const postChatSubmitRejected = async (webview: vscode.Webview | undefined): Promise<void> => {
+    await webview?.postMessage({ type: "chatSubmitState", pending: false });
+  };
+
+  const acquireTraceableRunLease = async (label: string, rejectIfBusy = false): Promise<MutexLease> => {
+    if (rejectIfBusy && traceableSubagentToolMutex.isLocked()) {
+      throw new Error(TRACEABLE_BUSY_MESSAGE);
+    }
+    return traceableSubagentToolMutex.acquire(label);
   };
   const buildPersistedToolDetail = (
     snapshot: TraceableSubagentDetailSnapshot,
@@ -1739,22 +1773,34 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }
     if (/\.md$/iu.test(normalizedPath) && !Number.isInteger(startLine) && !Number.isInteger(endLine)) {
-      await openMarkdownPreviewLikeSource(vscode.Uri.file(normalizedPath));
+      const document = await vscode.workspace.openTextDocument(targetUri);
+      await vscode.window.showTextDocument(document, {
+        preview: false,
+        preserveFocus: false
+      });
       return;
     }
     const targetLine = Number.isInteger(startLine) ? Math.max(0, (startLine ?? 1) - 1) : 0;
     const targetEndLine = Number.isInteger(endLine) ? Math.max(targetLine, (endLine ?? startLine ?? 1) - 1) : targetLine;
-    await vscode.commands.executeCommand("vscode.open", targetUri, {
+    const document = await vscode.workspace.openTextDocument(targetUri);
+    await vscode.window.showTextDocument(document, {
       preview: false,
       preserveFocus: false,
       selection: new vscode.Range(targetLine, 0, targetEndLine, 0)
     });
   };
-  const openTraceableEvidenceEditor = async (target?: vscode.Uri | string): Promise<void> => {
+  const openTraceableEvidenceEditor = async (
+    target?: vscode.Uri | string,
+    options: { initialChatViewEnabled?: boolean } = {}
+  ): Promise<void> => {
     const resolvedUri = await resolveActiveTraceableEvidenceUri(target);
     if (!resolvedUri || resolvedUri.scheme !== "file" || !resolvedUri.fsPath.toLowerCase().endsWith(".trace.md")) {
       void vscode.window.showWarningMessage("Open a .trace.md evidence file first, or pass one explicitly.");
       return;
+    }
+    const panelKey = getTraceableEvidencePanelKey(resolvedUri);
+    if (options.initialChatViewEnabled === true) {
+      traceableEvidencePanelInitialChatViewByKey.set(panelKey, true);
     }
     const { sourceDocument } = await readTraceableEvidenceViewState(resolvedUri);
     const tabsToReplace = getRelatedTraceableTabsToReplace(resolvedUri);
@@ -1857,6 +1903,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       traceableEvidencePanelSources.delete(panelKey);
       traceableEvidenceLoadedToolDetails.delete(panelKey);
+      traceableEvidencePanelInitialChatViewByKey.delete(panelKey);
       if (activeTraceableEvidencePanelKey === panelKey) {
         activeTraceableEvidencePanelKey = undefined;
       }
@@ -1865,10 +1912,28 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!message || typeof message.type !== "string") {
         return;
       }
-      if (message.type === "openFile" && typeof message.filePath === "string") {
+      if (message.type === "submitChatTurn" && typeof message.prompt === "string") {
+        try {
+          await continueTraceableChatFromEvidenceEditor(panel, resolvedUri, message.prompt);
+        } catch (error) {
+          await postChatSubmitRejected(panel.webview);
+          const detail = error instanceof Error ? error.message : "TRACEABLE continuation could not be started.";
+          void vscode.window.showWarningMessage(detail);
+        }
+        return;
+      }
+      if (message.type === "openFile") {
         const startLine = typeof message.startLine === "number" ? message.startLine : undefined;
         const endLine = typeof message.endLine === "number" ? message.endLine : undefined;
-        await openTraceableFile(message.filePath, startLine, endLine);
+        if (isTraceableResolvedPathTarget(message.target)) {
+          await openTraceableFile(message.target, startLine, endLine);
+          return;
+        }
+        if (typeof message.filePath !== "string") {
+          return;
+        }
+        const baseDir = typeof message.baseDir === "string" ? message.baseDir : undefined;
+        await openTraceableFile(message.filePath, startLine, endLine, baseDir);
         return;
       }
       if (message.type === "loadToolDetail" && typeof message.callId === "string") {
@@ -1924,7 +1989,89 @@ export function activate(context: vscode.ExtensionContext): void {
     if (options.resetKeepOpen) {
       traceablePanelPinnedOpen = false;
     }
+    traceablePanelMaximizedByEditorContinuation = false;
     traceablePanelRestoreCommand = undefined;
+  };
+
+  const revealAndMaximizeTraceablePanelForEditorContinuation = async (): Promise<void> => {
+    await revealTraceablePanel("auto");
+    if (traceablePanelMaximizedByEditorContinuation) {
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand(TOGGLE_MAXIMIZED_PANEL_COMMAND);
+      traceablePanelMaximizedByEditorContinuation = true;
+    } catch {
+      // Best effort only.
+    }
+  };
+
+  const continueTraceableChatFromEvidenceEditor = async (
+    panel: vscode.WebviewPanel,
+    resolvedUri: vscode.Uri,
+    userInput: string
+  ): Promise<void> => {
+    const prompt = userInput.trim();
+    if (!prompt) {
+      return;
+    }
+    const revealMode = getTraceableAutoRevealMode();
+    const revealToPanel = revealMode === "yes" || revealMode === "always";
+    const requestedInput: TraceableSubagentInput = {
+      parentTracePath: resolvedUri.fsPath,
+      userInput: prompt,
+      inputMode: "DIRECT",
+      reveal: false,
+      exportToFolder: path.dirname(resolvedUri.fsPath)
+    };
+    const lease = await acquireTraceableRunLease("Traceable Evidence Chat Turn", true);
+    try {
+      const prepared = await prepareTraceableRunExecution(requestedInput);
+      await prepared.beforeRun();
+      const pendingEvidenceFilePath = traceableEvidence.getSnapshot().evidenceFile?.filePath?.trim();
+      if (revealToPanel) {
+        await revealAndMaximizeTraceablePanelForEditorContinuation();
+        panel.dispose();
+      } else if (pendingEvidenceFilePath) {
+        await openTraceableEvidenceEditor(pendingEvidenceFilePath, { initialChatViewEnabled: true });
+        panel.dispose();
+      }
+      const cancelSource = new vscode.CancellationTokenSource();
+      const activeRunState = {
+        cancelSource,
+        stopSource: "unknown" as "traceable-panel" | "host-cancel" | "unknown",
+        stopRequestedAt: undefined as string | undefined
+      };
+      activeTraceableRun = activeRunState;
+      try {
+        const result = await runTraceableSubagent(requestedInput, {
+          accessInformation: context.languageModelAccessInformation,
+          debugLogDir: context.globalStorageUri.fsPath,
+          preparedInput: prepared.preparedInput,
+          token: cancelSource.token,
+          statusReporter: prepared.statusReporter,
+          getStopSource: () => activeRunState.stopSource,
+          getStopRequestedAt: () => activeRunState.stopRequestedAt
+        });
+        const finalizedResult = await prepared.afterRun(result);
+        output.appendLine("Traceable Evidence Chat Turn: completed.");
+        if (!revealToPanel && !pendingEvidenceFilePath) {
+          if (finalizedResult.evidenceFile?.filePath) {
+            await openTraceableEvidenceEditor(finalizedResult.evidenceFile.filePath, { initialChatViewEnabled: true });
+          } else {
+            await openTraceableCommandResult(finalizedResult);
+          }
+          panel.dispose();
+        }
+      } finally {
+        if (activeTraceableRun === activeRunState) {
+          activeTraceableRun = undefined;
+        }
+        cancelSource.dispose();
+      }
+    } finally {
+      lease.release();
+    }
   };
   const traceableStatusPanel = new TraceableSubagentStatusPanelProvider(
     context.extensionUri,
@@ -1939,6 +2086,21 @@ export function activate(context: vscode.ExtensionContext): void {
       traceableStatusPanel.update(snapshot);
     },
     openTraceableFile,
+    async ({ parentTracePath, userInput }) => {
+      try {
+        await runTraceableSubagentFromCommand({
+          parentTracePath,
+          userInput,
+          inputMode: "DIRECT",
+          reveal: true,
+          exportToFolder: path.dirname(parentTracePath)
+        }, "Traceable Panel Chat Turn", { openResult: false, rejectIfBusy: true });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "TRACEABLE continuation could not be started.";
+        void vscode.window.showWarningMessage(detail);
+        throw error;
+      }
+    },
     async (callId) => traceableStatusBar.getObservedToolDetail(callId),
     async () => {
       if (!activeTraceableRun || activeTraceableRun.cancelSource.token.isCancellationRequested) {
@@ -2011,7 +2173,6 @@ export function activate(context: vscode.ExtensionContext): void {
       agentName: effectiveInput.agentRole?.name
     });
     reporter.setRequestSummary?.(buildTraceableRequestSummary(effectiveInput, requestedInput));
-    reporter.update("queued");
     return {
       preparedInput,
       statusReporter: reporter,
@@ -2150,12 +2311,18 @@ export function activate(context: vscode.ExtensionContext): void {
     return selectedFolder || null;
   };
 
-  const runTraceableSubagentFromCommand = async (requestedInput: TraceableSubagentInput, logLabel: string): Promise<TraceableSubagentRunResult> => {
-    const prepared = await prepareTraceableRunExecution(requestedInput);
-    const lease = await traceableSubagentToolMutex.acquire(logLabel);
+  const runTraceableSubagentFromCommand = async (
+    requestedInput: TraceableSubagentInput,
+    logLabel: string,
+    options: { openResult?: boolean; rejectIfBusy?: boolean } = {}
+  ): Promise<TraceableSubagentRunResult> => {
+    const lease = await acquireTraceableRunLease(logLabel, options.rejectIfBusy !== false);
     try {
+      const prepared = await prepareTraceableRunExecution(requestedInput);
       const result = await executePreparedTraceableRun(requestedInput, prepared);
-      await openTraceableCommandResult(result);
+      if (options.openResult !== false) {
+        await openTraceableCommandResult(result);
+      }
       output.appendLine(`${logLabel}: completed.`);
       return result;
     } finally {
@@ -2186,7 +2353,7 @@ export function activate(context: vscode.ExtensionContext): void {
         inputMode: "DIRECT",
         reveal: true,
         exportToFolder: resolvedTarget.folderPath
-      }, "New Traceable Chat (folder)");
+      }, "New Traceable Chat (folder)", { openResult: false });
       return;
     }
     if (resolvedTarget.kind === "trace") {
@@ -2200,7 +2367,7 @@ export function activate(context: vscode.ExtensionContext): void {
         inputMode: "DIRECT",
         reveal: true,
         exportToFolder: path.dirname(resolvedTarget.filePath)
-      }, "New Traceable Chat (continuation)");
+      }, "New Traceable Chat (continuation)", { openResult: false });
       return;
     }
     const existingUnsavedState = unsavedTraceableAgentChatState.get(resolvedTarget.uri.fsPath);
@@ -2235,7 +2402,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         : {}),
       ...(exportFolder ? { exportToFolder: exportFolder } : {})
-    }, "New Traceable Chat (agent)");
+    }, "New Traceable Chat (agent)", { openResult: false });
     if (result.evidenceFile?.filePath) {
       unsavedTraceableAgentChatState.delete(resolvedTarget.uri.fsPath);
       if (activeUnsavedTraceableAgentChatKey === resolvedTarget.uri.fsPath) {
@@ -2472,7 +2639,8 @@ export function activate(context: vscode.ExtensionContext): void {
           return renderTraceableSubagentMarkdown(finalResult);
         },
         traceableSubagentToolMutex,
-        async (input) => prepareTraceableRunExecution(input)
+        async (input) => prepareTraceableRunExecution(input),
+        true
       )
     )
   );

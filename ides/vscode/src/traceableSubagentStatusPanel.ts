@@ -250,6 +250,33 @@ function formatPanelClockTime(value: string | undefined): string | undefined {
   }).format(new Date(parsed));
 }
 
+function formatPanelMinuteClockTime(value: string | undefined): string | undefined {
+  const parsed = parsePanelTimestampMs(value);
+  if (parsed === undefined) {
+    return undefined;
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(parsed));
+}
+
+function formatChatHeaderTimestamp(occurredAt: string | undefined, running: boolean, updatedAt?: string): string | undefined {
+  if (!running) {
+    return formatPanelMinuteClockTime(updatedAt || occurredAt);
+  }
+  const occurredAtMs = parsePanelTimestampMs(occurredAt);
+  const referenceAtMs = parsePanelTimestampMs(updatedAt) ?? Date.now();
+  if (!Number.isFinite(occurredAtMs) || !Number.isFinite(referenceAtMs)) {
+    return undefined;
+  }
+  const elapsedSeconds = Math.max(0, Math.floor(((referenceAtMs as number) - (occurredAtMs as number)) / 1000));
+  if (elapsedSeconds < 60) {
+    return `${elapsedSeconds}s`;
+  }
+  return `${Math.floor(elapsedSeconds / 60)}m`;
+}
+
 function panelStatusIcon(phase: TraceableSubagentDetailSnapshot["status"]["phase"]): string {
   switch (phase) {
     case "running":
@@ -1615,6 +1642,10 @@ function buildCarryHandoffActivity(snapshot: TraceableSubagentDetailSnapshot): E
     return undefined;
   }
   const resolvedDisposition = disposition ?? "none";
+  const summaryState = activeCarryForward ?? recoverableCarryState;
+  if (resolvedDisposition === "none" && !summaryState) {
+    return undefined;
+  }
   const noteParts: string[] = [];
   let summary = "Carry state changed.";
   switch (resolvedDisposition) {
@@ -1639,7 +1670,6 @@ function buildCarryHandoffActivity(snapshot: TraceableSubagentDetailSnapshot): E
       noteParts.push(summary);
       break;
   }
-  const summaryState = activeCarryForward ?? recoverableCarryState;
   const goalCount = Array.isArray(summaryState?.remainingGoals) ? summaryState.remainingGoals.length : 0;
   const questionCount = Array.isArray(summaryState?.openQuestions) ? summaryState.openQuestions.length : 0;
   const hasNextStart = Boolean(summaryState?.nextSuggestedStart?.trim());
@@ -2581,6 +2611,232 @@ function renderPanelEmptyState(snapshot: TraceableSubagentDetailSnapshot): strin
   ].join("");
 }
 
+function summarizeChatProjectionText(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function extractChatProjectionRequestTexts(snapshot: TraceableSubagentDetailSnapshot): {
+  taskInput?: string;
+  userInput?: string;
+} {
+  const { task, userInput } = splitRequestSummary(snapshot.requestSummary, snapshot);
+  return {
+    taskInput: summarizeChatProjectionText(task?.title) || summarizeChatProjectionText(task?.value),
+    userInput: summarizeChatProjectionText(userInput?.title) || summarizeChatProjectionText(userInput?.value)
+  };
+}
+
+function extractChatProjectionOutputText(snapshot: TraceableSubagentDetailSnapshot): string | undefined {
+  return snapshot.status.detail?.trim()
+    || snapshot.resultSummary?.finalSummary?.trim()
+    || undefined;
+}
+
+function extractChatProjectionRequestTextsFromSummary(summary: PanelRequestSummaryItem[]): {
+  taskInput?: string;
+  userInput?: string;
+} {
+  let taskInput: string | undefined;
+  let userInput: string | undefined;
+  for (const item of summary) {
+    const normalizedLabel = item.label.trim().toLowerCase();
+    const text = summarizeChatProjectionText(item.title) || summarizeChatProjectionText(item.value);
+    if (!text) {
+      continue;
+    }
+    if (!taskInput && (normalizedLabel === "task" || normalizedLabel === "parent frame")) {
+      taskInput = text;
+      continue;
+    }
+    if (!userInput && normalizedLabel === "user input") {
+      userInput = text;
+    }
+  }
+  return { taskInput, userInput };
+}
+
+function extractChatProjectionLineageOutputText(entry: NonNullable<TraceableSubagentDetailSnapshot["lineageEntries"]>[number]): string | undefined {
+  return summarizeChatProjectionText(entry.status?.detail)
+    || summarizeChatProjectionText(entry.resultSummary?.finalSummary)
+    || summarizeChatProjectionText(entry.finalSummary)
+    || undefined;
+}
+
+function renderChatProjectionTimestamp(options: {
+  occurredAt?: string;
+  updatedAt?: string;
+  running?: boolean;
+}): string {
+  const label = formatChatHeaderTimestamp(options.occurredAt, options.running === true, options.updatedAt);
+  if (!label) {
+    return "";
+  }
+  const title = formatPanelClockTime(options.updatedAt || options.occurredAt);
+  return `<span class="chat-message-time" data-chat-timestamp="true" data-occurred-at="${escapeHtml(options.occurredAt || "")}" data-updated-at="${escapeHtml(options.updatedAt || "")}" data-running="${options.running === true ? "true" : "false"}" title="${escapeHtml(title || label)}">${escapeHtml(label)}</span>`;
+}
+
+function renderChatProjectionMessage(options: {
+  label: "Task input" | "User input" | "Output";
+  text: string;
+  role: "task" | "input" | "output";
+  occurredAt?: string;
+  updatedAt?: string;
+  running?: boolean;
+}): string {
+  const timestampMarkup = renderChatProjectionTimestamp({
+    occurredAt: options.occurredAt,
+    updatedAt: options.updatedAt,
+    running: options.running
+  });
+  return [
+    `<section class="chat-message chat-message-${escapeHtml(options.role)}">`,
+    `<div class="chat-message-header">`,
+    `<div class="chat-message-label-row"><div class="chat-message-label">${escapeHtml(options.label)}</div></div>`,
+    timestampMarkup,
+    `</div>`,
+    `<div class="chat-message-bubble">${escapeHtml(options.text)}</div>`,
+    `</section>`
+  ].join("");
+}
+
+function renderChatTraceSeparator(title: string, filePath?: string): string {
+  const trimmed = title.trim();
+  if (!trimmed) {
+    return "";
+  }
+  const messagePayload = filePath?.trim()
+    ? ` data-message='${escapeHtml(JSON.stringify({ type: "openFile", filePath: filePath.trim() }))}'`
+    : "";
+  return [
+    `<div class="chat-trace-separator" role="presentation">`,
+    `<span class="chat-trace-separator-title-wrap">`,
+    `<button class="chat-trace-separator-title" type="button"${messagePayload} title="${escapeHtml(filePath?.trim() ? `Open ${trimmed}` : trimmed)}">${escapeHtml(trimmed)}</button>`,
+    `</span>`,
+    `</div>`
+  ].join("");
+}
+
+function renderChatProjectionAncestorMessage(entry: NonNullable<TraceableSubagentDetailSnapshot["lineageEntries"]>[number]): string {
+  const { taskInput, userInput } = extractChatProjectionRequestTextsFromSummary(entry.requestSummary ?? []);
+  const outputText = extractChatProjectionLineageOutputText(entry);
+  const running = entry.status?.phase === "running";
+  const occurredAt = entry.startedAt ?? entry.occurredAt;
+  const updatedAt = entry.updatedAt ?? entry.occurredAt;
+  return [
+    renderChatTraceSeparator(entry.title, entry.filePath),
+    taskInput
+      ? renderChatProjectionMessage({
+        label: "Task input",
+        text: taskInput,
+        role: "task",
+        occurredAt,
+        updatedAt,
+        running
+      })
+      : "",
+    userInput
+      ? renderChatProjectionMessage({
+        label: "User input",
+        text: userInput,
+        role: "input",
+        occurredAt,
+        updatedAt,
+        running
+      })
+      : "",
+    outputText
+      ? renderChatProjectionMessage({
+        label: "Output",
+        text: outputText,
+        role: "output",
+        occurredAt: updatedAt,
+        updatedAt,
+        running
+      })
+      : "",
+    (!taskInput && !userInput && !outputText)
+      ? renderChatProjectionMessage({
+        label: "Output",
+        text: "Earlier trace in this continuation chain.",
+        role: "output",
+        occurredAt: updatedAt,
+        updatedAt,
+        running
+      })
+      : ""
+  ].filter(Boolean).join("");
+}
+
+function renderChatProjection(snapshot: TraceableSubagentDetailSnapshot): string {
+  const sections: string[] = [];
+  for (const lineageEntry of snapshot.lineageEntries ?? []) {
+    sections.push(renderChatProjectionAncestorMessage(lineageEntry));
+  }
+  const { taskInput, userInput } = extractChatProjectionRequestTexts(snapshot);
+  const outputText = extractChatProjectionOutputText(snapshot);
+  if (snapshot.evidenceFile?.fileName?.trim()) {
+    sections.push(renderChatTraceSeparator(snapshot.evidenceFile.fileName.trim(), snapshot.evidenceFile.filePath));
+  }
+  if (taskInput) {
+    sections.push(renderChatProjectionMessage({
+      label: "Task input",
+      text: taskInput,
+      role: "task",
+      occurredAt: snapshot.startedAt,
+      updatedAt: snapshot.updatedAt,
+      running: snapshot.status.phase === "running"
+    }));
+  }
+  if (userInput) {
+    sections.push(renderChatProjectionMessage({
+      label: "User input",
+      text: userInput,
+      role: "input",
+      occurredAt: snapshot.startedAt,
+      updatedAt: snapshot.updatedAt,
+      running: snapshot.status.phase === "running"
+    }));
+  }
+  if (outputText) {
+    sections.push(renderChatProjectionMessage({
+      label: "Output",
+      text: outputText,
+      role: "output",
+      occurredAt: snapshot.updatedAt,
+      updatedAt: snapshot.updatedAt,
+      running: snapshot.status.phase === "running"
+    }));
+  }
+  if (sections.length === 0) {
+    return `<div class="chat-thread">${renderPanelEmptyState(snapshot)}</div>`;
+  }
+  return `<div class="chat-thread">${sections.join("")}</div>`;
+}
+
+function renderChatComposer(snapshot: TraceableSubagentDetailSnapshot): string {
+  const traceFilePath = snapshot.evidenceFile?.filePath?.trim() || "";
+  const traceFilePathAttribute = escapeHtml(traceFilePath);
+  const running = snapshot.status.phase === "running";
+  const canSubmit = traceFilePath.length > 0 && !running;
+  const hint = !traceFilePath
+    ? "Chat composer requires a saved TRACEABLE evidence file for continuation."
+    : running
+      ? "Wait for the current TRACEABLE run to settle before sending the next turn."
+      : "Enter sends the next turn. Shift+Enter adds a new line.";
+  return [
+    `<section class="chat-composer${canSubmit ? "" : " chat-composer-disabled"}" data-chat-composer="true" data-chat-trace-path="${traceFilePathAttribute}" data-chat-base-disabled="${canSubmit ? "false" : "true"}">`,
+    `<div class="chat-composer-shell">`,
+    `<textarea class="chat-composer-input" data-chat-input="true" rows="3" placeholder="Continue this trace..."${canSubmit ? "" : " readonly"}></textarea>`,
+    `<div class="chat-composer-actions">`,
+    `<div class="chat-composer-hint">${escapeHtml(hint)}</div>`,
+    `<button class="toolbar-button chat-composer-send" type="button" data-chat-send="true"${canSubmit ? "" : " disabled"}>Send</button>`,
+    `</div>`,
+    `</div>`,
+    `</section>`
+  ].join("");
+}
+
 function evidenceViewState(snapshot: TraceableSubagentDetailSnapshot): {
   showExport: boolean;
   showView: boolean;
@@ -2637,6 +2893,8 @@ export function renderTraceableSubagentPanelHtml(
   options: {
     pinnedOpen?: boolean;
     hideToolbarControls?: boolean;
+    showChatToggle?: boolean;
+    initialChatViewEnabled?: boolean;
     loadedToolDetailsByCallId?: ReadonlyMap<string, PanelLoadedToolDetail>;
   } = {}
 ): string {
@@ -2645,6 +2903,8 @@ export function renderTraceableSubagentPanelHtml(
   const hasActivityFeed = renderedEntries.length > 0;
   const pinnedOpen = options.pinnedOpen === true;
   const hideToolbarControls = options.hideToolbarControls === true;
+  const showChatToggle = options.showChatToggle !== false;
+  const initialChatViewEnabled = options.initialChatViewEnabled === true;
   const loadedToolDetailsByCallId = options.loadedToolDetailsByCallId ?? new Map<string, PanelLoadedToolDetail>();
   const evidenceState = evidenceViewState(snapshot);
   const eventRows = hasActivityFeed
@@ -2739,9 +2999,13 @@ export function renderTraceableSubagentPanelHtml(
       --toolset-tree-line: color-mix(in srgb, var(--border) 76%, transparent);
     }
     * { box-sizing: border-box; }
+    html, body {
+      height: 100%;
+    }
     body {
       margin: 0;
       padding: 8px 10px 10px;
+      min-height: 100%;
       background: var(--bg);
       color: var(--fg);
       font: 12px/1.35 var(--vscode-font-family);
@@ -2749,6 +3013,18 @@ export function renderTraceableSubagentPanelHtml(
     .panel-root {
       display: grid;
       gap: 8px;
+    }
+    .panel-root.chat-view-active {
+      min-height: calc(100vh - 18px);
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+    .panel-root.chat-view-active .meta,
+    .panel-root.chat-view-active .toolset-disclosure,
+    .panel-root.chat-view-active .events {
+      display: none;
+    }
+    .panel-root.chat-view-active .chat-view {
+      display: grid;
     }
     .header {
       display: grid;
@@ -2758,7 +3034,6 @@ export function renderTraceableSubagentPanelHtml(
       z-index: 2;
       background: var(--bg);
       box-shadow: 0 -8px 0 0 var(--bg);
-      border-bottom: 1px solid var(--border);
       padding: 0 0 8px;
     }
     .header-top {
@@ -2918,7 +3193,20 @@ export function renderTraceableSubagentPanelHtml(
       cursor: pointer;
       font: inherit;
     }
+    .toolbar-button-chat-toggle {
+      min-width: 84px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
     .toolbar-button:hover { background: var(--chip-bg); }
+    .toolbar-button-chat-toggle[aria-pressed="true"] {
+      border-color: color-mix(in srgb, var(--fg) 18%, var(--chip-border));
+      background: color-mix(in srgb, var(--chip-bg) 92%, var(--bg));
+      color: color-mix(in srgb, var(--fg) 94%, var(--muted));
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 8%, transparent);
+    }
     .toolbar-button-export-live {
       border-color: color-mix(in srgb, var(--vscode-errorForeground) 66%, var(--chip-border));
     }
@@ -2998,11 +3286,11 @@ export function renderTraceableSubagentPanelHtml(
       color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 72%, var(--fg));
     }
     .activity-request-badge.activity-request-badge-inherited {
-      border-color: color-mix(in srgb, var(--accent-soft) 24%, var(--chip-border));
-      background: color-mix(in srgb, var(--accent-soft) 10%, var(--chip-bg));
+      border-color: color-mix(in srgb, var(--border) 68%, var(--chip-border));
+      background: color-mix(in srgb, var(--chip-bg) 52%, transparent);
     }
     .activity-request-badge.activity-request-badge-inherited .header-badge-label {
-      color: color-mix(in srgb, var(--accent-soft) 82%, var(--fg));
+      color: color-mix(in srgb, var(--muted) 90%, transparent);
     }
     .chip-request {
       gap: 5px;
@@ -3352,6 +3640,173 @@ export function renderTraceableSubagentPanelHtml(
       align-content: start;
       margin: 0;
       padding: 0;
+    }
+    .chat-view {
+      display: none;
+      gap: 10px;
+      align-content: stretch;
+      min-height: 0;
+    }
+    .chat-thread {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      min-height: 0;
+      overflow: auto;
+      padding-right: 2px;
+      padding-bottom: 8px;
+    }
+    .chat-message {
+      display: grid;
+      gap: 6px;
+    }
+    .chat-message-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+    }
+    .chat-message-label-row {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      min-width: 0;
+    }
+    .chat-trace-separator {
+      position: relative;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 22px;
+      margin: 4px 0 0;
+    }
+    .chat-trace-separator::before {
+      content: "";
+      position: absolute;
+      inset: 50% 0 auto 0;
+      height: 1px;
+      background: color-mix(in srgb, var(--border) 74%, transparent);
+      transform: translateY(-50%);
+    }
+    .chat-trace-separator-title-wrap {
+      position: relative;
+      z-index: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 10px;
+      background: var(--bg);
+    }
+    .chat-trace-separator-title {
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: color-mix(in srgb, var(--fg) 78%, var(--muted));
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    .chat-trace-separator-title:hover {
+      color: color-mix(in srgb, var(--accent) 70%, var(--fg));
+    }
+    .chat-trace-separator-title:focus-visible {
+      outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+    .chat-message-label {
+      color: color-mix(in srgb, var(--muted) 90%, transparent);
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+    }
+    .chat-message-time {
+      flex: 0 0 auto;
+      color: color-mix(in srgb, var(--muted) 82%, transparent);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .chat-message-bubble {
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid color-mix(in srgb, var(--border) 76%, transparent);
+      background: color-mix(in srgb, var(--chip-bg) 54%, transparent);
+      color: color-mix(in srgb, var(--fg) 90%, var(--muted));
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    .chat-message-input .chat-message-bubble {
+      border-color: color-mix(in srgb, var(--vscode-terminal-ansiGreen) 34%, var(--chip-border));
+      background: color-mix(in srgb, var(--vscode-terminal-ansiGreen) 12%, var(--chip-bg));
+    }
+    .chat-message-task .chat-message-bubble {
+      border-color: color-mix(in srgb, var(--vscode-errorForeground) 48%, var(--chip-border));
+      background: color-mix(in srgb, var(--vscode-errorForeground) 12%, var(--chip-bg));
+    }
+    .chat-message-output .chat-message-bubble {
+      border-color: color-mix(in srgb, var(--border) 82%, transparent);
+    }
+    .chat-composer {
+      position: sticky;
+      bottom: 0;
+      z-index: 1;
+      padding-top: 12px;
+      margin-top: auto;
+      background: var(--bg);
+      box-shadow: 0 -10px 24px color-mix(in srgb, var(--bg) 88%, transparent);
+    }
+    .chat-composer-shell {
+      display: grid;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--bg) 92%, var(--chip-bg));
+    }
+    .chat-composer-input {
+      width: 100%;
+      min-height: 74px;
+      resize: vertical;
+      border-radius: 10px;
+      border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+      background: color-mix(in srgb, var(--bg) 94%, var(--chip-bg));
+      color: var(--fg);
+      font: inherit;
+      padding: 9px 10px;
+    }
+    .chat-composer-input[readonly] {
+      cursor: default;
+    }
+    .chat-composer-input:focus-visible {
+      outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+      outline-offset: 1px;
+    }
+    .chat-composer-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .chat-composer-hint {
+      color: var(--muted);
+      line-height: 1.4;
+      flex: 1 1 18rem;
+      min-width: 0;
+    }
+    .chat-composer-disabled .chat-composer-shell {
+      opacity: 0.78;
+    }
+    .chat-composer-pending .chat-composer-shell {
+      opacity: 0.72;
+    }
+    .chat-composer-send[disabled] {
+      cursor: not-allowed;
+      opacity: 0.65;
     }
     .event-row {
       display: grid;
@@ -4167,6 +4622,7 @@ export function renderTraceableSubagentPanelHtml(
           ${pinnedOpen
             ? `<button class="toolbar-button" data-message='{"type":"closePanel"}' title="Hide the traceable panel until it is reopened from the status bar">Close</button>`
             : `<button class="toolbar-button" data-message='{"type":"stayOpen"}' title="Keep TRACEABLE open and suppress auto-hide until you close it manually">Stay</button>`}`}
+          ${showChatToggle ? `<button class="toolbar-button toolbar-button-chat-toggle" type="button" data-chat-toggle="true" aria-pressed="false" title="Toggle simplified chat projection">Chat</button>` : ""}
         </div>
       </div>
       <div class="meta">
@@ -4177,6 +4633,7 @@ export function renderTraceableSubagentPanelHtml(
     </section>
     ${renderToolsetDisclosure(snapshot)}
     <ul class="events">${eventRows}</ul>
+    <section class="chat-view">${renderChatProjection(snapshot)}${renderChatComposer(snapshot)}</section>
   </div>
   <script>
     const vscodeApi = acquireVsCodeApi();
@@ -4194,6 +4651,8 @@ export function renderTraceableSubagentPanelHtml(
       ancestorGroupOpenById: {},
       namespaceOpenById: {},
       statusGroupOpenById: {},
+      chatViewEnabled: ${initialChatViewEnabled ? "true" : "false"},
+      chatComposerDraft: '',
       runId: ''
     };
 
@@ -4231,18 +4690,31 @@ export function renderTraceableSubagentPanelHtml(
             statusGroupOpenById: state.statusGroupOpenById && typeof state.statusGroupOpenById === 'object'
               ? Object.fromEntries(Object.entries(state.statusGroupOpenById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
               : {},
+            chatViewEnabled: state.chatViewEnabled === true,
+            chatComposerDraft: typeof state.chatComposerDraft === 'string' ? state.chatComposerDraft : '',
             runId: typeof state.runId === 'string' ? state.runId : ''
           }
         : defaultPanelState;
     };
 
     let panelState = readPanelState();
+    let chatSubmitPending = false;
     const currentRunId = ${JSON.stringify(snapshot.startedAt)};
+    const panelRoot = document.querySelector('.panel-root');
     const toolsetDisclosure = document.querySelector('.toolset-disclosure');
+    const metaSection = document.querySelector('.meta');
+    const eventsList = document.querySelector('.events');
+    const chatViewSection = document.querySelector('.chat-view');
+    const chatToggleButton = document.querySelector('[data-chat-toggle="true"]');
+    const chatComposer = document.querySelector('[data-chat-composer="true"]');
+    const chatInput = document.querySelector('[data-chat-input="true"]');
+    const chatSendButton = document.querySelector('[data-chat-send="true"]');
+    const messageTargets = Array.from(document.querySelectorAll('[data-message]'));
     const namespaceGroups = Array.from(document.querySelectorAll('.toolset-namespace-group[data-namespace-id]'));
     const statusGroups = Array.from(document.querySelectorAll('.status-group[data-status-group-id]'));
     const ancestorGroups = Array.from(document.querySelectorAll('.ancestor-group[data-ancestor-group-id]'));
     const timerNodes = Array.from(document.querySelectorAll('[data-timer-kind]'));
+    const chatTimestampNodes = Array.from(document.querySelectorAll('[data-chat-timestamp]'));
     const requestRows = Array.from(document.querySelectorAll('.event-request[data-request-expandable="true"][data-request-id]'));
     const outputRows = Array.from(document.querySelectorAll('.event-output[data-output-expandable="true"][data-output-id]'));
     const handoffRows = Array.from(document.querySelectorAll('.event-handoff[data-handoff-expandable="true"][data-handoff-id]'));
@@ -4260,6 +4732,22 @@ export function renderTraceableSubagentPanelHtml(
       vscodeApi.setState(panelState);
     };
 
+    const dispatchDataMessage = (target) => {
+      if (!(target instanceof HTMLElement)) {
+        return false;
+      }
+      const message = target.getAttribute('data-message');
+      if (!message) {
+        return false;
+      }
+      try {
+        vscodeApi.postMessage(JSON.parse(message));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     if (panelState.runId !== currentRunId) {
       persistPanelState({
         runId: currentRunId,
@@ -4269,8 +4757,21 @@ export function renderTraceableSubagentPanelHtml(
         toolExpandedById: {},
         toolInputOpenById: {},
         toolOutputOpenById: {},
+        ancestorGroupOpenById: {},
         namespaceOpenById: {},
-        statusGroupOpenById: {}
+        statusGroupOpenById: {},
+        chatComposerDraft: ''
+      });
+    }
+
+    for (const messageTarget of messageTargets) {
+      if (!(messageTarget instanceof HTMLElement)) {
+        continue;
+      }
+      messageTarget.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void dispatchDataMessage(messageTarget);
       });
     }
 
@@ -4336,6 +4837,28 @@ export function renderTraceableSubagentPanelHtml(
       return String(minutes) + 'm ' + String(seconds).padStart(2, '0') + 's';
     };
 
+    const formatFixedClockLabel = (value) => {
+      const parsedAtMs = parseTimestampMs(value);
+      if (!Number.isFinite(parsedAtMs)) {
+        return '';
+      }
+      return new Intl.DateTimeFormat(undefined, {
+        hour: '2-digit',
+        minute: '2-digit'
+      }).format(new Date(parsedAtMs));
+    };
+
+    const formatChatRelativeLabel = (elapsedMs) => {
+      if (!Number.isFinite(elapsedMs) || elapsedMs < 0) {
+        return '';
+      }
+      const elapsedSeconds = Math.floor(elapsedMs / 1000);
+      if (elapsedSeconds < 60) {
+        return String(elapsedSeconds) + 's';
+      }
+      return String(Math.floor(elapsedSeconds / 60)) + 'm';
+    };
+
     const computeActiveToolElapsedMs = (activeStarts, referenceIso) => {
       const referenceAtMs = parseTimestampMs(referenceIso);
       if (!Number.isFinite(referenceAtMs)) {
@@ -4398,15 +4921,34 @@ export function renderTraceableSubagentPanelHtml(
           valueNode.textContent = nextValue;
         }
       }
+      for (const timestampNode of chatTimestampNodes) {
+        if (!(timestampNode instanceof HTMLElement)) {
+          continue;
+        }
+        const occurredAt = timestampNode.dataset.occurredAt || timestampNode.dataset.updatedAt || '';
+        const updatedAt = timestampNode.dataset.updatedAt || occurredAt;
+        const running = timestampNode.dataset.running === 'true';
+        const referenceAtMs = parseTimestampMs(referenceIso || new Date().toISOString()) || Date.now();
+        const occurredAtMs = parseTimestampMs(occurredAt) || referenceAtMs;
+        const nextValue = running
+          ? formatChatRelativeLabel(Math.max(0, referenceAtMs - occurredAtMs))
+          : formatFixedClockLabel(updatedAt || occurredAt);
+        if (nextValue) {
+          timestampNode.textContent = nextValue;
+        }
+      }
     };
 
     applyTimers(new Date().toISOString());
 
     let timerInterval;
-    if (timerNodes.some((timerNode) => timerNode instanceof HTMLElement && timerNode.dataset.running === 'true')) {
+    if (
+      timerNodes.some((timerNode) => timerNode instanceof HTMLElement && timerNode.dataset.running === 'true')
+      || chatTimestampNodes.some((timestampNode) => timestampNode instanceof HTMLElement && timestampNode.dataset.running === 'true')
+    ) {
       timerInterval = window.setInterval(() => {
         applyTimers(new Date().toISOString());
-      }, 100);
+      }, 1000);
       window.addEventListener('beforeunload', () => {
         window.clearInterval(timerInterval);
       }, { once: true });
@@ -4491,6 +5033,119 @@ export function renderTraceableSubagentPanelHtml(
             [groupId]: groupNode.open
           }
         });
+      });
+    }
+
+
+    const updateChatComposerState = () => {
+      if (!(chatInput instanceof HTMLTextAreaElement) || !(chatSendButton instanceof HTMLButtonElement)) {
+        return;
+      }
+      const baseDisabled = chatComposer instanceof HTMLElement && chatComposer.dataset.chatBaseDisabled === 'true';
+      const isDisabled = baseDisabled || chatSubmitPending;
+      chatInput.readOnly = false;
+      if (chatComposer instanceof HTMLElement) {
+        chatComposer.classList.toggle('chat-composer-pending', chatSubmitPending);
+      }
+      const hasDraft = chatInput.value.trim().length > 0;
+      chatSendButton.disabled = isDisabled || !hasDraft;
+      chatSendButton.textContent = chatSubmitPending ? 'Sending...' : 'Send';
+    };
+
+    const focusChatComposerInput = () => {
+      if (!(chatInput instanceof HTMLTextAreaElement)) {
+        return;
+      }
+      if (panelState.chatViewEnabled !== true) {
+        return;
+      }
+      if (chatSubmitPending) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        if (!(chatInput instanceof HTMLTextAreaElement) || document.activeElement === chatInput) {
+          return;
+        }
+        try {
+          chatInput.focus({ preventScroll: true });
+          const valueLength = chatInput.value.length;
+          chatInput.setSelectionRange(valueLength, valueLength);
+        } catch {
+          chatInput.focus();
+        }
+      });
+    };
+
+    const applyChatViewState = () => {
+      const chatViewEnabled = panelState.chatViewEnabled === true;
+      if (panelRoot instanceof HTMLElement) {
+        panelRoot.classList.toggle('chat-view-active', chatViewEnabled);
+      }
+      if (metaSection instanceof HTMLElement) {
+        metaSection.hidden = chatViewEnabled;
+      }
+      if (toolsetDisclosure instanceof HTMLElement) {
+        toolsetDisclosure.hidden = chatViewEnabled;
+      }
+      if (eventsList instanceof HTMLElement) {
+        eventsList.hidden = chatViewEnabled;
+      }
+      if (chatViewSection instanceof HTMLElement) {
+        chatViewSection.hidden = !chatViewEnabled;
+        chatViewSection.style.display = chatViewEnabled ? 'grid' : 'none';
+      }
+      if (chatToggleButton instanceof HTMLButtonElement) {
+        chatToggleButton.setAttribute('aria-pressed', chatViewEnabled ? 'true' : 'false');
+        chatToggleButton.textContent = chatViewEnabled ? 'Detailed' : 'Chat';
+      }
+      if (chatInput instanceof HTMLTextAreaElement && chatInput.value !== panelState.chatComposerDraft) {
+        chatInput.value = panelState.chatComposerDraft;
+      }
+      updateChatComposerState();
+      focusChatComposerInput();
+    };
+
+    applyChatViewState();
+
+    if (chatToggleButton instanceof HTMLButtonElement) {
+      chatToggleButton.addEventListener('click', () => {
+        persistPanelState({ chatViewEnabled: panelState.chatViewEnabled !== true });
+        applyChatViewState();
+      });
+    }
+
+    if (chatInput instanceof HTMLTextAreaElement) {
+      chatInput.addEventListener('input', () => {
+        persistPanelState({ chatComposerDraft: chatInput.value });
+        updateChatComposerState();
+      });
+      chatInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' || event.shiftKey) {
+          return;
+        }
+        event.preventDefault();
+        if (chatSendButton instanceof HTMLButtonElement && !chatSendButton.disabled) {
+          chatSendButton.click();
+        }
+      });
+    }
+
+    if (chatSendButton instanceof HTMLButtonElement) {
+      chatSendButton.addEventListener('click', () => {
+        if (!(chatInput instanceof HTMLTextAreaElement) || !(chatComposer instanceof HTMLElement)) {
+          return;
+        }
+        const prompt = chatInput.value.trim();
+        const tracePath = chatComposer.dataset.chatTracePath || '';
+        if (!prompt || !tracePath || chatSubmitPending) {
+          updateChatComposerState();
+          return;
+        }
+        chatSubmitPending = true;
+        updateChatComposerState();
+        persistPanelState({ chatComposerDraft: '' });
+        chatInput.value = '';
+        vscodeApi.postMessage({ type: 'submitChatTurn', prompt });
       });
     }
 
@@ -4943,6 +5598,15 @@ export function renderTraceableSubagentPanelHtml(
       if (event?.data?.type === 'revealLatest') {
         persistPanelState({ followLatest: true });
         scheduleScrollToLatestEvent();
+        return;
+      }
+      if (event?.data?.type === 'chatSubmitState' && event.data.pending === false) {
+        chatSubmitPending = false;
+        if (chatInput instanceof HTMLTextAreaElement) {
+          chatInput.value = panelState.chatComposerDraft;
+        }
+        updateChatComposerState();
+        focusChatComposerInput();
       }
     });
 
@@ -4960,7 +5624,9 @@ export function renderTraceableSubagentPanelHtml(
         return;
       }
       try {
-        vscodeApi.postMessage(JSON.parse(message));
+        if (!dispatchDataMessage(clickTarget)) {
+          return;
+        }
       } catch {
         // ignore malformed payloads in the view layer
       }
@@ -5001,6 +5667,7 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     private readonly extensionUri: vscode.Uri,
     private readonly onExportMarkdown: () => Promise<void>,
     private readonly onOpenFile: (target: string | TraceableResolvedPathTarget, startLine?: number, endLine?: number, baseDir?: string) => Promise<void>,
+    private readonly onSubmitChatTurn: (input: { parentTracePath: string; userInput: string }) => Promise<void>,
     private readonly onLoadToolDetail: (callId: string) => Promise<PanelLoadedToolDetail | undefined>,
     private readonly onStopRun: () => Promise<void>,
     private readonly onClosePanel: () => Promise<void>,
@@ -5052,6 +5719,21 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
         }
         const baseDir = typeof message.baseDir === "string" ? message.baseDir : undefined;
         await this.onOpenFile(message.filePath, startLine, endLine, baseDir);
+        return;
+      }
+      if (message.type === "submitChatTurn" && typeof message.prompt === "string") {
+        const parentTracePath = this.snapshot.evidenceFile?.filePath?.trim();
+        const userInput = message.prompt.trim();
+        if (!parentTracePath || !userInput) {
+          await this.view?.webview.postMessage({ type: "chatSubmitState", pending: false });
+          return;
+        }
+        try {
+          await this.onSubmitChatTurn({ parentTracePath, userInput });
+        } catch {
+          await this.view?.webview.postMessage({ type: "chatSubmitState", pending: false });
+          return;
+        }
         return;
       }
       if (message.type === "loadToolDetail" && typeof message.callId === "string") {

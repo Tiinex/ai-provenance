@@ -1044,6 +1044,37 @@ function normalizeInheritedModelSelector(value: unknown): TraceableModelSelector
     : undefined;
 }
 
+function deriveContinuationInheritedModelSelector(
+  parentResult: TraceableSubagentRunResult | undefined,
+  parentRequest: Record<string, unknown>
+): TraceableModelSelector | undefined {
+  const exactParentModel = normalizeInheritedModelSelector(isRecord(parentResult?.model) ? parentResult.model : undefined);
+  if (exactParentModel?.id) {
+    return exactParentModel;
+  }
+
+  const runtimeDecisionSummary = isRecord(parentResult?.runtimeDecisionSummary)
+    ? parentResult.runtimeDecisionSummary
+    : undefined;
+  const modelSelection = isRecord(runtimeDecisionSummary?.modelSelection)
+    ? runtimeDecisionSummary.modelSelection
+    : undefined;
+  const matchedSelector = isRecord(modelSelection?.matchedSelector)
+    ? modelSelection.matchedSelector
+    : undefined;
+  const runtimeSelectedModel = normalizeModelSelector({
+    vendor: getTrimmedString(matchedSelector?.vendor),
+    family: getTrimmedString(matchedSelector?.family),
+    id: getTrimmedString(modelSelection?.selectedModelId) || getTrimmedString(matchedSelector?.id),
+    version: getTrimmedString(matchedSelector?.version)
+  });
+  if (runtimeSelectedModel.id || runtimeSelectedModel.vendor || runtimeSelectedModel.family || runtimeSelectedModel.version) {
+    return runtimeSelectedModel;
+  }
+
+  return normalizeInheritedModelSelector(parentRequest.modelSelector);
+}
+
 function mergeContinuationSummaries(...values: Array<string | undefined>): string | undefined {
   const normalized = values
     .flatMap((value) => getTrimmedString(value) ? [getTrimmedString(value)!] : [])
@@ -1181,6 +1212,7 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
   const inheritedCarriedContext = normalizeInheritedCarriedContext(parentRequest.carriedContext);
   const inheritedActiveCarryForward = normalizeTraceableCarryForwardState(parsed.result?.activeCarryForward);
   const continuationSummary = buildParentContinuationSummary(resolvedParentTracePath, parsed.result);
+  const inheritedModelSelector = deriveContinuationInheritedModelSelector(parsed.result, parentRequest);
   const inheritedInputMode = normalizeTraceableInputMode(parentRequest.inputMode);
   const effectiveInputMode = normalizedInputMode ?? inheritedInputMode;
   const effectiveInput: TraceableSubagentInput = {
@@ -1203,7 +1235,7 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
     activeCarryForward: input.activeCarryForward ?? inheritedActiveCarryForward,
     wrapperPolicy: input.wrapperPolicy ?? normalizeInheritedWrapperPolicy(parentRequest.wrapperPolicy),
     budgetPolicy: input.budgetPolicy ?? normalizeInheritedBudgetPolicy(parentRequest.budgetPolicy),
-    modelSelector: input.modelSelector ?? normalizeInheritedModelSelector(parentRequest.modelSelector),
+    modelSelector: input.modelSelector ?? inheritedModelSelector,
     allowedToolNames: input.allowedToolNames ?? getTrimmedStringArray(parentRequest.allowedToolNames),
     blockedToolNames: input.blockedToolNames ?? getTrimmedStringArray(parentRequest.blockedToolNames)
   };
@@ -2196,6 +2228,20 @@ function normalizeMissingItems(value: unknown): TraceableSubagentMissingItem[] {
     });
 }
 
+function uniqueMissingItems(items: TraceableSubagentMissingItem[]): TraceableSubagentMissingItem[] {
+  const seen = new Set<string>();
+  const unique: TraceableSubagentMissingItem[] = [];
+  for (const item of items) {
+    const key = `${item.kind}\u0000${item.label}\u0000${item.reason}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(item);
+  }
+  return unique;
+}
+
 function normalizeSteps(value: unknown): TraceableSubagentStep[] {
   const normalizeStepStatus = (status: unknown, fallback: TraceableStepStatus): TraceableStepStatus => {
     if (status === "planned"
@@ -2327,6 +2373,17 @@ function normalizeStopReasonValue(value: unknown): TraceableStopReason | undefin
     return "completed";
   }
   return undefined;
+}
+
+function classifyTraceableHostFailureStopReason(message: string): TraceableStopReason {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) {
+    return "tool_blocked";
+  }
+  if (/(filtered|filtering|content filter|content policy|policy|refus|cannot assist|can't assist|cannot help|can't help|not assist with that request)/u.test(normalized)) {
+    return "policy_stop";
+  }
+  return "tool_blocked";
 }
 
 function normalizeCompletionClaimValue(value: unknown, stopReason: TraceableStopReason | undefined): TraceableCompletionClaim | undefined {
@@ -2493,12 +2550,52 @@ function buildSalvagedChildPayload(
   };
 }
 
-function normalizeParsedPayload(value: unknown): TraceableSubagentChildPayload | undefined {
+function collectUnsupportedObservedStepClaims(
+  rawSteps: unknown,
+  toolCalls: TraceableSubagentToolCallRecord[]
+): TraceableSubagentMissingItem[] {
+  if (!Array.isArray(rawSteps)) {
+    return [];
+  }
+  const observedReadPaths = new Set(
+    extractObservedReadTargetCounts(toolCalls)
+      .map(({ filePath }) => filePath.trim().toLowerCase())
+      .filter((filePath) => filePath.length > 0)
+  );
+  return rawSteps
+    .filter(isRecord)
+    .flatMap((item) => {
+      const filePath = typeof item.filePath === "string" ? item.filePath.trim() : "";
+      if (!filePath) {
+        return [];
+      }
+      const action = typeof item.action === "string" ? item.action.trim() : "";
+      const observation = typeof item.observation === "string" ? item.observation.trim() : "";
+      const source = typeof item.source === "string" ? item.source.trim() : "";
+      const combined = `${action} ${observation} ${source}`.trim();
+      if (!/\b(read|load(?:ed)?|inspect(?:ed)?|review(?:ed)?|analy[sz]ed?)\b/u.test(combined)) {
+        return [];
+      }
+      if (observedReadPaths.has(filePath.toLowerCase())) {
+        return [];
+      }
+      return [{
+        kind: "toolCall" as const,
+        label: filePath,
+        reason: `Child payload reported reading or analyzing ${filePath}, but TRACEABLE recorded no successful readFile tool call for that file.`
+      }];
+    });
+}
+
+function normalizeParsedPayload(value: unknown, toolCalls: TraceableSubagentToolCallRecord[] = []): TraceableSubagentChildPayload | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
   const steps = normalizeSteps(value.steps);
-  const expectedButMissing = normalizeMissingItems(value.expectedButMissing);
+  const expectedButMissing = uniqueMissingItems([
+    ...normalizeMissingItems(value.expectedButMissing),
+    ...collectUnsupportedObservedStepClaims(value.steps, toolCalls)
+  ]);
   const opaqueDelegations = normalizeOpaqueDelegations(value.opaqueDelegations);
   const normalizedStopReason = normalizeStopReasonValue(value.stopReason);
   const rawCompletionClaim = normalizeCompletionClaimValue(value.completionClaim, normalizedStopReason);
@@ -2599,7 +2696,10 @@ function extractBalancedJsonObjectCandidates(rawText: string): string[] {
   return candidates;
 }
 
-export function extractTraceableSubagentPayload(rawText: string): TraceableSubagentChildPayload | undefined {
+export function extractTraceableSubagentPayload(
+  rawText: string,
+  toolCalls: TraceableSubagentToolCallRecord[] = []
+): TraceableSubagentChildPayload | undefined {
   const candidates = [rawText.trim()];
   const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fencedMatch?.[1]) {
@@ -2618,7 +2718,7 @@ export function extractTraceableSubagentPayload(rawText: string): TraceableSubag
     }
     try {
       const parsed = JSON.parse(candidate);
-      const normalized = normalizeParsedPayload(parsed);
+      const normalized = normalizeParsedPayload(parsed, toolCalls);
       if (normalized) {
         return normalized;
       }
@@ -3048,6 +3148,9 @@ function resolveTraceStatus(
 ): TraceableStatus {
   if (!parsedPayload) {
     return "trace-incomplete";
+  }
+  if (parsedPayload.expectedButMissing.some((item) => item.kind === "toolCall")) {
+    return "trace-conflicted";
   }
   if (parsedPayload.completionClaim === "complete" && toolCalls.some((entry) => entry.result === "failure" || entry.result === "notRun" || entry.result === "timeout")) {
     return "trace-conflicted";
@@ -3880,11 +3983,12 @@ export async function runTraceableSubagent(
           rawModelText: lastRawModelText
         });
       }
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return finalizeResult(fallbackResult(
         input,
         toolCalls,
-        error instanceof Error ? error.message : String(error),
-        "tool_blocked",
+        errorMessage,
+        classifyTraceableHostFailureStopReason(errorMessage),
         "unresolved",
         {
           model: modelInfo,
@@ -3938,11 +4042,12 @@ export async function runTraceableSubagent(
           rawModelText: lastRawModelText
         });
       }
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return finalizeResult(fallbackResult(
         input,
         toolCalls,
-        error instanceof Error ? error.message : String(error),
-        "tool_blocked",
+        errorMessage,
+        classifyTraceableHostFailureStopReason(errorMessage),
         "partial",
         {
           model: modelInfo,
@@ -4011,7 +4116,7 @@ export async function runTraceableSubagent(
           selectedModel: modelInfo
         });
       }
-      const parsedPayload = extractTraceableSubagentPayload(lastRawModelText);
+      const parsedPayload = extractTraceableSubagentPayload(lastRawModelText, toolCalls);
       if (!parsedPayload) {
         return finalizeResult(buildUnparseableChildPayloadFallback(
           input,

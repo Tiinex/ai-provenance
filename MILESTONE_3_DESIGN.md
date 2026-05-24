@@ -75,6 +75,15 @@ The current code shape already suggests a few narrow v1 decisions that should re
 - Completed runs should not automatically emit active carry-forward. A completed run may emit a recoverable handoff package when the model has grounded reason to think later multi-step work is likely, but that package should stay recoverable rather than auto-inherited.
 - Viewer observability should derive lineage from artifact metadata rather than mutating parents to store child lists. Parent artifacts remain the durable source of truth; the viewer computes parent, children, and sibling relationships from the saved lineage fields.
 
+## Panel Chat Projection Note
+
+- A future TRACEABLE `chat` toggle should be a pure UX projection, not a new runtime mode.
+- Toggling chat view must not change `traceStatus`, `stopReason`, `completionClaim`, carry-state, evidence basis, or any other persisted truth surface.
+- Chat view may hide status, timing, tool, and handoff detail, but it should still project the current trace truthfully from the same snapshot.
+- Chat view should show input and output even when the underlying run is `incomplete` or `unresolved`; hiding the rest of the panel must not imply that the run was complete.
+- A bottom composer in chat view should continue the current saved trace through normal TRACEABLE continuation, not create a parallel chat-only state system.
+- Future drag-and-drop attachments, if added, should extend the same composer path rather than introducing a second continuation surface.
+
 ## Host API Read
 
 The current VS Code tool API shape is favorable for Milestone 3 cancellation work.
@@ -595,7 +604,8 @@ Initial observed comparison log:
 
 | Scenario | Trace artifact | Current read | What this does prove | What this does not prove yet |
 | --- | --- | --- | --- | --- |
-| `NC-1` Greeting only from `.agent.md` | `04-anchor.trace.md` | The first-turn artifact was created in the configured export folder, but the run ended `trace-incomplete` with `tool_blocked`, `Runtime Tool Calls: 0`, and final summary `Response got filtered.` | The new-chat operator flow, multi-root export targeting, and saved artifact creation worked end to end for an agent entry point. | It does not yet prove that greeting handling is native-chat-like or that the stop classification is the best available label for a filtered greeting-only response. |
+| `NC-1` Greeting only from `.agent.md` | `04-anchor.trace.md` | Native Local chat on visible model `copilot/gpt-5.4` persisted a minimal normal greeting reply (`hi`), while TRACEABLE on visible model `copilot/gpt-5-mini` created the artifact but ended `trace-incomplete` with `tool_blocked`, `Runtime Tool Calls: 0`, and final summary `Response got filtered.` | The new-chat operator flow, multi-root export targeting, and saved artifact creation worked end to end for an agent entry point, and the greeting comparison is now concrete enough to show a startup-feel gap between native and TRACEABLE on this role. | It does not yet prove that TRACEABLE greeting handling is intrinsically worse independent of model choice, and it does not yet prove that `tool_blocked` is the best durable label for this filtered greeting-only failure shape. |
+| `NC-2` Simple real question | `05-anchor.trace.md` | Native Local chat with the same role prompt persisted a normal role-explanation summary on visible model `copilot/gpt-5.4`, while TRACEABLE on visible model `copilot/gpt-5-mini` ended `trace-incomplete` with `tool_blocked`, `Runtime Tool Calls: 0`, and final summary `Response got filtered.` | The comparison is concrete enough to show that first-turn user experience can diverge sharply between native and TRACEABLE even on a low-tool prompt, and that visible model choice is an immediate confound worth tracking. | It does not yet prove that TRACEABLE is intrinsically worse on this scenario, because the visible models were different and the native persisted transcript was only partially available through bounded inspection. |
 | `NC-4` Greeting then resume | `03-01-claude-haiku-4-5.trace.md` | The continuation child inherited parent context, stayed in DIRECT mode, made `Runtime Tool Calls: 0`, and closed with a coherent bounded summary rather than losing the lineage thread. | `Resume Traceable Chat` can preserve enough inherited context to make a lightweight follow-up turn technically coherent and inspectable. | It does not yet prove fresh re-grounding on turn two, because the child explicitly relied on carried context and did not need a new read. |
 
 Interpretation rule for early rows:
@@ -603,6 +613,7 @@ Interpretation rule for early rows:
 - use the first few rows mainly to separate workflow success from answer-quality success
 - when a row shows `Runtime Tool Calls: 0`, do not overstate it as evidence of fresh grounding unless the scenario was explicitly designed to avoid new reads
 - treat greeting-only rows as startup-feel evidence first, not as broad proof about role quality on substantive tasks
+- when native and TRACEABLE land on different visible models, record that mismatch explicitly as a confound before drawing a product-level conclusion about role quality
 
 First runnable baseline set:
 
