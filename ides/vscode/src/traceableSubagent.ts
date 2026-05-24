@@ -349,6 +349,7 @@ export interface TraceableSubagentInput {
   parentTracePath?: string;
   parentFrame?: string;
   parentTask?: string;
+  parentRoles?: string | string[];
   outputMode?: TraceableSubagentOutputMode;
   exportToFolder?: string;
   inputMode?: TraceableSubagentInputMode;
@@ -794,6 +795,7 @@ export interface TraceableAgentCatalogEntry {
   artifactStem: string;
   filePath: string;
   workspaceFolderName: string;
+  bodySignature: string;
   modelDeclaration?: string;
   modelDeclarations: string[];
   toolDeclarations: string[];
@@ -874,6 +876,14 @@ function getTrimmedStringArray(value: unknown): string[] | undefined {
   }
   const normalized = uniqueStrings(value.filter((entry): entry is string => typeof entry === "string"));
   return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeTraceableParentRoles(value: string | string[] | undefined): string[] | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : undefined;
+  }
+  return getTrimmedStringArray(value);
 }
 
 function normalizeInheritedRequestExpectations(value: unknown): TraceableRequestExpectations | undefined {
@@ -1159,6 +1169,7 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
   const trimmedParentTask = input.parentTask?.trim();
   const trimmedParentFrame = input.parentFrame?.trim();
   const requestedParentTracePath = input.parentTracePath?.trim();
+  const normalizedParentRoles = await resolveValidatedTraceableParentRoles(input.parentRoles);
 
   if (isDirectTraceableInputMode(normalizedInputMode)) {
     if (!trimmedUserInput) {
@@ -1185,7 +1196,12 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
     if (usesLegacyTraceablePromptContract(normalizedInputMode) && !resolveTraceableParentFrame(input)) {
       throw new Error("run_traceable_subagent requires parentTask or parentFrame for OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC runs.");
     }
-    return { input };
+    return {
+      input: {
+        ...input,
+        parentRoles: normalizedParentRoles
+      }
+    };
   }
 
   const resolvedParentTracePath = await resolveTraceableContinuationParentPath(requestedParentTracePath);
@@ -1230,6 +1246,7 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
     validationMode: input.validationMode ?? normalizeTraceableValidationMode(parentRequest.validationMode),
     reveal: input.reveal,
     agentRole: input.agentRole ?? normalizeInheritedAgentRole(parentRequest.agentRole),
+    parentRoles: normalizedParentRoles,
     parentExpectations: input.parentExpectations ?? normalizeInheritedRequestExpectations(parentRequest.parentExpectations),
     carriedContext: mergeContinuationCarriedContext(inheritedCarriedContext, input.carriedContext, continuationSummary),
     activeCarryForward: input.activeCarryForward ?? inheritedActiveCarryForward,
@@ -1278,6 +1295,26 @@ function normalizeAgentRole(input: TraceableAgentRole | undefined): TraceableAge
     name: name || path.basename(filePath ?? "", ".agent.md"),
     filePath: filePath || undefined
   };
+}
+
+async function resolveValidatedTraceableParentRoles(parentRoles: string | string[] | undefined): Promise<string[] | undefined> {
+  const normalizedParentRoles = normalizeTraceableParentRoles(parentRoles);
+  if (!normalizedParentRoles?.length) {
+    return undefined;
+  }
+  const catalog = await listTraceableAgentCatalogEntries();
+  const validatedRoles: string[] = [];
+  for (const roleName of normalizedParentRoles) {
+    const matches = catalog.filter((entry) => sameTraceableAgentDisplayName(entry.displayName, roleName));
+    if (matches.length > 1) {
+      throw new Error(`Traceable parent role ${JSON.stringify(roleName)} matched multiple agent artifacts by display name. Use an exact unique display name. ${formatTraceableAgentResolutionHelp(roleName, catalog, matches.map((entry) => entry.filePath))}`);
+    }
+    if (!matches[0]) {
+      throw new Error(`Traceable parent role ${JSON.stringify(roleName)} is not a known traceable agent display name. ${formatTraceableAgentResolutionHelp(roleName, catalog)}`);
+    }
+    validatedRoles.push(matches[0].displayName);
+  }
+  return uniqueStrings(validatedRoles);
 }
 
 function normalizeHumanModelLabel(value: string): string {
@@ -1427,6 +1464,13 @@ function sameTraceableAgentDisplayName(left: string, right: string): boolean {
   return normalizeTraceableAgentDisplayName(left) === normalizeTraceableAgentDisplayName(right);
 }
 
+function buildTraceableAgentBodySignature(body: string): string {
+  return body
+    .normalize("NFKC")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
 async function readTraceableAgentCatalogEntry(filePath: string, workspaceFolderName: string): Promise<TraceableAgentCatalogEntry | undefined> {
   if (!isRuntimeAgentArtifactPath(filePath)) {
     return undefined;
@@ -1454,6 +1498,7 @@ async function readTraceableAgentCatalogEntry(filePath: string, workspaceFolderN
     artifactStem: path.basename(filePath, ".agent.md"),
     filePath,
     workspaceFolderName,
+    bodySignature: buildTraceableAgentBodySignature(parsed.body),
     modelDeclaration: modelDeclarations[0],
     modelDeclarations,
     toolDeclarations: parseFrontmatterStringList(parsed.fields.get("tools")),
@@ -2030,6 +2075,7 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   const explicitBudgetPolicy = normalizeExplicitBudgetPolicy(input);
   const normalizedModelSelector = normalizeModelSelector(input.modelSelector);
   const normalizedAgentRole = normalizeAgentRole(input.agentRole);
+  const normalizedParentRoles = normalizeTraceableParentRoles(input.parentRoles);
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const normalizedValidationMode = normalizeTraceableValidationMode(input.validationMode);
   const normalizedOutputMode = normalizeTraceableOutputMode(input.outputMode);
@@ -2078,6 +2124,9 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   if (normalizedAgentRole) {
     request.agentRole = normalizedAgentRole;
   }
+  if (normalizedParentRoles?.length) {
+    request.parentRoles = normalizedParentRoles;
+  }
 
   if (input.parentExpectations) {
     request.parentExpectations = input.parentExpectations;
@@ -2111,9 +2160,16 @@ export function buildTraceableSubagentPromptSections(
   const wrapperPolicy = normalizedWrapperPolicy(input);
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const normalizedValidationMode = normalizeTraceableValidationMode(input.validationMode);
+  const normalizedParentRoles = normalizeTraceableParentRoles(input.parentRoles);
   const fileContextAnchors = resolveTraceableFileContextAnchors(input.carriedContext?.fileContext);
   const normalizedActiveCarryForward = normalizeTraceableCarryForwardState(input.activeCarryForward);
   const promptTexts = [
+    ...(normalizedParentRoles?.length
+      ? [
+        `Parent roles for the incoming turn:\n${JSON.stringify(normalizedParentRoles, null, 2)}`,
+        "Parent-role rule:\n- Treat parentRoles as the source-side roles behind the current userInput.\n- Do not treat parentRoles as your own role identity.\n- Do not answer as if you are any parent role unless the explicit userInput asks for quoted or role-played output.\n- Use parentRoles only as light continuity metadata that may help coherence about who the message came from."
+      ]
+      : []),
     ...(input.carriedContext?.priorTurnsSummary?.trim()
       ? [
         `Prior turns summary for this run:\n${input.carriedContext.priorTurnsSummary.trim()}`,

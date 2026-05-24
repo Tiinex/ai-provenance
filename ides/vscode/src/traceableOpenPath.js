@@ -1,4 +1,4 @@
-import path from "node:path";
+const path = require("node:path");
 
 /**
  * @typedef {{ name: string, fsPath: string }} TraceableWorkspaceFolder
@@ -8,7 +8,7 @@ import path from "node:path";
  * @param {string} value
  * @returns {string}
  */
-export function normalizeWorkspaceLookupValue(value) {
+function normalizeWorkspaceLookupValue(value) {
   return value.replace(/\\+/g, "/").replace(/^\.\//u, "").replace(/^\/+|\/+$/gu, "").toLowerCase();
 }
 
@@ -16,7 +16,7 @@ export function normalizeWorkspaceLookupValue(value) {
  * @param {string} value
  * @returns {string}
  */
-export function normalizeComparableWorkspacePath(value) {
+function normalizeComparableWorkspacePath(value) {
   return path.resolve(value)
     .replace(/\\+/g, "/")
     .replace(/\/+$/u, "")
@@ -28,7 +28,7 @@ export function normalizeComparableWorkspacePath(value) {
  * @param {TraceableWorkspaceFolder[]} workspaceFolders
  * @returns {boolean}
  */
-export function isPathWithinAnyWorkspaceRoot(targetPath, workspaceFolders) {
+function isPathWithinAnyWorkspaceRoot(targetPath, workspaceFolders) {
   const normalizedTarget = normalizeComparableWorkspacePath(targetPath);
   return workspaceFolders.some((folder) => {
     const normalizedRoot = normalizeComparableWorkspacePath(folder.fsPath);
@@ -41,7 +41,7 @@ export function isPathWithinAnyWorkspaceRoot(targetPath, workspaceFolders) {
  * @param {TraceableWorkspaceFolder[]} workspaceFolders
  * @returns {string | undefined}
  */
-export function getUniqueWorkspaceFolderMatchByName(name, workspaceFolders) {
+function getUniqueWorkspaceFolderMatchByName(name, workspaceFolders) {
   const normalizedName = normalizeWorkspaceLookupValue(name);
   if (!normalizedName) {
     return undefined;
@@ -66,7 +66,7 @@ export function getUniqueWorkspaceFolderMatchByName(name, workspaceFolders) {
  * @param {string} [platform]
  * @returns {Promise<string | undefined>}
  */
-export async function resolveDriveLessAbsolutePathOnWindows(targetPath, workspaceFolders, cwdRoot, pathExists, platform = process.platform) {
+async function resolveDriveLessAbsolutePathOnWindows(targetPath, workspaceFolders, cwdRoot, pathExists, platform = process.platform) {
   if (platform !== "win32" || !/^\/(?!\/)/u.test(targetPath)) {
     return undefined;
   }
@@ -97,7 +97,7 @@ export async function resolveDriveLessAbsolutePathOnWindows(targetPath, workspac
  * @param {(filePath: string) => Promise<boolean>} pathExists
  * @returns {Promise<string | undefined>}
  */
-export async function resolveRelativeOpenPathInWorkspace(targetPath, workspaceFolders, pathExists) {
+async function resolveRelativeOpenPathInWorkspace(targetPath, workspaceFolders, pathExists) {
   const directCandidates = [];
   const workspaceRootCandidates = [];
   const normalizedTarget = normalizeWorkspaceLookupValue(targetPath);
@@ -138,3 +138,12 @@ export async function resolveRelativeOpenPathInWorkspace(targetPath, workspaceFo
   }
   return undefined;
 }
+
+module.exports = {
+  normalizeWorkspaceLookupValue,
+  normalizeComparableWorkspacePath,
+  isPathWithinAnyWorkspaceRoot,
+  getUniqueWorkspaceFolderMatchByName,
+  resolveDriveLessAbsolutePathOnWindows,
+  resolveRelativeOpenPathInWorkspace
+};

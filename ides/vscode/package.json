@@ -108,6 +108,20 @@
               "type": "string",
               "description": "The exact bounded investigative task that the parent wants the child lane to perform. Prefer non-leading wording that preserves inquiry without baking in the target conclusion. Required for OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC. Omit this in DIRECT and RESUME."
             },
+            "parentRoles": {
+              "description": "Optional source-side parent role display names for the current userInput. Accepts one exact display name string or an array of exact display names. Values are validated against the current `list_traceable_agents` catalog at call time and fail fast when a provided display name does not exist.",
+              "oneOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            },
             "outputMode": {
               "type": "string",
               "description": "Optional parent-facing output mode for the child run. When omitted, the runtime uses its normal bounded summary behavior, or summary-with-evidence-path when exportToFolder is present.",
@@ -519,6 +533,12 @@
           "default": "",
           "scope": "resource",
           "description": "Optional default export folder for New Traceable Chat when it starts from an `.agent.md` file. The command surface writes an absolute path so multi-root workspaces do not have to guess which repo a relative path belongs to. Relative values are only resolved automatically in single-root workspaces; an empty value means ask whether to pick a folder or start unsaved."
+        },
+        "tiinex.aiProvenance.allRolesAvailableAsChatSender": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "description": "Control which roles the optional chat sender picker exposes for TRACEABLE chat turns and New Traceable Chat. `false` limits the sender list to human roles only, and `true` exposes every traceable role as a possible sender."
         },
         "tiinex.aiProvenance.traceablePreferredModels": {
           "type": "array",

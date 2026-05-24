@@ -221,6 +221,7 @@ export interface TraceableSubagentInput {
   parentTracePath?: string;
   parentFrame?: string;
   parentTask?: string;
+  parentRoles?: string | string[];
   outputMode?: TraceableSubagentOutputMode;
   exportToFolder?: string;
   inputMode?: TraceableSubagentInputMode;
@@ -540,6 +541,14 @@ function getTrimmedStringArray(value: unknown): string[] | undefined {
   return normalized.length > 0 ? uniqueStrings(normalized) : undefined;
 }
 
+export function normalizeTraceableParentRoles(value: string | string[] | undefined): string[] | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : undefined;
+  }
+  return getTrimmedStringArray(value);
+}
+
 export function resolveTraceableParentFrame(input: Pick<TraceableSubagentInput, "parentFrame" | "parentTask">): string {
   return input.parentFrame?.trim() || input.parentTask?.trim() || "";
 }
@@ -588,6 +597,7 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   const explicitBudgetPolicy = normalizeExplicitBudgetPolicy(input);
   const normalizedModelSelector = normalizeModelSelector(input.modelSelector);
   const normalizedAgentRole = normalizeAgentRole(input.agentRole);
+  const normalizedParentRoles = normalizeTraceableParentRoles(input.parentRoles);
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const normalizedValidationMode = normalizeTraceableValidationMode(input.validationMode);
   const normalizedOutputMode = normalizeTraceableOutputMode(input.outputMode);
@@ -634,6 +644,9 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   }
   if (normalizedAgentRole) {
     request.agentRole = normalizedAgentRole;
+  }
+  if (normalizedParentRoles?.length) {
+    request.parentRoles = normalizedParentRoles;
   }
   if (input.parentExpectations) {
     request.parentExpectations = input.parentExpectations;
