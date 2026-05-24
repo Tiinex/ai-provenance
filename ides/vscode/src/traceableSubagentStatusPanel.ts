@@ -3078,7 +3078,7 @@ function renderChatComposer(
   const traceFilePathAttribute = escapeHtml(traceFilePath);
   const evidenceFileStatus = snapshot.evidenceFile?.status;
   const running = snapshot.status.phase === "running";
-  const canSubmit = traceFilePath.length > 0 && evidenceFileStatus === "ready" && !running;
+  const canSubmit = traceFilePath.length > 0 && !running;
   const senderOptionsMarkup = [
     `<button class="chat-composer-sender-option" type="button" role="option" data-chat-sender-option="true" data-value="" data-label=""><span class="chat-composer-sender-option-label">&nbsp;</span></button>`,
     ...chatSenderRoleOptions.map((roleOption) => `<button class="chat-composer-sender-option" type="button" role="option" data-chat-sender-option="true" data-value="${escapeHtml(roleOption.value)}" data-label="${escapeHtml(roleOption.label)}"><span class="chat-composer-sender-option-label">${escapeHtml(roleOption.label)}</span></button>`)
@@ -3087,7 +3087,7 @@ function renderChatComposer(
     ? "Chat composer requires a saved TRACEABLE evidence file for continuation."
     : running
       ? "Please wait"
-      : evidenceFileStatus !== "ready"
+      : evidenceFileStatus && evidenceFileStatus !== "ready"
         ? "Please wait for the evidence file to finish exporting."
         : "Enter sends the next turn. Shift+Enter adds a new line.";
   return [

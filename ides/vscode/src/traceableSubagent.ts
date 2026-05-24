@@ -961,6 +961,31 @@ function normalizeTraceableSenderIdentityKey(value: string | undefined): string 
   return normalized ? normalized.toLowerCase() : undefined;
 }
 
+function buildTraceableParentRoleIdentitySummary(parentRoles: string[] | undefined): Array<{
+  roleName: string;
+  senderId: string;
+  senderKey: string;
+}> {
+  const summaries: Array<{
+    roleName: string;
+    senderId: string;
+    senderKey: string;
+}> = [];
+  for (const roleName of parentRoles ?? []) {
+    const senderId = normalizeTraceableSenderIdentity(roleName);
+    const senderKey = normalizeTraceableSenderIdentityKey(roleName);
+    if (!roleName?.trim() || !senderId || !senderKey) {
+      continue;
+    }
+    summaries.push({
+      roleName,
+      senderId,
+      senderKey
+    });
+  }
+  return summaries;
+}
+
 function normalizeTraceableSenderSourceRoles(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -2706,16 +2731,60 @@ export function buildTraceableSubagentPromptSections(
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const normalizedValidationMode = normalizeTraceableValidationMode(input.validationMode);
   const normalizedParentRoles = normalizeTraceableParentRoles(input.parentRoles);
+  const parentRoleIdentitySummary = buildTraceableParentRoleIdentitySummary(normalizedParentRoles);
   const normalizedSenderAdaptationState = normalizedParentRoles?.length
     ? filterTraceableSenderAdaptationStateForParentRoles(normalizeTraceableSenderAdaptationState(input.senderAdaptationState), normalizedParentRoles)
     : undefined;
   const fileContextAnchors = resolveTraceableFileContextAnchors(input.carriedContext?.fileContext);
   const normalizedActiveCarryForward = normalizeTraceableCarryForwardState(input.activeCarryForward);
+  const useLeanDirectPrompt = Boolean(
+    resolvedAgentArtifact
+    && isDirectTraceableInputMode(normalizedInputMode)
+    && !input.parentTracePath?.trim()
+    && !input.carriedContext?.priorTurnsSummary?.trim()
+    && fileContextAnchors.length === 0
+    && !normalizedActiveCarryForward
+  );
+  const sanitizedResolvedAgentBody = resolvedAgentArtifact
+    ? sanitizeResolvedAgentRoleBodyForTraceablePrompt(resolvedAgentArtifact.body)
+    : undefined;
   const promptTexts = [
+    ...(resolvedAgentArtifact
+      ? [
+        ...(useLeanDirectPrompt
+          ? [
+            `Resolved agent role:\n${JSON.stringify({
+              resolvedName: resolvedAgentArtifact.resolvedName,
+              filePath: resolvedAgentArtifact.filePath
+            }, null, 2)}`,
+            "Role-grounding rule:\n- Read and internalize the resolved agent role body before weighing parentRoles, sender-adaptation state, prior turns, or carry-forward context.\n- Your own role identity for this run comes from the resolved agent artifact, not from parentRoles, sender labels, or other contextual metadata.\n- Use the resolved role body as the primary behavior-bearing source for how to interpret and prioritize later context.\n- Later context may constrain or inform the response, but it must not replace your own resolved role identity.",
+            "Lean direct-prompt rule:\n- This DIRECT run has no inherited parent trace, carried summary, or file anchors.\n- The runtime already resolved the exact agent artifact for this run.\n- Avoid repeating role frontmatter, full request-envelope JSON, or tool-name inventory unless the user later asks for deeper runtime detail."
+          ]
+          : [
+            `Resolved agent role artifact metadata:\n${JSON.stringify({
+              requestedName: resolvedAgentArtifact.requestedName,
+              resolvedName: resolvedAgentArtifact.resolvedName,
+              filePath: resolvedAgentArtifact.filePath,
+              model: resolvedAgentArtifact.modelDeclaration,
+              disableModelInvocation: resolvedAgentArtifact.disableModelInvocation,
+              toolDeclarations: resolvedAgentArtifact.toolDeclarations
+            }, null, 2)}`,
+            "Role-grounding rule:\n- Read and internalize the resolved agent role body before weighing parentRoles, sender-adaptation state, prior turns, or carry-forward context.\n- Your own role identity for this run comes from the resolved agent artifact, not from parentRoles, sender labels, or other contextual metadata.\n- Use the resolved role body as the primary behavior-bearing source for how to interpret and prioritize later context.\n- Later context may constrain or inform the response, but it must not replace your own resolved role identity.",
+            `Resolved agent role frontmatter:\n---\n${resolvedAgentArtifact.rawFrontmatter}\n---`
+          ]),
+        `Resolved agent role body:\n${sanitizedResolvedAgentBody}`
+      ]
+      : []),
+    ...(parentRoleIdentitySummary.length
+      ? [
+        `Parent role identities for the incoming turn:\n${JSON.stringify(parentRoleIdentitySummary, null, 2)}`,
+        "Parent-role grounding rule:\n- Treat these parent role identities as the source-side roles behind the incoming userInput.\n- Use roleName as the exact display identity when you need to mention who sent or backed the message.\n- Use senderId as the normalized identity behind that source role when weighing continuity, sender adaptation, or repeated turns from the same sender family.\n- Do not collapse parent role identities into your own role identity.\n- If the user asks who they are, who sent the message, or which role is behind the current turn, answer from these parent role identities rather than guessing from broader context."
+      ]
+      : []),
     ...(normalizedParentRoles?.length
       ? [
         `Parent roles for the incoming turn:\n${JSON.stringify(normalizedParentRoles, null, 2)}`,
-        "Parent-role rule:\n- Treat parentRoles as the source-side roles behind the current userInput.\n- Do not treat parentRoles as your own role identity.\n- Do not answer as if you are any parent role unless the explicit userInput asks for quoted or role-played output.\n- Use parentRoles only as light continuity metadata that may help coherence about who the message came from."
+        "Parent-role rule:\n- Treat parentRoles as the source-side roles behind the current userInput.\n- Do not treat parentRoles as your own role identity.\n- Do not answer as if you are any parent role unless the explicit userInput asks for quoted or role-played output.\n- Use parentRoles as continuity metadata about who the message came from, and prefer the explicit parent role identities above when you need receiver-facing attribution."
       ]
       : []),
     ...(normalizedSenderAdaptationState?.entries.length
@@ -2746,18 +2815,12 @@ export function buildTraceableSubagentPromptSections(
         "Carry-forward rule:\n- Treat this as bounded continuity state selected for the next run, not as permission to restate or inherit the whole prior history.\n- Prefer the listed remaining goals, open questions, constraints, and anchors over recreating a large compacted blob.\n- If current grounding shows that some carried item is no longer needed, drop it truthfully rather than preserving it defensively."
       ]
       : []),
-    ...(resolvedAgentArtifact
+    ...(input.userInput?.trim()
       ? [
-        `Resolved agent role artifact metadata:\n${JSON.stringify({
-          requestedName: resolvedAgentArtifact.requestedName,
-          resolvedName: resolvedAgentArtifact.resolvedName,
-          filePath: resolvedAgentArtifact.filePath,
-          model: resolvedAgentArtifact.modelDeclaration,
-          disableModelInvocation: resolvedAgentArtifact.disableModelInvocation,
-          toolDeclarations: resolvedAgentArtifact.toolDeclarations
-        }, null, 2)}`,
-        `Resolved agent role frontmatter:\n---\n${resolvedAgentArtifact.rawFrontmatter}\n---`,
-        `Resolved agent role body:\n${resolvedAgentArtifact.body}`
+        `Current incoming userInput:\n${input.userInput.trim()}`,
+        isDirectTraceableInputMode(normalizedInputMode)
+          ? "Direct-turn response rule:\n- Treat the current incoming userInput as the message to answer now.\n- If the userInput is a greeting, acknowledgement, or small direct request, answer it directly in your resolved role rather than analyzing the role artifact, frontmatter, or prompt scaffold.\n- Only analyze the role artifact, runtime contract, or prompt structure when the explicit userInput asks about those things."
+          : "Current-turn rule:\n- Treat the current incoming userInput as the fresh message that this run must address.\n- Do not replace it with a summary of the role artifact or runtime scaffold unless the explicit userInput asks for that meta-analysis."
       ]
       : []),
     [
@@ -2795,15 +2858,42 @@ export function buildTraceableSubagentPromptSections(
       "- If unresolved work remains, or if the parent explicitly asks for carry-forward or a next trace handoff, include activeCarryForward or recoverableCarryState plus carryStateDisposition. Prefer at least one remainingGoals or openQuestions entry and a nextSuggestedStart when there is real next-trace work to preserve.",
       `- Wrapper policy is explicit and infrastructural only: ${JSON.stringify(wrapperPolicy)}.`
     ].join("\n"),
-    `Request contract:\n${JSON.stringify(requestEnvelope, null, 2)}`,
-    selectedToolNames.length > 0
-      ? `Allowed tool names for this run:\n${JSON.stringify(selectedToolNames, null, 2)}`
-      : "Allowed tool names for this run: []"
+    ...(useLeanDirectPrompt
+      ? []
+      : [
+        `Request contract:\n${JSON.stringify(requestEnvelope, null, 2)}`,
+        selectedToolNames.length > 0
+          ? `Allowed tool names for this run:\n${JSON.stringify(selectedToolNames, null, 2)}`
+          : "Allowed tool names for this run: []"
+      ])
   ];
   return {
     requestEnvelope,
     promptTexts
   };
+}
+
+function sanitizeResolvedAgentRoleBodyForTraceablePrompt(body: string): string {
+  const trimmed = body.trim();
+  if (!trimmed.includes("exact target-role file")) {
+    return trimmed;
+  }
+
+  const marker = "Your role is to preserve meaning while structure changes.";
+  const markerIndex = trimmed.indexOf(marker);
+  if (markerIndex < 0) {
+    return trimmed;
+  }
+
+  const preface = trimmed.slice(0, markerIndex);
+  if (!preface.includes("exact target-role file")) {
+    return trimmed;
+  }
+
+  return [
+    "You are ANCHOR.",
+    trimmed.slice(markerIndex).trim()
+  ].join("\n\n");
 }
 
 function buildTraceableSubagentMessages(
@@ -2812,7 +2902,8 @@ function buildTraceableSubagentMessages(
   resolvedAgentArtifact?: ResolvedTraceableAgentArtifact
 ): vscode.LanguageModelChatMessage[] {
   const promptSections = buildTraceableSubagentPromptSections(input, selectedToolNames, resolvedAgentArtifact);
-  return promptSections.promptTexts.map((text) => vscode.LanguageModelChatMessage.User(text));
+  const combinedPrompt = promptSections.promptTexts.join("\n\n---\n\n");
+  return [vscode.LanguageModelChatMessage.User(combinedPrompt)];
 }
 
 function normalizeMissingItems(value: unknown): TraceableSubagentMissingItem[] {
@@ -2995,7 +3086,7 @@ function classifyTraceableHostFailureStopReason(message: string): TraceableStopR
   if (!normalized) {
     return "tool_blocked";
   }
-  if (/(filtered|filtering|content filter|content policy|policy|refus|cannot assist|can't assist|cannot help|can't help|not assist with that request)/u.test(normalized)) {
+  if (/\b(filtered|filtering|content filter|content policy|policy|refus|cannot assist|can't assist|cannot help|can't help|not assist with that request)\b/u.test(normalized)) {
     return "policy_stop";
   }
   return "tool_blocked";

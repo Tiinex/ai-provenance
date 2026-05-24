@@ -1496,6 +1496,9 @@ function buildPromptableChatSenderRoleOptions(
   const defaultOption = resolvedDefaultSenderRole
     ? availableRoles.find((roleOption) => roleOption.value === resolvedDefaultSenderRole)
     : undefined;
+  const remainingRoles = defaultOption
+    ? availableRoles.filter((roleOption) => roleOption.value !== defaultOption.value)
+    : [...availableRoles];
   const options: PromptableChatSenderRoleOption[] = [];
   if (defaultOption) {
     options.push({
@@ -1509,7 +1512,7 @@ function buildPromptableChatSenderRoleOptions(
     description: "Leave the sender empty",
     senderRole: ""
   });
-  options.push(...availableRoles.map((roleOption) => ({
+  options.push(...remainingRoles.map((roleOption) => ({
     label: roleOption.label,
     description: roleOption.value !== roleOption.label ? roleOption.value : undefined,
     senderRole: roleOption.value
@@ -1943,9 +1946,14 @@ export function activate(context: vscode.ExtensionContext): void {
 </body>
 </html>`;
   };
-  const syncTraceableAuxiliaryViewsFromEvidenceSnapshot = (snapshot: TraceableSubagentDetailSnapshot): void => {
+  const syncTraceableAuxiliaryViewsFromEvidenceSnapshot = (
+    snapshot: TraceableSubagentDetailSnapshot,
+    options: { updatePanel?: boolean } = {}
+  ): void => {
     traceableStatusDetail.update(snapshot);
-    traceableStatusPanel.update(snapshot);
+    if (options.updatePanel === true) {
+      traceableStatusPanel.update(snapshot);
+    }
   };
   const refreshTraceableEvidencePanel = async (panelKey: string, resolvedUri: vscode.Uri, panel: vscode.WebviewPanel): Promise<boolean> => {
     const latestState = await readTraceableEvidenceViewState(resolvedUri);
@@ -2555,7 +2563,7 @@ export function activate(context: vscode.ExtensionContext): void {
           const latestState = await readTraceableEvidenceViewState(vscode.Uri.file(finalizedEvidenceFilePath));
           if (latestState.parsedState?.snapshot) {
             const latestSnapshot = traceableEvidence.updateSnapshot(latestState.parsedState.snapshot);
-            syncTraceableAuxiliaryViewsFromEvidenceSnapshot(latestSnapshot);
+            syncTraceableAuxiliaryViewsFromEvidenceSnapshot(latestSnapshot, { updatePanel: true });
             return finalized;
           }
         }
@@ -2619,6 +2627,16 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.window.showTextDocument(document, { preview: false });
   };
 
+  const openTraceableChatResultWhenPanelNotAutoRevealed = async (result: TraceableSubagentRunResult): Promise<void> => {
+    if (shouldAutoRevealTraceablePanel(true) || !result.evidenceFile?.filePath) {
+      return;
+    }
+    await openTraceableEvidenceEditor(result.evidenceFile.filePath, {
+      initialChatViewEnabled: true,
+      applyConfiguredDefaultView: false
+    });
+  };
+
   const resolveNewTraceableChatTarget = async (target?: vscode.Uri): Promise<NewTraceableChatResolvedTarget | undefined> => {
     const candidate = target ?? vscode.window.activeTextEditor?.document.uri;
     if (!candidate || candidate.scheme !== "file") {
@@ -2680,6 +2698,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const promptForChatSenderRoleSelection = async (resource?: vscode.Uri): Promise<string | undefined> => {
     const availableRoles = await listConfiguredChatSenderRoleOptions(resource);
     const resolvedDefaultSenderRole = await resolveConfiguredDefaultChatSenderRole(resource);
+    if (getConfiguredQuickSelectRole(resource) && resolvedDefaultSenderRole) {
+      return resolvedDefaultSenderRole;
+    }
     const promptableOptions = buildPromptableChatSenderRoleOptions(availableRoles, resolvedDefaultSenderRole);
     const picked = await vscode.window.showQuickPick(
       promptableOptions,
@@ -2740,7 +2761,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (senderRole === undefined) {
         return;
       }
-      await runTraceableSubagentFromCommand({
+      const result = await runTraceableSubagentFromCommand({
         agentRole: {
           name: selectedRole.name,
           filePath: selectedRole.filePath
@@ -2751,6 +2772,7 @@ export function activate(context: vscode.ExtensionContext): void {
         reveal: true,
         exportToFolder: resolvedTarget.folderPath
       }, "New Traceable Chat (folder)", { openResult: false });
+      await openTraceableChatResultWhenPanelNotAutoRevealed(result);
       return;
     }
     if (resolvedTarget.kind === "trace") {
@@ -2762,7 +2784,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (senderRole === undefined) {
         return;
       }
-      await runTraceableSubagentFromCommand({
+      const result = await runTraceableSubagentFromCommand({
         parentTracePath: resolvedTarget.filePath,
         userInput: firstMessage,
         ...(senderRole ? { parentRoles: senderRole } : {}),
@@ -2770,6 +2792,7 @@ export function activate(context: vscode.ExtensionContext): void {
         reveal: true,
         exportToFolder: path.dirname(resolvedTarget.filePath)
       }, "New Traceable Chat (continuation)", { openResult: false });
+      await openTraceableChatResultWhenPanelNotAutoRevealed(result);
       return;
     }
     const existingUnsavedState = unsavedTraceableAgentChatState.get(resolvedTarget.uri.fsPath);
@@ -2810,6 +2833,7 @@ export function activate(context: vscode.ExtensionContext): void {
         : {}),
       ...(exportFolder ? { exportToFolder: exportFolder } : {})
     }, "New Traceable Chat (agent)", { openResult: false });
+    await openTraceableChatResultWhenPanelNotAutoRevealed(result);
     if (result.evidenceFile?.filePath) {
       unsavedTraceableAgentChatState.delete(resolvedTarget.uri.fsPath);
       if (activeUnsavedTraceableAgentChatKey === resolvedTarget.uri.fsPath) {

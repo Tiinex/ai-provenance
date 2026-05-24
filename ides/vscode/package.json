@@ -576,7 +576,7 @@
             "type": "boolean",
             "default": true,
             "scope": "resource",
-            "description": "Reserved sender quick-pick preference for New Traceable Chat and Resume Traceable Chat. The sender quick pick remains visible, and a resolved default sender role is still promoted first so explicit sender selection stays stable."
+            "description": "Control whether New Traceable Chat and Resume Traceable Chat should immediately use the resolved default sender role when one is configured. `true` skips the sender dropdown when the default sender role resolves cleanly; `false` still shows the sender dropdown, with any resolved default sender role promoted first."
           },
           "tiinex.aiProvenance.chatCollapse": {
             "type": "string",
