@@ -504,6 +504,16 @@
           "default": "traceable",
           "description": "Control what the TRACEABLE View button and parent-trace openings use for `.trace.md` artifacts. `traceable` opens the reconstructed TRACEABLE evidence view, `markdown` opens the markdown preview, and `source` opens the source file directly."
         },
+        "tiinex.aiProvenance.defaultView": {
+          "type": "string",
+          "enum": [
+            "detailed",
+            "chat"
+          ],
+          "default": "detailed",
+          "scope": "resource",
+          "description": "Control the default TRACEABLE view when you open an existing `.trace.md` file directly or VS Code rehydrates that editor. `detailed` keeps the activity view as the default, and `chat` opens the simplified chat projection by default. Explicit New Traceable Chat and Resume Traceable Chat opens still use their own flow-specific initial view."
+        },
         "tiinex.aiProvenance.defaultNewTraceableChatExportTo": {
           "type": "string",
           "default": "",

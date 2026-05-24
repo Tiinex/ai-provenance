@@ -1221,6 +1221,11 @@ function getConfiguredIncludeSupportArtifacts(): boolean {
   return getProvenanceConfiguration().get<boolean>("includeSupportArtifacts", true);
 }
 
+function getConfiguredTraceableDefaultView(resource?: vscode.Uri): "detailed" | "chat" {
+  const configured = getProvenanceConfiguration(resource).get<string>("defaultView", "detailed");
+  return configured === "chat" ? "chat" : "detailed";
+}
+
 function resolveConfiguredNewTraceableChatExportFolder(resource?: vscode.Uri): string | undefined {
   const configured = getProvenanceConfiguration(resource).get<string>("defaultNewTraceableChatExportTo", "").trim();
   if (!configured) {
@@ -1338,6 +1343,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const traceableEvidencePanelSources = new Map<string, vscode.Uri>();
   const traceableEvidenceLoadedToolDetails = new Map<string, Map<string, TraceableSubagentToolDetail>>();
   const traceableEvidencePanelInitialChatViewByKey = new Map<string, boolean>();
+  const traceableEvidenceProgrammaticOpenByKey = new Set<string>();
   let activeTraceableEvidencePanelKey: string | undefined;
 
   const getTraceableEvidencePanelKey = (uri: vscode.Uri): string => getTraceableEvidenceResourceKey(uri);
@@ -1791,7 +1797,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
   const openTraceableEvidenceEditor = async (
     target?: vscode.Uri | string,
-    options: { initialChatViewEnabled?: boolean } = {}
+    options: { initialChatViewEnabled?: boolean; applyConfiguredDefaultView?: boolean } = {}
   ): Promise<void> => {
     const resolvedUri = await resolveActiveTraceableEvidenceUri(target);
     if (!resolvedUri || resolvedUri.scheme !== "file" || !resolvedUri.fsPath.toLowerCase().endsWith(".trace.md")) {
@@ -1799,8 +1805,18 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const panelKey = getTraceableEvidencePanelKey(resolvedUri);
-    if (options.initialChatViewEnabled === true) {
+    traceableEvidenceProgrammaticOpenByKey.add(panelKey);
+    const initialView = options.initialChatViewEnabled === true
+      ? "chat"
+      : options.initialChatViewEnabled === false
+        ? "detailed"
+        : options.applyConfiguredDefaultView !== false && getConfiguredTraceableDefaultView(resolvedUri) === "chat"
+          ? "chat"
+          : "detailed";
+    if (initialView === "chat") {
       traceableEvidencePanelInitialChatViewByKey.set(panelKey, true);
+    } else {
+      traceableEvidencePanelInitialChatViewByKey.delete(panelKey);
     }
     const { sourceDocument } = await readTraceableEvidenceViewState(resolvedUri);
     const tabsToReplace = getRelatedTraceableTabsToReplace(resolvedUri);
@@ -1833,6 +1849,10 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const panelKey = getTraceableEvidencePanelKey(resolvedUri);
+    const openedProgrammatically = traceableEvidenceProgrammaticOpenByKey.delete(panelKey);
+    if (!openedProgrammatically && getConfiguredTraceableDefaultView(resolvedUri) === "chat") {
+      traceableEvidencePanelInitialChatViewByKey.set(panelKey, true);
+    }
     panel.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, "node_modules", "@vscode", "codicons", "dist")]
@@ -1889,6 +1909,7 @@ export function activate(context: vscode.ExtensionContext): void {
     panelDisposables.push(panel.onDidChangeViewState((event) => {
       if (event.webviewPanel.active) {
         activeTraceableEvidencePanelKey = panelKey;
+        void flushRefresh();
       }
     }));
     panel.onDidDispose(() => {
@@ -2055,6 +2076,11 @@ export function activate(context: vscode.ExtensionContext): void {
         });
         const finalizedResult = await prepared.afterRun(result);
         output.appendLine("Traceable Evidence Chat Turn: completed.");
+        const finalizedEvidenceFilePath = finalizedResult.evidenceFile?.filePath?.trim();
+        if (!revealToPanel && pendingEvidenceFilePath && finalizedEvidenceFilePath && finalizedEvidenceFilePath !== pendingEvidenceFilePath) {
+          traceableEvidencePanels.get(getTraceableEvidencePanelKey(vscode.Uri.file(pendingEvidenceFilePath)))?.dispose();
+          await openTraceableEvidenceEditor(finalizedEvidenceFilePath, { initialChatViewEnabled: true });
+        }
         if (!revealToPanel && !pendingEvidenceFilePath) {
           if (finalizedResult.evidenceFile?.filePath) {
             await openTraceableEvidenceEditor(finalizedResult.evidenceFile.filePath, { initialChatViewEnabled: true });
@@ -2234,7 +2260,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const openTraceableCommandResult = async (result: TraceableSubagentRunResult): Promise<void> => {
     if (result.evidenceFile?.filePath) {
-      await openTraceableEvidenceEditor(result.evidenceFile.filePath);
+      await openTraceableEvidenceEditor(result.evidenceFile.filePath, { applyConfiguredDefaultView: false });
       return;
     }
     const document = await vscode.workspace.openTextDocument({
