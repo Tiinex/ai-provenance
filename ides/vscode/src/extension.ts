@@ -99,6 +99,8 @@ const TRACEABLE_SURFACE_OPTIONS: Array<{ label: string; description: string; sur
   { label: "Evidence Basis", description: "Persisted grounding anchors, carried context, and unsupported claims", surface: "evidence-basis" },
   { label: "Timeline", description: "Replay-oriented activity timeline with status events, recent tools, and decision points", surface: "timeline" },
   { label: "Carry Handoff", description: "Resolved carry-state disposition plus active or recoverable handoff details", surface: "carry-handoff" },
+  { label: "Latest Role State", description: "Latest known sender adaptation state for one role within the current lineage", surface: "latest-role-state" },
+  { label: "Latest Carry Package", description: "Latest active or recoverable carry package within the current lineage", surface: "latest-carry-package" },
   { label: "Tool Forensics", description: "Bounded per-call inputs, typed outputs, metadata, and raw-output capture state", surface: "tool-forensics" },
   { label: "Lineage", description: "Parent/current/children chain view over continuation and neighboring trace artifacts", surface: "lineage" },
   { label: "Tool Ledger", description: "Latest bounded tool-call ledger", surface: "tool-ledger" },
@@ -2276,6 +2278,11 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showWarningMessage(detail);
         throw error;
       }
+    },
+    (snapshot) => {
+      const evidenceFilePath = snapshot.evidenceFile?.filePath?.trim();
+      const resource = evidenceFilePath ? vscode.Uri.file(evidenceFilePath) : undefined;
+      return getConfiguredTraceableDefaultView(resource) === "chat";
     },
     async () => listConfiguredChatSenderRoleOptions(),
     async () => resolveConfiguredDefaultChatSenderRole(),

@@ -1,4 +1,4 @@
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
   buildTraceableMarkdownPathRenderOptions,
@@ -34,6 +34,8 @@ export type TraceableEvidenceSurface =
   | "status-history"
   | "tool-summary"
   | "file-summary"
+  | "latest-role-state"
+  | "latest-carry-package"
   | "state-json";
 
 export interface ViewTraceableSubagentInput {
@@ -41,6 +43,8 @@ export interface ViewTraceableSubagentInput {
   reveal?: boolean;
   outputMode?: "summary-with-evidence-path" | "full-markdown-with-evidence-path" | "evidence-path-only";
   surface?: TraceableEvidenceSurface;
+  roleName?: string;
+  senderId?: string;
   maxItems?: number;
   offset?: number;
   includeSupportArtifacts?: boolean;
@@ -318,6 +322,7 @@ export function parseTraceableEvidenceStateMarkdown(markdown: string): ParsedTra
         ...parsedSnapshot,
         resultSummary: parsedSnapshot.resultSummary ?? {
           finalSummary: compatResult.finalSummary,
+          senderAdaptationState: compatResult.senderAdaptationState,
           carryStateDisposition: compatResult.carryStateDisposition,
           activeCarryForward: compatResult.activeCarryForward,
           recoverableCarryState: compatResult.recoverableCarryState
@@ -417,6 +422,215 @@ function buildTraceableEvidenceLineageLines(input: {
   return lines;
 }
 
+type TraceableEvidenceLineageNode = {
+  filePath: string;
+  parsed: ParsedTraceableEvidenceState;
+};
+
+function readParsedTraceableEvidenceAtPath(filePath: string): ParsedTraceableEvidenceState | undefined {
+  try {
+    const markdown = readFileSync(filePath, "utf8");
+    return parseTraceableEvidenceStateMarkdown(markdown);
+  } catch {
+    return undefined;
+  }
+}
+
+function collectTraceableCurrentAndAncestorNodes(input: {
+  filePath: string;
+  parsed: ParsedTraceableEvidenceState;
+}): TraceableEvidenceLineageNode[] {
+  const nodes: TraceableEvidenceLineageNode[] = [{ filePath: input.filePath, parsed: input.parsed }];
+  const visited = new Set([path.resolve(input.filePath).toLowerCase()]);
+  let current: TraceableEvidenceLineageNode | undefined = nodes[0];
+  while (current) {
+    const parentReference = getString(getRecord(current.parsed.result)?.parentTracePath);
+    const resolvedParentPath = resolveTraceableEvidenceReference(current.filePath, parentReference);
+    if (!resolvedParentPath) {
+      break;
+    }
+    const normalizedParentPath = path.resolve(resolvedParentPath).toLowerCase();
+    if (visited.has(normalizedParentPath)) {
+      break;
+    }
+    visited.add(normalizedParentPath);
+    const parsedParent = readParsedTraceableEvidenceAtPath(resolvedParentPath);
+    if (!parsedParent) {
+      break;
+    }
+    current = { filePath: resolvedParentPath, parsed: parsedParent };
+    nodes.push(current);
+  }
+  return nodes;
+}
+
+function normalizeTraceableLookupToken(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLowerCase() : undefined;
+}
+
+function getSenderAdaptationEntries(parsed: ParsedTraceableEvidenceState): Record<string, unknown>[] {
+  const result = getRecord(parsed.result) ?? {};
+  const senderAdaptationState = getRecord(result.senderAdaptationState) ?? getRecord(parsed.snapshot.resultSummary?.senderAdaptationState);
+  return getArray(senderAdaptationState?.entries).flatMap((entry) => {
+    const record = getRecord(entry);
+    return record ? [record] : [];
+  });
+}
+
+function isMatchingTraceableSenderEntry(input: {
+  entry: Record<string, unknown>;
+  senderId?: string;
+  roleName?: string;
+}): boolean {
+  const normalizedSenderId = normalizeTraceableLookupToken(input.senderId);
+  const normalizedRoleName = normalizeTraceableLookupToken(input.roleName);
+  if (!normalizedSenderId && !normalizedRoleName) {
+    return false;
+  }
+  const entrySenderId = normalizeTraceableLookupToken(getString(input.entry.senderId));
+  const sourceRoles = getArray(input.entry.sourceRoles)
+    .map((value) => normalizeTraceableLookupToken(getString(value)))
+    .filter((value): value is string => Boolean(value));
+  if (normalizedSenderId && entrySenderId === normalizedSenderId) {
+    return true;
+  }
+  if (normalizedRoleName && sourceRoles.includes(normalizedRoleName)) {
+    return true;
+  }
+  return false;
+}
+
+function hasTraceableSenderEntryConflict(entry: Record<string, unknown>): boolean {
+  const valuesByKey = new Map<string, Set<string>>();
+  for (const claim of getArray(entry.claims)) {
+    const claimRecord = getRecord(claim);
+    const key = getString(claimRecord?.key);
+    const value = getString(claimRecord?.value);
+    if (!key || !value) {
+      continue;
+    }
+    const bucket = valuesByKey.get(key) ?? new Set<string>();
+    bucket.add(value);
+    valuesByKey.set(key, bucket);
+  }
+  return Array.from(valuesByKey.values()).some((bucket) => bucket.size > 1);
+}
+
+function renderTraceableSenderEntryClaims(lines: string[], entry: Record<string, unknown>): void {
+  for (const claim of getArray(entry.claims)) {
+    const claimRecord = getRecord(claim);
+    const key = getString(claimRecord?.key) ?? "unknown";
+    const value = getString(claimRecord?.value) ?? "-";
+    const status = getString(claimRecord?.status) ?? "-";
+    const observations = getPositiveInteger(claimRecord?.observations);
+    const evidence = getString(claimRecord?.evidence);
+    lines.push(`- ${key}=${value} [${status}${observations && observations > 1 ? ` x${observations}` : ""}]${evidence ? `: ${evidence}` : ""}`);
+  }
+}
+
+function renderTraceableEvidenceLatestRoleStateMarkdown(input: {
+  filePath: string;
+  parsed: ParsedTraceableEvidenceState;
+  roleName?: string;
+  senderId?: string;
+}): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const querySenderId = getString(input.senderId);
+  const queryRoleName = getString(input.roleName);
+  const lines = [
+    "# Traceable Evidence Latest Role State",
+    "",
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
+    "- Scope: Current lineage only",
+    `- Query Sender Id: ${querySenderId ?? "-"}`,
+    `- Query Role Name: ${queryRoleName ?? "-"}`
+  ];
+  if (!querySenderId && !queryRoleName) {
+    lines.push("", "Provide senderId or roleName to inspect the latest known role state in this lineage.", "");
+    return lines.join("\n");
+  }
+  const nodes = collectTraceableCurrentAndAncestorNodes({ filePath: input.filePath, parsed: input.parsed });
+  lines.push(`- Lineage Nodes Checked: ${nodes.length}`);
+  const matchIndex = nodes.findIndex((node) => getSenderAdaptationEntries(node.parsed).some((entry) => isMatchingTraceableSenderEntry({ entry, senderId: querySenderId, roleName: queryRoleName })));
+  if (matchIndex < 0) {
+    lines.push("", "- Latest Match: no", "- Status: not-found", "", "No sender adaptation state for the requested role was found in this lineage.", "");
+    return lines.join("\n");
+  }
+  const matchedNode = nodes[matchIndex];
+  const matchedEntry = getSenderAdaptationEntries(matchedNode.parsed).find((entry) => isMatchingTraceableSenderEntry({ entry, senderId: querySenderId, roleName: queryRoleName }));
+  if (!matchedEntry) {
+    lines.push("", "- Latest Match: no", "- Status: not-found", "", "No sender adaptation state for the requested role was found in this lineage.", "");
+    return lines.join("\n");
+  }
+  const conflicted = hasTraceableSenderEntryConflict(matchedEntry);
+  const sourceRoles = getArray(matchedEntry.sourceRoles)
+    .map((value) => getString(value))
+    .filter((value): value is string => Boolean(value));
+  lines.push(`- Latest Match: yes`);
+  lines.push(`- Status: ${conflicted ? "conflicted" : matchIndex === 0 ? "current" : "stale"}`);
+  lines.push(`- Match Source: ${formatTraceablePathReference(matchedNode.filePath, pathRenderOptions)}`);
+  lines.push(`- Newer Nodes Checked Since Match: ${matchIndex}`);
+  lines.push(`- Conflict Present: ${conflicted ? "yes" : "no"}`);
+  lines.push(`- Sender Id: ${getString(matchedEntry.senderId) ?? "-"}`);
+  lines.push(`- Source Roles: ${sourceRoles.length ? sourceRoles.join(" | ") : "-"}`);
+  lines.push("", "## Latest Known State", "");
+  renderTraceableSenderEntryClaims(lines, matchedEntry);
+  if (matchIndex > 0) {
+    lines.push("", `Checked ${matchIndex} newer lineage node${matchIndex === 1 ? "" : "s"} before reaching this latest known match.`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function renderTraceableEvidenceLatestCarryPackageMarkdown(input: {
+  filePath: string;
+  parsed: ParsedTraceableEvidenceState;
+}): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const nodes = collectTraceableCurrentAndAncestorNodes({ filePath: input.filePath, parsed: input.parsed });
+  const currentDisposition = getTraceableCarryStateDisposition(input.parsed) ?? "none";
+  const lines = [
+    "# Traceable Evidence Latest Carry Package",
+    "",
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
+    "- Scope: Current lineage only",
+    `- Lineage Nodes Checked: ${nodes.length}`,
+    `- Current Boundary Disposition: ${currentDisposition}`
+  ];
+  const matchIndex = nodes.findIndex((node) => Boolean(getRecord(getRecord(node.parsed.result)?.activeCarryForward) || getRecord(getRecord(node.parsed.result)?.recoverableCarryState)));
+  if (matchIndex < 0) {
+    lines.push("- Status: not-found", "", "No active or recoverable carry package was found in this lineage.", "");
+    return lines.join("\n");
+  }
+  const matchedNode = nodes[matchIndex];
+  const matchedResult = getRecord(matchedNode.parsed.result) ?? {};
+  const activeCarryForward = getRecord(matchedResult.activeCarryForward);
+  const recoverableCarryState = getRecord(matchedResult.recoverableCarryState);
+  const packageKind = activeCarryForward ? "active" : "recoverable";
+  const status = matchIndex === 0
+    ? packageKind
+    : currentDisposition === "consumed"
+      ? "consumed"
+      : currentDisposition === "expired"
+        ? "expired"
+        : "stale";
+  const summaryCounts = summarizeTraceableCarryState(activeCarryForward ?? recoverableCarryState);
+  lines.push(`- Status: ${status}`);
+  lines.push(`- Latest Package Kind: ${packageKind}`);
+  lines.push(`- Match Source: ${formatTraceablePathReference(matchedNode.filePath, pathRenderOptions)}`);
+  lines.push(`- Newer Nodes Checked Since Match: ${matchIndex}`);
+  lines.push(`- Remaining Goals: ${summaryCounts.goalCount}`);
+  lines.push(`- Open Questions: ${summaryCounts.questionCount}`);
+  lines.push(`- Next Suggested Start Present: ${summaryCounts.hasNextStart ? "yes" : "no"}`);
+  renderTraceableCarryStateSection(lines, activeCarryForward ? "Latest Active Carry Forward" : "Latest Recoverable Carry State", activeCarryForward ?? recoverableCarryState, pathRenderOptions);
+  if (matchIndex > 0) {
+    lines.push("", `Checked ${matchIndex} newer lineage node${matchIndex === 1 ? "" : "s"} before reaching this latest carry package.`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 function selectLatestWindow<T>(items: T[], maxItems: number): { items: T[]; label: string } {
   if (items.length === 0) {
     return { items: [], label: "Showing 0/0 items." };
@@ -449,6 +663,8 @@ export function normalizeTraceableViewSurface(value: unknown): TraceableEvidence
     case "status-history":
     case "tool-summary":
     case "file-summary":
+    case "latest-role-state":
+    case "latest-carry-package":
     case "state-json":
       return normalized;
     default:
@@ -1436,6 +1652,8 @@ export function renderTraceableEvidenceSurfaceMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
   surface: TraceableEvidenceSurface;
+  roleName?: string;
+  senderId?: string;
   maxItems?: number;
   offset?: number;
   includeSupportArtifacts?: boolean;
@@ -1470,6 +1688,10 @@ export function renderTraceableEvidenceSurfaceMarkdown(input: {
       return renderTraceableEvidenceToolSummaryMarkdown(input);
     case "file-summary":
       return renderTraceableEvidenceFileSummaryMarkdown(input);
+    case "latest-role-state":
+      return renderTraceableEvidenceLatestRoleStateMarkdown(input);
+    case "latest-carry-package":
+      return renderTraceableEvidenceLatestCarryPackageMarkdown(input);
     case "state-json":
       return renderTraceableEvidenceStateJsonMarkdown(input);
     case "summary":
@@ -1516,6 +1738,8 @@ export function renderViewTraceableSubagentMarkdown(input: {
         filePath: input.filePath,
         parsed: input.parsed,
         surface,
+        roleName: input.view.roleName,
+        senderId: input.view.senderId,
         maxItems,
         offset,
         includeSupportArtifacts: input.view.includeSupportArtifacts

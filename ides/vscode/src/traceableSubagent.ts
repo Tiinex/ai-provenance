@@ -133,6 +133,34 @@ interface TraceableCarriedContext {
   reductions?: string[];
 }
 
+export type TraceableSenderAdaptationClaimKey =
+  | "responseCompression"
+  | "ambiguityHandling"
+  | "tradeoffStyle"
+  | "baselineExplanation";
+
+export type TraceableSenderAdaptationClaimStatus = "observed" | "reinforced" | "weakened";
+
+export interface TraceableSenderAdaptationClaim {
+  key: TraceableSenderAdaptationClaimKey;
+  value: string;
+  status: TraceableSenderAdaptationClaimStatus;
+  observations: number;
+  evidence?: string;
+  updatedAt?: string;
+}
+
+export interface TraceableSenderAdaptationEntry {
+  senderId: string;
+  sourceRoles?: string[];
+  claims: TraceableSenderAdaptationClaim[];
+  updatedAt?: string;
+}
+
+export interface TraceableSenderAdaptationState {
+  entries: TraceableSenderAdaptationEntry[];
+}
+
 export type TraceableCarryStateDisposition = "none" | "active" | "recoverable" | "consumed" | "expired";
 
 export interface TraceableCarryForwardState {
@@ -350,6 +378,7 @@ export interface TraceableSubagentInput {
   parentFrame?: string;
   parentTask?: string;
   parentRoles?: string | string[];
+  senderAdaptationState?: TraceableSenderAdaptationState;
   outputMode?: TraceableSubagentOutputMode;
   exportToFolder?: string;
   inputMode?: TraceableSubagentInputMode;
@@ -390,6 +419,14 @@ export interface TraceableSubagentChildPayload {
   stopReason: TraceableStopReason;
   completionClaim: TraceableCompletionClaim;
   finalSummary: string;
+  senderAdaptationObservations?: Array<{
+    senderId: string;
+    claims: Array<{
+      key: TraceableSenderAdaptationClaimKey;
+      value: string;
+      evidence?: string;
+    }>;
+  }>;
   activeCarryForward?: TraceableCarryForwardState;
   recoverableCarryState?: TraceableCarryForwardState;
   carryStateDisposition?: TraceableCarryStateDisposition;
@@ -498,6 +535,7 @@ export interface TraceableSubagentRunResult {
   parentTracePath?: string;
   lineageDepth?: number;
   lineageLabel?: string;
+  senderAdaptationState?: TraceableSenderAdaptationState;
   activeCarryForward?: TraceableCarryForwardState;
   recoverableCarryState?: TraceableCarryForwardState;
   carryStateDisposition?: TraceableCarryStateDisposition;
@@ -907,6 +945,436 @@ function normalizeInheritedRequestExpectations(value: unknown): TraceableRequest
   };
 }
 
+function normalizeTraceableSenderIdentity(value: string | undefined): string | undefined {
+  const normalized = (value ?? "")
+    .replace(/\s*\([^)]*\)\s*/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return normalized ? normalized.normalize("NFKC") : undefined;
+}
+
+function normalizeTraceableSenderIdentityKey(value: string | undefined): string | undefined {
+  const normalized = normalizeTraceableSenderIdentity(value);
+  return normalized ? normalized.toLowerCase() : undefined;
+}
+
+function normalizeTraceableSenderSourceRoles(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const normalized = value
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .filter((entry, index, items) => items.indexOf(entry) === index);
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeTraceableSenderAdaptationClaimKey(value: unknown): TraceableSenderAdaptationClaimKey | undefined {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  switch (normalized) {
+    case "responseCompression":
+    case "ambiguityHandling":
+    case "tradeoffStyle":
+    case "baselineExplanation":
+      return normalized;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeTraceableSenderAdaptationClaimStatus(value: unknown): TraceableSenderAdaptationClaimStatus | undefined {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  switch (normalized) {
+    case "observed":
+    case "reinforced":
+    case "weakened":
+      return normalized;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeTraceableSenderAdaptationClaimValue(
+  key: TraceableSenderAdaptationClaimKey,
+  value: unknown
+): string | undefined {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  switch (key) {
+    case "responseCompression":
+      return normalized === "concise" || normalized === "balanced" || normalized === "expanded"
+        ? normalized
+        : undefined;
+    case "ambiguityHandling":
+      return normalized === "ask-narrow-question" || normalized === "answer-directly" || normalized === "state-assumptions"
+        ? normalized
+        : undefined;
+    case "tradeoffStyle":
+      return normalized === "explicit" || normalized === "implicit"
+        ? normalized
+        : undefined;
+    case "baselineExplanation":
+      return normalized === "minimal" || normalized === "normal" || normalized === "extra"
+        ? normalized
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeTraceableSenderAdaptationClaim(value: unknown): TraceableSenderAdaptationClaim | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const key = normalizeTraceableSenderAdaptationClaimKey(value.key);
+  if (!key) {
+    return undefined;
+  }
+  const normalizedValue = normalizeTraceableSenderAdaptationClaimValue(key, value.value);
+  if (!normalizedValue) {
+    return undefined;
+  }
+  const status = normalizeTraceableSenderAdaptationClaimStatus(value.status) ?? "observed";
+  const observations = Number.isInteger(value.observations) && Number(value.observations) > 0
+    ? Number(value.observations)
+    : 1;
+  const evidence = getTrimmedString(value.evidence);
+  const updatedAt = getTrimmedString(value.updatedAt);
+  return {
+    key,
+    value: normalizedValue,
+    status,
+    observations,
+    evidence: evidence ? truncate(evidence, 240) : undefined,
+    updatedAt
+  };
+}
+
+function normalizeTraceableSenderAdaptationEntry(value: unknown): TraceableSenderAdaptationEntry | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const senderId = normalizeTraceableSenderIdentity(getTrimmedString(value.senderId));
+  if (!senderId) {
+    return undefined;
+  }
+  const claims = Array.isArray(value.claims)
+    ? value.claims
+      .map((entry) => normalizeTraceableSenderAdaptationClaim(entry))
+      .filter((entry): entry is TraceableSenderAdaptationClaim => Boolean(entry))
+    : [];
+  if (claims.length === 0) {
+    return undefined;
+  }
+  return {
+    senderId,
+    sourceRoles: normalizeTraceableSenderSourceRoles(value.sourceRoles),
+    claims,
+    updatedAt: getTrimmedString(value.updatedAt)
+  };
+}
+
+function normalizeTraceableSenderAdaptationState(value: unknown): TraceableSenderAdaptationState | undefined {
+  if (!isRecord(value) || !Array.isArray(value.entries)) {
+    return undefined;
+  }
+  const entries = value.entries
+    .map((entry) => normalizeTraceableSenderAdaptationEntry(entry))
+    .filter((entry): entry is TraceableSenderAdaptationEntry => Boolean(entry));
+  return entries.length > 0 ? { entries } : undefined;
+}
+
+function buildTraceableSenderRoleMap(parentRoles: string[] | undefined): Map<string, string[]> {
+  const roleMap = new Map<string, string[]>();
+  for (const roleName of parentRoles ?? []) {
+    const senderKey = normalizeTraceableSenderIdentityKey(roleName);
+    if (!senderKey) {
+      continue;
+    }
+    const existing = roleMap.get(senderKey) ?? [];
+    if (!existing.includes(roleName)) {
+      existing.push(roleName);
+    }
+    roleMap.set(senderKey, existing);
+  }
+  return roleMap;
+}
+
+function filterTraceableSenderAdaptationStateForParentRoles(
+  state: TraceableSenderAdaptationState | undefined,
+  parentRoles: string[] | undefined
+): TraceableSenderAdaptationState | undefined {
+  if (!state?.entries?.length || !parentRoles?.length) {
+    return undefined;
+  }
+  const allowedSenderKeys = new Set(
+    parentRoles
+      .map((roleName) => normalizeTraceableSenderIdentityKey(roleName))
+      .filter((value): value is string => Boolean(value))
+  );
+  const entries = state.entries.filter((entry) => {
+    const senderKey = normalizeTraceableSenderIdentityKey(entry.senderId);
+    return Boolean(senderKey && allowedSenderKeys.has(senderKey));
+  });
+  return entries.length > 0 ? { entries } : undefined;
+}
+
+function getTraceableSenderObservationText(value: Record<string, unknown>): string | undefined {
+  const single = getTrimmedString(value.observation) ?? getTrimmedString(value.observations);
+  if (single) {
+    return single;
+  }
+  if (!Array.isArray(value.observations)) {
+    return undefined;
+  }
+  const joined = value.observations
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .join(" | ");
+  return joined ? truncate(joined, 240) : undefined;
+}
+
+function inferTraceableSenderAdaptationClaimsFromObservationText(text: string | undefined): Array<{
+  key: TraceableSenderAdaptationClaimKey;
+  value: string;
+  evidence?: string;
+}> {
+  if (!text) {
+    return [];
+  }
+  const normalized = text.toLowerCase();
+  const evidence = truncate(text, 240);
+  const inferred: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }> = [];
+  const pushClaim = (key: TraceableSenderAdaptationClaimKey, value: string) => {
+    if (!inferred.some((claim) => claim.key === key)) {
+      inferred.push({ key, value, evidence });
+    }
+  };
+
+  if (/\b(minimal baseline explanation|minimal explanation|baseline explanation minimal|keep baseline explanation minimal|low explanation)\b/u.test(normalized)) {
+    pushClaim("baselineExplanation", "minimal");
+  } else if (/\b(extra explanation|expanded explanation|detailed explanation|high explanation)\b/u.test(normalized)) {
+    pushClaim("baselineExplanation", "extra");
+  } else if (/\b(normal explanation|standard explanation)\b/u.test(normalized)) {
+    pushClaim("baselineExplanation", "normal");
+  }
+
+  if (/\b(concise|brief|terse|short|dense|data-dense|unadorned|compressed)\b/u.test(normalized)) {
+    pushClaim("responseCompression", "concise");
+  } else if (/\b(expanded|verbose|long-form)\b/u.test(normalized)) {
+    pushClaim("responseCompression", "expanded");
+  } else if (/\b(balanced)\b/u.test(normalized)) {
+    pushClaim("responseCompression", "balanced");
+  }
+
+  if (/\b(tradeoff|trade-off|tradeoffs explicitly|state tradeoffs explicitly|explicit tradeoffs?)\b/u.test(normalized)) {
+    pushClaim("tradeoffStyle", "explicit");
+  } else if (/\bimplicit tradeoffs?\b/u.test(normalized)) {
+    pushClaim("tradeoffStyle", "implicit");
+  }
+
+  if (/\b(state assumptions?|assumption-led|assumption-driven)\b/u.test(normalized)) {
+    pushClaim("ambiguityHandling", "state-assumptions");
+  } else if (/\b(ask[- ]?narrow[- ]?question|ask a narrow question|ask one narrow question|ask a follow-up|ask follow-up)\b/u.test(normalized)) {
+    pushClaim("ambiguityHandling", "ask-narrow-question");
+  } else if (/\b(answer directly|direct recommendation|direct recommendations|direct answer|zero social framing|avoid social framing|no social framing)\b/u.test(normalized)) {
+    pushClaim("ambiguityHandling", "answer-directly");
+  }
+
+  return inferred;
+}
+
+function normalizeTraceableSenderAdaptationObservations(value: unknown): Array<{
+  senderId: string;
+  claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }>;
+}> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const normalized: Array<{ senderId: string; claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }> }> = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const senderId = normalizeTraceableSenderIdentity(getTrimmedString(entry.senderId) ?? getTrimmedString(entry.sender));
+    if (!senderId) {
+      continue;
+    }
+    const rawClaimEntries = Array.isArray(entry.claims)
+      ? entry.claims
+      : Array.isArray(entry.observations)
+        ? entry.observations
+        : [];
+    const explicitClaims = rawClaimEntries.length > 0
+      ? rawClaimEntries.flatMap((claim) => {
+        if (!isRecord(claim)) {
+          return [];
+        }
+        const key = normalizeTraceableSenderAdaptationClaimKey(claim.key);
+        if (!key) {
+          return [];
+        }
+        const normalizedValue = normalizeTraceableSenderAdaptationClaimValue(key, claim.value);
+        if (!normalizedValue) {
+          return [];
+        }
+        const evidence = getTrimmedString(claim.evidence);
+        return [{
+          key,
+          value: normalizedValue,
+          evidence: evidence ? truncate(evidence, 240) : undefined
+        }];
+      })
+      : [];
+    const inferredClaims = inferTraceableSenderAdaptationClaimsFromObservationText(getTraceableSenderObservationText(entry));
+    const claims = [...explicitClaims, ...inferredClaims].filter((claim, index, claims) => claims.findIndex((candidate) => candidate.key === claim.key && candidate.value === claim.value) === index);
+    if (claims.length > 0) {
+      normalized.push({ senderId, claims });
+    }
+  }
+  return normalized;
+}
+
+function deriveTraceableSenderAdaptationObservationsFromCurrentTurn(
+  userInput: string | undefined,
+  parentRoles: string[] | undefined
+): Array<{
+  senderId: string;
+  claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }>;
+}> {
+  const normalizedParentRoles = normalizeTraceableParentRoles(parentRoles);
+  if (!normalizedParentRoles?.length || !userInput?.trim()) {
+    return [];
+  }
+  const claims = inferTraceableSenderAdaptationClaimsFromObservationText(userInput.trim());
+  if (claims.length === 0) {
+    return [];
+  }
+  const observationsBySender = new Map<string, {
+    senderId: string;
+    claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }>;
+  }>();
+  for (const roleName of normalizedParentRoles) {
+    const senderId = normalizeTraceableSenderIdentity(roleName);
+    const senderKey = normalizeTraceableSenderIdentityKey(roleName);
+    if (!senderId || !senderKey || observationsBySender.has(senderKey)) {
+      continue;
+    }
+    observationsBySender.set(senderKey, {
+      senderId,
+      claims: claims.map((claim) => ({ ...claim }))
+    });
+  }
+  return [...observationsBySender.values()];
+}
+
+function combineTraceableSenderAdaptationObservations(input: {
+  explicitObservations: Array<{
+    senderId: string;
+    claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }>;
+  }>;
+  inferredObservations: Array<{
+    senderId: string;
+    claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }>;
+  }>;
+}): Array<{
+  senderId: string;
+  claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }>;
+}> {
+  const mergedBySender = new Map<string, {
+    senderId: string;
+    claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }>;
+  }>();
+  for (const source of [...input.explicitObservations, ...input.inferredObservations]) {
+    const senderKey = normalizeTraceableSenderIdentityKey(source.senderId);
+    const senderId = normalizeTraceableSenderIdentity(source.senderId);
+    if (!senderKey || !senderId) {
+      continue;
+    }
+    const target = mergedBySender.get(senderKey) ?? { senderId, claims: [] };
+    for (const claim of source.claims) {
+      const existing = target.claims.find((candidate) => candidate.key === claim.key && candidate.value === claim.value);
+      if (existing) {
+        existing.evidence = existing.evidence ?? claim.evidence;
+        continue;
+      }
+      target.claims.push({ ...claim });
+    }
+    mergedBySender.set(senderKey, target);
+  }
+  return [...mergedBySender.values()];
+}
+
+function mergeTraceableSenderAdaptationState(input: {
+  previousState: TraceableSenderAdaptationState | undefined;
+  observations: Array<{ senderId: string; claims: Array<{ key: TraceableSenderAdaptationClaimKey; value: string; evidence?: string }> }>;
+  parentRoles: string[] | undefined;
+  updatedAt: string;
+}): TraceableSenderAdaptationState | undefined {
+  const roleMap = buildTraceableSenderRoleMap(input.parentRoles);
+  const entriesByKey = new Map<string, TraceableSenderAdaptationEntry>();
+  for (const entry of input.previousState?.entries ?? []) {
+    const senderKey = normalizeTraceableSenderIdentityKey(entry.senderId);
+    if (!senderKey) {
+      continue;
+    }
+    entriesByKey.set(senderKey, {
+      senderId: entry.senderId,
+      sourceRoles: entry.sourceRoles ? [...entry.sourceRoles] : undefined,
+      claims: entry.claims.map((claim) => ({ ...claim })),
+      updatedAt: entry.updatedAt
+    });
+  }
+  for (const observation of input.observations) {
+    const senderKey = normalizeTraceableSenderIdentityKey(observation.senderId);
+    if (!senderKey || !roleMap.has(senderKey)) {
+      continue;
+    }
+    const entry = entriesByKey.get(senderKey) ?? {
+      senderId: observation.senderId,
+      sourceRoles: roleMap.get(senderKey),
+      claims: [],
+      updatedAt: input.updatedAt
+    };
+    for (const claim of observation.claims) {
+      const matchingClaim = entry.claims.find((candidate) => candidate.key === claim.key && candidate.value === claim.value);
+      if (matchingClaim) {
+        matchingClaim.observations += 1;
+        matchingClaim.status = matchingClaim.observations > 1 ? "reinforced" : "observed";
+        matchingClaim.evidence = claim.evidence ?? matchingClaim.evidence;
+        matchingClaim.updatedAt = input.updatedAt;
+        continue;
+      }
+      for (const conflictingClaim of entry.claims.filter((candidate) => candidate.key === claim.key && candidate.value !== claim.value)) {
+        conflictingClaim.status = "weakened";
+        conflictingClaim.updatedAt = input.updatedAt;
+      }
+      entry.claims.push({
+        key: claim.key,
+        value: claim.value,
+        status: "observed",
+        observations: 1,
+        evidence: claim.evidence,
+        updatedAt: input.updatedAt
+      });
+    }
+    entry.sourceRoles = roleMap.get(senderKey) ?? entry.sourceRoles;
+    entry.updatedAt = input.updatedAt;
+    entriesByKey.set(senderKey, entry);
+  }
+  const entries = [...entriesByKey.values()]
+    .map((entry) => ({
+      ...entry,
+      claims: entry.claims
+        .filter((claim, index, claims) => claims.findIndex((candidate) => candidate.key === claim.key && candidate.value === claim.value && candidate.status === claim.status) === index)
+        .sort((left, right) => left.key.localeCompare(right.key) || right.observations - left.observations || left.value.localeCompare(right.value))
+    }))
+    .filter((entry) => entry.claims.length > 0)
+    .sort((left, right) => left.senderId.localeCompare(right.senderId));
+  return entries.length > 0 ? { entries } : undefined;
+}
+
 function normalizeInheritedCarriedContext(value: unknown): TraceableCarriedContext | undefined {
   if (!isRecord(value)) {
     return undefined;
@@ -1199,7 +1667,11 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
     return {
       input: {
         ...input,
-        parentRoles: normalizedParentRoles
+        parentRoles: normalizedParentRoles,
+        senderAdaptationState: filterTraceableSenderAdaptationStateForParentRoles(
+          normalizeTraceableSenderAdaptationState(input.senderAdaptationState),
+          normalizedParentRoles
+        )
       }
     };
   }
@@ -1227,6 +1699,10 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
   const lineageLabel = allocateNextTraceableLineageLabel(siblingNames, parentFileParts.lineageLabel);
   const inheritedCarriedContext = normalizeInheritedCarriedContext(parentRequest.carriedContext);
   const inheritedActiveCarryForward = normalizeTraceableCarryForwardState(parsed.result?.activeCarryForward);
+  const inheritedSenderAdaptationState = filterTraceableSenderAdaptationStateForParentRoles(
+    normalizeTraceableSenderAdaptationState(parsed.result?.senderAdaptationState),
+    normalizedParentRoles
+  );
   const continuationSummary = buildParentContinuationSummary(resolvedParentTracePath, parsed.result);
   const inheritedModelSelector = deriveContinuationInheritedModelSelector(parsed.result, parentRequest);
   const inheritedInputMode = normalizeTraceableInputMode(parentRequest.inputMode);
@@ -1249,6 +1725,12 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
     parentRoles: normalizedParentRoles,
     parentExpectations: input.parentExpectations ?? normalizeInheritedRequestExpectations(parentRequest.parentExpectations),
     carriedContext: mergeContinuationCarriedContext(inheritedCarriedContext, input.carriedContext, continuationSummary),
+    senderAdaptationState: normalizedParentRoles?.length
+      ? filterTraceableSenderAdaptationStateForParentRoles(
+        normalizeTraceableSenderAdaptationState(input.senderAdaptationState) ?? inheritedSenderAdaptationState,
+        normalizedParentRoles
+      )
+      : undefined,
     activeCarryForward: input.activeCarryForward ?? inheritedActiveCarryForward,
     wrapperPolicy: input.wrapperPolicy ?? normalizeInheritedWrapperPolicy(parentRequest.wrapperPolicy),
     budgetPolicy: input.budgetPolicy ?? normalizeInheritedBudgetPolicy(parentRequest.budgetPolicy),
@@ -2076,6 +2558,9 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   const normalizedModelSelector = normalizeModelSelector(input.modelSelector);
   const normalizedAgentRole = normalizeAgentRole(input.agentRole);
   const normalizedParentRoles = normalizeTraceableParentRoles(input.parentRoles);
+  const normalizedSenderAdaptationState = normalizedParentRoles?.length
+    ? filterTraceableSenderAdaptationStateForParentRoles(normalizeTraceableSenderAdaptationState(input.senderAdaptationState), normalizedParentRoles)
+    : undefined;
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const normalizedValidationMode = normalizeTraceableValidationMode(input.validationMode);
   const normalizedOutputMode = normalizeTraceableOutputMode(input.outputMode);
@@ -2127,6 +2612,9 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   if (normalizedParentRoles?.length) {
     request.parentRoles = normalizedParentRoles;
   }
+  if (normalizedSenderAdaptationState?.entries.length) {
+    request.senderAdaptationState = normalizedSenderAdaptationState;
+  }
 
   if (input.parentExpectations) {
     request.parentExpectations = input.parentExpectations;
@@ -2161,6 +2649,9 @@ export function buildTraceableSubagentPromptSections(
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const normalizedValidationMode = normalizeTraceableValidationMode(input.validationMode);
   const normalizedParentRoles = normalizeTraceableParentRoles(input.parentRoles);
+  const normalizedSenderAdaptationState = normalizedParentRoles?.length
+    ? filterTraceableSenderAdaptationStateForParentRoles(normalizeTraceableSenderAdaptationState(input.senderAdaptationState), normalizedParentRoles)
+    : undefined;
   const fileContextAnchors = resolveTraceableFileContextAnchors(input.carriedContext?.fileContext);
   const normalizedActiveCarryForward = normalizeTraceableCarryForwardState(input.activeCarryForward);
   const promptTexts = [
@@ -2170,6 +2661,16 @@ export function buildTraceableSubagentPromptSections(
         "Parent-role rule:\n- Treat parentRoles as the source-side roles behind the current userInput.\n- Do not treat parentRoles as your own role identity.\n- Do not answer as if you are any parent role unless the explicit userInput asks for quoted or role-played output.\n- Use parentRoles only as light continuity metadata that may help coherence about who the message came from."
       ]
       : []),
+    ...(normalizedSenderAdaptationState?.entries.length
+      ? [
+        `Chain-local sender adaptation state for the current incoming roles:\n${JSON.stringify(normalizedSenderAdaptationState, null, 2)}`,
+        "Sender-adaptation rule:\n- Treat senderAdaptationState as provisional, chain-local receiver guidance only.\n- Use it only for soft output choices such as compression, ambiguity handling, tradeoff explicitness, and baseline explanation level.\n- Do not treat it as canon about the sender and do not treat it as your own role identity.\n- Ignore weakened claims when stronger reinforced or observed claims for the same key are present.\n- If the current turn clearly conflicts with the carried sender adaptation state, follow the current turn and emit fresh bounded senderAdaptationObservations for the changed keys instead of only narrating the conflict in steps or summary text.\n- Conflict example:\n  carried claim: { \"key\": \"responseCompression\", \"value\": \"concise\" }\n  current-turn evidence: \"give a more expanded explanation\"\n  emit: [{ \"senderId\": \"Torvek\", \"claims\": [{ \"key\": \"responseCompression\", \"value\": \"expanded\", \"evidence\": \"User asked for a more expanded explanation.\" }] }]"
+      ]
+      : normalizedParentRoles?.length
+        ? [
+          "Sender-adaptation rule:\n- When parentRoles are present, emit bounded senderAdaptationObservations whenever the current turn gives explicit evidence about response compression, ambiguity handling, tradeoff style, or baseline explanation for the current sender.\n- Keep each observation receiver-facing and chain-local.\n- Prefer no senderAdaptationObservations over speculative personality inference.\n- Preferred shape example:\n  [{\n    \"senderId\": \"Torvek\",\n    \"claims\": [\n      { \"key\": \"responseCompression\", \"value\": \"concise\", \"evidence\": \"Asked for a brief direct recommendation.\" },\n      { \"key\": \"tradeoffStyle\", \"value\": \"explicit\", \"evidence\": \"Asked for tradeoffs explicitly.\" }\n    ]\n  }]"
+        ]
+        : []),
     ...(input.carriedContext?.priorTurnsSummary?.trim()
       ? [
         `Prior turns summary for this run:\n${input.carriedContext.priorTurnsSummary.trim()}`,
@@ -2232,7 +2733,8 @@ export function buildTraceableSubagentPromptSections(
       `- Do not call ${TRACEABLE_SUBAGENT_TOOL_NAME} from inside this lane.`,
       "- Do not call native runSubagent from inside this lane.",
       "- Final output must be one JSON object and nothing else.",
-      "- The JSON object must contain: steps, expectedButMissing, stopReason, completionClaim, finalSummary, and optionally opaqueDelegations, activeCarryForward, recoverableCarryState, and carryStateDisposition.",
+      "- The JSON object must contain: steps, expectedButMissing, stopReason, completionClaim, finalSummary, and optionally opaqueDelegations, senderAdaptationObservations, activeCarryForward, recoverableCarryState, and carryStateDisposition.",
+      "- senderAdaptationObservations, when present, must stay receiver-facing, chain-local, and bounded to the current incoming sender roles only.",
       "- If unresolved work remains, or if the parent explicitly asks for carry-forward or a next trace handoff, include activeCarryForward or recoverableCarryState plus carryStateDisposition. Prefer at least one remainingGoals or openQuestions entry and a nextSuggestedStart when there is real next-trace work to preserve.",
       `- Wrapper policy is explicit and infrastructural only: ${JSON.stringify(wrapperPolicy)}.`
     ].join("\n"),
@@ -2596,12 +3098,34 @@ function buildSalvagedChildPayload(
     return undefined;
   }
 
+  const senderAdaptationObservations = normalizeTraceableSenderAdaptationObservations(value.senderAdaptationObservations);
+  const activeCarryForward = normalizeTraceableCarryForwardState(value.activeCarryForward);
+  const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState);
+  const derivedRecoverableCarryState = !activeCarryForward
+    && !explicitRecoverableCarryState
+    && expectedButMissing.length > 0
+    ? normalizeTraceableCarryForwardState({
+      remainingGoals: expectedButMissing
+        .map((item) => item.label.trim())
+        .filter(Boolean)
+        .slice(0, 4),
+      nextSuggestedStart: expectedButMissing[0]?.label?.trim()
+    })
+    : undefined;
+  const recoverableCarryState = explicitRecoverableCarryState ?? derivedRecoverableCarryState;
+  const carryStateDisposition = normalizeTraceableCarryStateDisposition(value.carryStateDisposition)
+    ?? (activeCarryForward ? "active" : recoverableCarryState ? "recoverable" : undefined);
+
   return {
     steps,
     expectedButMissing: [...expectedButMissing, ...missingPayloadFields],
     stopReason: "insufficient_grounding",
     completionClaim: "unresolved",
     finalSummary: "Child lane returned grounded observations in JSON form but omitted one or more required TRACEABLE top-level fields, so the runtime salvaged the observed evidence as an unresolved result.",
+    senderAdaptationObservations,
+    activeCarryForward,
+    recoverableCarryState,
+    carryStateDisposition,
     opaqueDelegations
   };
 }
@@ -2668,6 +3192,7 @@ function normalizeParsedPayload(value: unknown, toolCalls: TraceableSubagentTool
     expectedButMissing,
     finalSummary
   });
+  const senderAdaptationObservations = normalizeTraceableSenderAdaptationObservations(value.senderAdaptationObservations);
   const activeCarryForward = normalizeTraceableCarryForwardState(value.activeCarryForward);
   const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState);
   const derivedRecoverableCarryState = !activeCarryForward
@@ -2693,6 +3218,7 @@ function normalizeParsedPayload(value: unknown, toolCalls: TraceableSubagentTool
     stopReason,
     completionClaim,
     finalSummary,
+    senderAdaptationObservations,
     activeCarryForward,
     recoverableCarryState,
     carryStateDisposition,
@@ -3238,6 +3764,7 @@ function fallbackResult(
     parentTracePath: extra.parentTracePath,
     lineageDepth: extra.lineageDepth,
     lineageLabel: extra.lineageLabel,
+    senderAdaptationState: extra.senderAdaptationState ?? normalizeTraceableSenderAdaptationState(input.senderAdaptationState),
     stopReason,
     stoppedBy: extra.stoppedBy,
     stopSource: extra.stopSource,
@@ -4188,6 +4715,17 @@ export async function runTraceableSubagent(
       }
 
       const allOpaqueDelegations = [...opaqueDelegations, ...(parsedPayload.opaqueDelegations ?? [])];
+      const normalizedParentRoles = normalizeTraceableParentRoles(input.parentRoles);
+      const senderAdaptationObservations = combineTraceableSenderAdaptationObservations({
+        explicitObservations: parsedPayload.senderAdaptationObservations ?? [],
+        inferredObservations: deriveTraceableSenderAdaptationObservationsFromCurrentTurn(input.userInput, normalizedParentRoles)
+      });
+      const senderAdaptationState = mergeTraceableSenderAdaptationState({
+        previousState: normalizeTraceableSenderAdaptationState(input.senderAdaptationState),
+        observations: senderAdaptationObservations,
+        parentRoles: normalizedParentRoles,
+        updatedAt: new Date().toISOString()
+      });
       const runtimeDecisionSummary = buildTraceableRuntimeDecisionSummary(
         input,
         resolvedAgentArtifact,
@@ -4209,6 +4747,7 @@ export async function runTraceableSubagent(
         parentTracePath: continuation?.parentTracePath,
         lineageDepth: continuation?.lineageDepth,
         lineageLabel: continuation?.lineageLabel,
+        senderAdaptationState,
         activeCarryForward: parsedPayload.activeCarryForward,
         recoverableCarryState: parsedPayload.recoverableCarryState,
         carryStateDisposition: parsedPayload.carryStateDisposition,

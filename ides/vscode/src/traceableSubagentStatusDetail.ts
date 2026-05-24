@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
   TraceableCarryForwardState,
   TraceableCarryStateDisposition,
+  TraceableSenderAdaptationState,
   TraceableSubagentEvidenceFileState,
   TraceableSubagentRequestSummaryItem,
   TraceableSubagentStatusHeader,
@@ -55,6 +56,7 @@ export interface TraceableSubagentDetailSnapshot {
     timingSummary?: TraceableSubagentTimingSummary;
     resultSummary?: {
       finalSummary?: string;
+      senderAdaptationState?: TraceableSenderAdaptationState;
       carryStateDisposition?: TraceableCarryStateDisposition;
       activeCarryForward?: TraceableCarryForwardState;
       recoverableCarryState?: TraceableCarryForwardState;
@@ -62,6 +64,7 @@ export interface TraceableSubagentDetailSnapshot {
   }>;
   resultSummary?: {
     finalSummary?: string;
+    senderAdaptationState?: TraceableSenderAdaptationState;
     carryStateDisposition?: TraceableCarryStateDisposition;
     activeCarryForward?: TraceableCarryForwardState;
     recoverableCarryState?: TraceableCarryForwardState;
@@ -149,6 +152,14 @@ function phaseGlyph(phase: DetailPhase | TraceableSubagentToolStatusEvent["phase
 
 function escapeMarkdown(text: string): string {
   return text.replace(/[\\`*_{}\[\]()#+!|]/g, "\\$&");
+}
+
+function parseTraceableSnapshotTimestampMs(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function toMarkdownFileTarget(filePath: string): string {
@@ -262,6 +273,13 @@ export class TraceableSubagentStatusDetailController implements vscode.TextDocum
   }
 
   update(snapshot: TraceableSubagentDetailSnapshot): void {
+    if (snapshot.startedAt === this.snapshot.startedAt) {
+      const nextUpdatedAtMs = parseTraceableSnapshotTimestampMs(snapshot.updatedAt);
+      const currentUpdatedAtMs = parseTraceableSnapshotTimestampMs(this.snapshot.updatedAt);
+      if (nextUpdatedAtMs !== undefined && currentUpdatedAtMs !== undefined && nextUpdatedAtMs < currentUpdatedAtMs) {
+        return;
+      }
+    }
     this.snapshot = snapshot;
     this.onDidChangeEmitter.fire(this.uri);
   }

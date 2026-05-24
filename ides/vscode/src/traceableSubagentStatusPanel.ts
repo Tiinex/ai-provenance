@@ -101,6 +101,17 @@ type PanelActivityEntry =
     relevantArtifactAnchors?: string[];
   }
   | {
+    kind: "sender-adaptation";
+    id: string;
+    occurredAt: string;
+    summary: string;
+    note: string;
+    detail?: string;
+    senderCount: number;
+    claimCount: number;
+    reinforcedCount: number;
+  }
+  | {
     kind: "tool";
     id: string;
     occurredAt: string;
@@ -206,6 +217,14 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function parseTraceablePanelSnapshotTimestampMs(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function formatPanelUpdatedAt(updatedAt: string): string {
@@ -1579,13 +1598,18 @@ function buildActivityEntries(snapshot: TraceableSubagentDetailSnapshot): PanelA
     activities.push(handoff);
   }
 
+  const senderAdaptation = buildSenderAdaptationActivity(snapshot);
+  if (senderAdaptation) {
+    activities.push(senderAdaptation);
+  }
+
   return activities.sort((left, right) => {
     const leftOccurredAtMs = parsePanelTimestampMs(left.occurredAt) ?? Number.MAX_SAFE_INTEGER;
     const rightOccurredAtMs = parsePanelTimestampMs(right.occurredAt) ?? Number.MAX_SAFE_INTEGER;
     if (leftOccurredAtMs !== rightOccurredAtMs) {
       return leftOccurredAtMs - rightOccurredAtMs;
     }
-    const order = { ancestor: 0, request: 1, status: 2, tool: 3, output: 4, handoff: 5 } as const;
+    const order = { ancestor: 0, request: 1, status: 2, tool: 3, output: 4, "sender-adaptation": 5, handoff: 6 } as const;
     return order[left.kind] - order[right.kind];
   });
 }
@@ -1753,6 +1777,42 @@ function buildCarryHandoffActivity(snapshot: TraceableSubagentDetailSnapshot): E
     constraints: Array.isArray(summaryState?.constraints) ? summaryState.constraints.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [],
     relevantFileAnchors: Array.isArray(summaryState?.relevantFileAnchors) ? summaryState.relevantFileAnchors.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [],
     relevantArtifactAnchors: Array.isArray(summaryState?.relevantArtifactAnchors) ? summaryState.relevantArtifactAnchors.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : []
+  };
+}
+
+function buildSenderAdaptationActivity(snapshot: TraceableSubagentDetailSnapshot): Extract<PanelActivityEntry, { kind: "sender-adaptation" }> | undefined {
+  const entries = snapshot.resultSummary?.senderAdaptationState?.entries ?? [];
+  if (entries.length === 0) {
+    return undefined;
+  }
+  const claimCount = entries.reduce((total, entry) => total + entry.claims.length, 0);
+  const reinforcedCount = entries.reduce((total, entry) => total + entry.claims.filter((claim) => claim.status === "reinforced").length, 0);
+  const summary = entries.length === 1
+    ? `Observed receiver adaptation for ${entries[0].senderId}.`
+    : `Observed receiver adaptation for ${entries.length} senders.`;
+  const note = reinforcedCount > 0
+    ? `${reinforcedCount} claim${reinforcedCount === 1 ? "" : "s"} reinforced across this chain.`
+    : "Chain-local receiver guidance is available for the current sender set.";
+  const detail = entries.map((entry) => {
+    const lines = [`Sender: ${entry.senderId}`];
+    if (entry.sourceRoles?.length) {
+      lines.push(`Source roles: ${entry.sourceRoles.join(" | ")}`);
+    }
+    for (const claim of entry.claims) {
+      lines.push(`${claim.key}=${claim.value} [${claim.status}${claim.observations > 1 ? ` x${claim.observations}` : ""}]${claim.evidence ? `: ${claim.evidence}` : ""}`);
+    }
+    return lines.join("\n");
+  }).join("\n\n");
+  return {
+    kind: "sender-adaptation",
+    id: "sender-adaptation",
+    occurredAt: snapshot.updatedAt,
+    summary,
+    note,
+    detail,
+    senderCount: entries.length,
+    claimCount,
+    reinforcedCount
   };
 }
 
@@ -2039,6 +2099,30 @@ function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "hando
   ].join("");
 }
 
+function renderSenderAdaptationActivity(entry: Extract<PanelActivityEntry, { kind: "sender-adaptation" }>): string {
+  const detailText = [entry.note.trim(), entry.detail?.trim() || ""].filter(Boolean).join("\n\n");
+  const expandable = detailText.length > 0;
+  const expandableAttributes = expandable ? ` data-handoff-expandable="true" data-handoff-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
+  const summaryMarkup = entry.summary
+    ? `<span class="event-summary-inline"><span class="event-summary-preview">${escapeHtml(entry.summary)}</span>${expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : ""}</span>`
+    : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
+  const metaChips = [
+    `<span class="chip chip-handoff-kind" title="Unique sender identities observed in this chain">${escapeHtml(String(entry.senderCount))} sender${entry.senderCount === 1 ? "" : "s"}</span>`,
+    `<span class="chip chip-handoff-scope" title="Total bounded receiver-adaptation claims currently stored">${escapeHtml(String(entry.claimCount))} claim${entry.claimCount === 1 ? "" : "s"}</span>`,
+    entry.reinforcedCount > 0 ? `<span class="chip chip-handoff-scope" title="Claims reinforced by repeated observation in this chain">${escapeHtml(String(entry.reinforcedCount))} reinforced</span>` : ""
+  ].filter(Boolean);
+  const detailSections = [
+    entry.note.trim() ? renderRequestDetailSection("Summary", entry.note.trim()) : "",
+    entry.detail?.trim() ? renderRequestDetailSection("Observed Claims", entry.detail.trim()) : ""
+  ].filter(Boolean).join("");
+  return [
+    `<li class="event-row event-handoff" title="Chain-local receiver adaptation observed for known senders"${expandableAttributes}>`,
+    `<div class="event-body"><div class="event-main"><span class="event-icon">◎</span><span class="event-label">Sender State</span>${summaryMarkup}</div>${detailSections ? `<div class="event-handoff-detail">${detailSections}</div>` : ""}</div>`,
+    renderActivityMeta(undefined, "", metaChips),
+    `</li>`
+  ].join("");
+}
+
 function summarizeToolOutputHeading(toolName: string): string {
   switch (toolName.trim()) {
     case "copilot_readFile":
@@ -2301,6 +2385,9 @@ function renderActivityRow(entry: PanelRenderedEntry, evidenceFilePath?: string)
   }
   if (entry.kind === "output") {
     return renderOutputActivity(entry, evidenceFilePath);
+  }
+  if (entry.kind === "sender-adaptation") {
+    return renderSenderAdaptationActivity(entry);
   }
   if (entry.kind === "handoff") {
     return renderHandoffActivity(entry, evidenceFilePath);
@@ -2728,7 +2815,7 @@ function renderChatProjectionTimestamp(options: {
 }
 
 function renderChatProjectionMessage(options: {
-  label: "Task input" | "User input" | "Output";
+  label: string;
   text: string;
   role: "task" | "input" | "output";
   occurredAt?: string;
@@ -2751,6 +2838,23 @@ function renderChatProjectionMessage(options: {
   ].join("");
 }
 
+function formatChatProjectionUserInputLabel(summary: PanelRequestSummaryItem[]): string {
+  const directParentRole = extractSingleDirectParentRoleFromRequestSummary(summary);
+  const displayRole = directParentRole
+    ?.replace(/\s*\([^)]*\)\s*/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return displayRole || "User";
+}
+
+function formatChatProjectionOutputLabel(header: TraceableSubagentDetailSnapshot["header"] | NonNullable<TraceableSubagentDetailSnapshot["lineageEntries"]>[number]["header"]): string {
+  const displayRole = header?.agentName
+    ?.replace(/\s*\([^)]*\)\s*/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return displayRole && displayRole.toLowerCase() !== "trace lane" ? displayRole : "Output";
+}
+
 function renderChatTraceSeparator(title: string, filePath?: string): string {
   const trimmed = title.trim();
   if (!trimmed) {
@@ -2771,6 +2875,8 @@ function renderChatTraceSeparator(title: string, filePath?: string): string {
 function renderChatProjectionAncestorMessage(entry: NonNullable<TraceableSubagentDetailSnapshot["lineageEntries"]>[number]): string {
   const { taskInput, userInput } = extractChatProjectionRequestTextsFromSummary(entry.requestSummary ?? []);
   const outputText = extractChatProjectionLineageOutputText(entry);
+  const userInputLabel = formatChatProjectionUserInputLabel(entry.requestSummary ?? []);
+  const outputLabel = formatChatProjectionOutputLabel(entry.header);
   const running = entry.status?.phase === "running";
   const occurredAt = entry.startedAt ?? entry.occurredAt;
   const updatedAt = entry.updatedAt ?? entry.occurredAt;
@@ -2778,7 +2884,7 @@ function renderChatProjectionAncestorMessage(entry: NonNullable<TraceableSubagen
     renderChatTraceSeparator(entry.title, entry.filePath),
     taskInput
       ? renderChatProjectionMessage({
-        label: "Task input",
+        label: "Task",
         text: taskInput,
         role: "task",
         occurredAt,
@@ -2787,7 +2893,7 @@ function renderChatProjectionAncestorMessage(entry: NonNullable<TraceableSubagen
       : "",
     userInput
       ? renderChatProjectionMessage({
-        label: "User input",
+        label: userInputLabel,
         text: userInput,
         role: "input",
         occurredAt,
@@ -2796,7 +2902,7 @@ function renderChatProjectionAncestorMessage(entry: NonNullable<TraceableSubagen
       : "",
     outputText
       ? renderChatProjectionMessage({
-        label: "Output",
+        label: outputLabel,
         text: outputText,
         role: "output",
         occurredAt: updatedAt,
@@ -2806,7 +2912,7 @@ function renderChatProjectionAncestorMessage(entry: NonNullable<TraceableSubagen
       : "",
     (!taskInput && !userInput && !outputText)
       ? renderChatProjectionMessage({
-        label: "Output",
+        label: outputLabel,
         text: "Earlier trace in this continuation chain.",
         role: "output",
         occurredAt: updatedAt,
@@ -2823,13 +2929,15 @@ function renderChatProjection(snapshot: TraceableSubagentDetailSnapshot): string
     sections.push(renderChatProjectionAncestorMessage(lineageEntry));
   }
   const { taskInput, userInput } = extractChatProjectionRequestTexts(snapshot);
+  const userInputLabel = formatChatProjectionUserInputLabel(snapshot.requestSummary);
+  const outputLabel = formatChatProjectionOutputLabel(snapshot.header);
   const outputText = extractChatProjectionOutputText(snapshot);
   if (snapshot.evidenceFile?.fileName?.trim()) {
     sections.push(renderChatTraceSeparator(snapshot.evidenceFile.fileName.trim(), snapshot.evidenceFile.filePath));
   }
   if (taskInput) {
     sections.push(renderChatProjectionMessage({
-      label: "Task input",
+      label: "Task",
       text: taskInput,
       role: "task",
       occurredAt: snapshot.startedAt,
@@ -2838,7 +2946,7 @@ function renderChatProjection(snapshot: TraceableSubagentDetailSnapshot): string
   }
   if (userInput) {
     sections.push(renderChatProjectionMessage({
-      label: "User input",
+      label: userInputLabel,
       text: userInput,
       role: "input",
       occurredAt: snapshot.startedAt,
@@ -2847,7 +2955,7 @@ function renderChatProjection(snapshot: TraceableSubagentDetailSnapshot): string
   }
   if (outputText) {
     sections.push(renderChatProjectionMessage({
-      label: "Output",
+      label: outputLabel,
       text: outputText,
       role: "output",
       occurredAt: snapshot.updatedAt,
@@ -2876,7 +2984,7 @@ function renderChatComposer(
   const hint = !traceFilePath
     ? "Chat composer requires a saved TRACEABLE evidence file for continuation."
     : running
-      ? "Wait for the current TRACEABLE run to settle before sending the next turn."
+      ? "Please wait"
       : "Enter sends the next turn. Shift+Enter adds a new line.";
   return [
     `<section class="chat-composer${canSubmit ? "" : " chat-composer-disabled"}" data-chat-composer="true" data-chat-trace-path="${traceFilePathAttribute}" data-chat-base-disabled="${canSubmit ? "false" : "true"}">`,
@@ -2984,6 +3092,7 @@ function evidenceViewState(snapshot: TraceableSubagentDetailSnapshot): {
   const evidenceFile = snapshot.evidenceFile;
   const filePath = evidenceFile?.filePath?.trim();
   const readableArtifact = Boolean(filePath);
+  const exportStillLive = evidenceFile?.status === "writing" && snapshot.status.phase === "running";
   if (!evidenceFile || evidenceFile.status === "idle") {
     return {
       showExport: true,
@@ -2993,7 +3102,7 @@ function evidenceViewState(snapshot: TraceableSubagentDetailSnapshot): {
       liveIndicator: false
     };
   }
-  if (evidenceFile.status === "writing") {
+  if (exportStillLive) {
     return {
       showExport: false,
       showView: readableArtifact,
@@ -3003,7 +3112,7 @@ function evidenceViewState(snapshot: TraceableSubagentDetailSnapshot): {
       liveIndicator: readableArtifact
     };
   }
-  if (evidenceFile.status === "ready") {
+  if (evidenceFile.status === "ready" || evidenceFile.status === "writing") {
     return {
       showExport: false,
       showView: readableArtifact,
@@ -4991,7 +5100,7 @@ export function renderTraceableSubagentPanelHtml(
             statusGroupOpenById: state.statusGroupOpenById && typeof state.statusGroupOpenById === 'object'
               ? Object.fromEntries(Object.entries(state.statusGroupOpenById).filter(([key, value]) => typeof key === 'string' && typeof value === 'boolean'))
               : {},
-            chatViewEnabled: coerceBooleanLike(state.chatViewEnabled, false),
+            chatViewEnabled: coerceBooleanLike(state.chatViewEnabled, defaultPanelState.chatViewEnabled),
             chatComposerDraft: typeof state.chatComposerDraft === 'string' ? state.chatComposerDraft : '',
             chatSenderRole: typeof state.chatSenderRole === 'string' ? state.chatSenderRole : '',
             runId: typeof state.runId === 'string' ? state.runId : ''
@@ -5074,6 +5183,7 @@ export function renderTraceableSubagentPanelHtml(
         ancestorGroupOpenById: {},
         namespaceOpenById: {},
         statusGroupOpenById: {},
+        chatViewEnabled: defaultPanelState.chatViewEnabled,
         chatComposerDraft: '',
         chatSenderRole: defaultPanelState.chatSenderRole
       });
@@ -6313,6 +6423,7 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     private readonly onExportMarkdown: () => Promise<void>,
     private readonly onOpenFile: (target: string | TraceableResolvedPathTarget, startLine?: number, endLine?: number, baseDir?: string) => Promise<void>,
     private readonly onSubmitChatTurn: (input: { parentTracePath: string; userInput: string; parentRoles?: string | string[] }) => Promise<void>,
+    private readonly getInitialChatViewEnabled: (snapshot: TraceableSubagentDetailSnapshot) => boolean,
     private readonly getChatSenderRoleOptions: () => Promise<PanelChatSenderRoleOption[]>,
     private readonly getDefaultChatSenderRole: () => Promise<string | undefined>,
     private readonly onLoadToolDetail: (callId: string) => Promise<PanelLoadedToolDetail | undefined>,
@@ -6410,6 +6521,13 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
   }
 
   update(snapshot: TraceableSubagentDetailSnapshot): void {
+    if (snapshot.startedAt === this.snapshot.startedAt) {
+      const nextUpdatedAtMs = parseTraceablePanelSnapshotTimestampMs(snapshot.updatedAt);
+      const currentUpdatedAtMs = parseTraceablePanelSnapshotTimestampMs(this.snapshot.updatedAt);
+      if (nextUpdatedAtMs !== undefined && currentUpdatedAtMs !== undefined && nextUpdatedAtMs < currentUpdatedAtMs) {
+        return;
+      }
+    }
     if (snapshot.startedAt !== this.snapshot.startedAt) {
       this.loadedToolDetailsByCallId.clear();
     }
@@ -6502,6 +6620,7 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     this.view.title = "Traceable";
     this.view.description = this.snapshot.status.message;
     this.view.webview.html = renderTraceableSubagentPanelHtml(this.snapshot, this.codiconCssHref, {
+      initialChatViewEnabled: this.getInitialChatViewEnabled(this.snapshot),
       pinnedOpen: this.pinnedOpen,
       chatSenderRoleOptions,
       defaultChatSenderRole,

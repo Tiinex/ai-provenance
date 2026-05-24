@@ -192,6 +192,34 @@ export interface TraceableCarriedContext {
   reductions?: string[];
 }
 
+export type TraceableSenderAdaptationClaimKey =
+  | "responseCompression"
+  | "ambiguityHandling"
+  | "tradeoffStyle"
+  | "baselineExplanation";
+
+export type TraceableSenderAdaptationClaimStatus = "observed" | "reinforced" | "weakened";
+
+export interface TraceableSenderAdaptationClaim {
+  key: TraceableSenderAdaptationClaimKey;
+  value: string;
+  status: TraceableSenderAdaptationClaimStatus;
+  observations: number;
+  evidence?: string;
+  updatedAt?: string;
+}
+
+export interface TraceableSenderAdaptationEntry {
+  senderId: string;
+  sourceRoles?: string[];
+  claims: TraceableSenderAdaptationClaim[];
+  updatedAt?: string;
+}
+
+export interface TraceableSenderAdaptationState {
+  entries: TraceableSenderAdaptationEntry[];
+}
+
 export type TraceableCarryStateDisposition = "none" | "active" | "recoverable" | "consumed" | "expired";
 
 export interface TraceableCarryForwardState {
@@ -222,6 +250,7 @@ export interface TraceableSubagentInput {
   parentFrame?: string;
   parentTask?: string;
   parentRoles?: string | string[];
+  senderAdaptationState?: TraceableSenderAdaptationState;
   outputMode?: TraceableSubagentOutputMode;
   exportToFolder?: string;
   inputMode?: TraceableSubagentInputMode;
@@ -376,6 +405,7 @@ export interface TraceableSubagentRunResult {
   parentTracePath?: string;
   lineageDepth?: number;
   lineageLabel?: string;
+  senderAdaptationState?: TraceableSenderAdaptationState;
   activeCarryForward?: TraceableCarryForwardState;
   recoverableCarryState?: TraceableCarryForwardState;
   carryStateDisposition?: TraceableCarryStateDisposition;
@@ -592,6 +622,27 @@ function normalizeTraceableCarryForwardState(value: unknown): TraceableCarryForw
     : undefined;
 }
 
+function summarizeSenderAdaptationClaimValue(claim: TraceableSenderAdaptationClaim): string {
+  return `${claim.key}=${claim.value} [${claim.status}${claim.observations > 1 ? ` x${claim.observations}` : ""}]`;
+}
+
+function renderSenderAdaptationMarkdownLines(state: TraceableSenderAdaptationState | undefined): string[] {
+  if (!state?.entries?.length) {
+    return [];
+  }
+  const lines: string[] = [];
+  for (const entry of state.entries) {
+    lines.push(`- Sender: ${entry.senderId}`);
+    if (entry.sourceRoles?.length) {
+      lines.push(`  - Source Roles: ${entry.sourceRoles.join(" | ")}`);
+    }
+    for (const claim of entry.claims) {
+      lines.push(`  - ${summarizeSenderAdaptationClaimValue(claim)}${claim.evidence ? `: ${claim.evidence}` : ""}`);
+    }
+  }
+  return lines;
+}
+
 export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentInput): Record<string, unknown> {
   const wrapperPolicy = normalizedWrapperPolicy(input);
   const explicitBudgetPolicy = normalizeExplicitBudgetPolicy(input);
@@ -647,6 +698,9 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   }
   if (normalizedParentRoles?.length) {
     request.parentRoles = normalizedParentRoles;
+  }
+  if (normalizedParentRoles?.length && input.senderAdaptationState?.entries?.length) {
+    request.senderAdaptationState = input.senderAdaptationState;
   }
   if (input.parentExpectations) {
     request.parentExpectations = input.parentExpectations;
@@ -1490,6 +1544,7 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
     `- Parent Trace: ${result.parentTracePath ? formatTraceablePathReference(result.parentTracePath, options) : "-"}`,
     `- Lineage: ${result.lineageLabel ? `${result.lineageLabel} (depth ${result.lineageDepth ?? "-"})` : "-"}`,
     `- Carry State: ${result.carryStateDisposition ?? (result.activeCarryForward ? "active" : result.recoverableCarryState ? "recoverable" : "-")}`,
+    `- Sender Adaptation Entries: ${result.senderAdaptationState?.entries?.length ?? 0}`,
     `- Validation Issues: ${validationIssues.length > 0 ? validationIssues.join(" | ") : "-"}`,
     `- Model: ${result.modelDisplayName?.trim() || (result.model ? `${result.model.vendor}/${result.model.family}/${result.model.id}` : "-")}`,
     `- Usage: ${usageSummary}`,
@@ -1555,6 +1610,11 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
       const note = delegation.note?.trim();
       lines.push(`- ${delegation.toolName}${note ? `: ${note}` : ""}`);
     }
+  }
+
+  if (result.senderAdaptationState?.entries?.length) {
+    lines.push("", "## Sender Adaptation State");
+    lines.push(...renderSenderAdaptationMarkdownLines(result.senderAdaptationState));
   }
 
   lines.push("", "## Technical Details", "");

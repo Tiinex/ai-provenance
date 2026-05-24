@@ -178,6 +178,24 @@ function getEffectiveEvidenceModelLabel(
     ?? (snapshot.header.modelLabel.trim() || "model");
 }
 
+function renderSenderAdaptationEvidenceLines(result: TraceableSubagentRunResult | undefined): string[] {
+  if (!result?.senderAdaptationState?.entries?.length) {
+    return [];
+  }
+  const lines = ["## Sender Adaptation State", ""];
+  for (const entry of result.senderAdaptationState.entries) {
+    lines.push(`- Sender: ${entry.senderId}`);
+    if (entry.sourceRoles?.length) {
+      lines.push(`  - Source Roles: ${entry.sourceRoles.join(" | ")}`);
+    }
+    for (const claim of entry.claims) {
+      lines.push(`  - ${claim.key}=${claim.value} [${claim.status}${claim.observations > 1 ? ` x${claim.observations}` : ""}]${claim.evidence ? `: ${claim.evidence}` : ""}`);
+    }
+  }
+  lines.push("");
+  return lines;
+}
+
 function buildTraceableEvidenceState(
   snapshot: TraceableSubagentDetailSnapshot,
   exportState: TraceableSubagentEvidenceFileState,
@@ -198,6 +216,7 @@ function buildTraceableEvidenceState(
       parentTracePath: result.parentTracePath,
       lineageDepth: result.lineageDepth,
       lineageLabel: result.lineageLabel,
+      senderAdaptationState: result.senderAdaptationState,
       activeCarryForward: result.activeCarryForward,
       recoverableCarryState: result.recoverableCarryState,
       carryStateDisposition: result.carryStateDisposition,
@@ -498,6 +517,7 @@ function renderEvidenceMarkdown(
   }
   lines.push(
     "",
+    ...renderSenderAdaptationEvidenceLines(result),
     "## Traceable State",
     "",
     "```json",
@@ -545,6 +565,7 @@ export class TraceableSubagentEvidenceController {
       resultSummary: this.lastResult
         ? {
           finalSummary: this.lastResult.finalSummary,
+          senderAdaptationState: this.lastResult.senderAdaptationState,
           carryStateDisposition: this.lastResult.carryStateDisposition,
           activeCarryForward: this.lastResult.activeCarryForward,
           recoverableCarryState: this.lastResult.recoverableCarryState

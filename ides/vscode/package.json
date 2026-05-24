@@ -292,7 +292,7 @@
         "name": "view_traceable_subagent",
         "displayName": "View Traceable Subagent",
         "userDescription": "Inspect a stored TRACEABLE evidence artifact with bounded output and optional reconstructed-view reveal.",
-        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, request summary, request contract, outcome, runtime decision, evidence basis, a replay-oriented timeline, carry handoff, tool forensics, lineage, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by run_traceable_subagent, start with `surface: \"summary\"` or `surface: \"outcome\"`, then inspect `request-contract`, `runtime-decision`, `evidence-basis`, `timeline`, `carry-handoff`, `tool-forensics`, `lineage`, `tool-ledger`, or `state-json` only when you need deeper provenance detail. Prefer this over rerunning the same child lane when evidence already exists.",
+        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, request summary, request contract, outcome, runtime decision, evidence basis, a replay-oriented timeline, carry handoff, lineage-scoped latest role state, lineage-scoped latest carry package, tool forensics, lineage, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by run_traceable_subagent, start with `surface: \"summary\"` or `surface: \"outcome\"`, then inspect `request-contract`, `runtime-decision`, `evidence-basis`, `timeline`, `carry-handoff`, `latest-role-state`, `latest-carry-package`, `tool-forensics`, `lineage`, `tool-ledger`, or `state-json` only when you need deeper provenance detail. Prefer this over rerunning the same child lane when evidence already exists.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "viewTraceableSubagent",
         "inputSchema": {
@@ -328,6 +328,8 @@
                 "evidence-basis",
                 "timeline",
                 "carry-handoff",
+                "latest-role-state",
+                "latest-carry-package",
                 "tool-forensics",
                 "lineage",
                 "tool-ledger",
@@ -336,6 +338,14 @@
                 "file-summary",
                 "state-json"
               ]
+            },
+            "roleName": {
+              "type": "string",
+              "description": "Optional exact role display name to inspect when surface is `latest-role-state`."
+            },
+            "senderId": {
+              "type": "string",
+              "description": "Optional sender id to inspect when surface is `latest-role-state`."
             },
             "maxItems": {
               "type": "number",
@@ -595,6 +605,7 @@
     "build": "npm run typecheck && node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node tests/test.mjs",
+    "test:sender-adaptation-probes": "node scripts/check-sender-adaptation-probes.mjs",
     "package:vsix": "npx --yes @vscode/vsce package",
     "publish:vsce": "npx --yes @vscode/vsce publish",
     "release:check": "npm run test && npm run package:vsix",
