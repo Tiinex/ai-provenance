@@ -10,6 +10,7 @@ import {
   type ViewTraceableSubagentInput
 } from "./traceableEvidence";
 import {
+  formatTraceableModelIdDisplayName,
   listTraceableAgentCatalogEntries,
   listTraceableAgentCatalogLintFindings,
   listTraceableModelCatalogEntries,
@@ -1122,7 +1123,7 @@ function renderTraceableModelCatalogMarkdown(
     if (!normalizedQuery) {
       return true;
     }
-    const haystack = [entry.id, entry.vendor, entry.family, entry.version]
+    const haystack = [entry.displayName, entry.id, entry.vendor, entry.family, entry.version]
       .filter((value): value is string => typeof value === "string" && value.length > 0)
       .join(" ")
       .toLowerCase();
@@ -1161,7 +1162,8 @@ function renderTraceableModelCatalogMarkdown(
   lines.push("");
   for (const { entry, preferred, blocked } of limitedEntries) {
     const policyLabels = [blocked ? "blocked" : undefined, preferred ? "preferred" : undefined].filter(Boolean);
-    lines.push(`- ${entry.id ?? "(missing id)"}`);
+    lines.push(`- ${entry.displayName ?? formatTraceableModelIdDisplayName(entry.id) ?? entry.id ?? "(missing id)"}`);
+    lines.push(`  - Exact Id: ${entry.id ?? "-"}`);
     lines.push(`  - Vendor: ${entry.vendor ?? "-"}`);
     lines.push(`  - Family: ${entry.family ?? "-"}`);
     lines.push(`  - Version: ${entry.version ?? "-"}`);
@@ -1265,6 +1267,11 @@ function getConfiguredTraceableDefaultView(resource?: vscode.Uri): "detailed" | 
   return configured === "chat" ? "chat" : "detailed";
 }
 
+function getConfiguredTraceableChatCollapse(resource?: vscode.Uri): "auto" | "always" {
+  const configured = getProvenanceConfiguration(resource).get<string>("chatCollapse", "auto");
+  return configured === "always" ? "always" : "auto";
+}
+
 function getConfiguredAllRolesAvailableAsChatSender(resource?: vscode.Uri): boolean {
   return getProvenanceConfiguration(resource).get<boolean>("allRolesAvailableAsChatSender", false) === true;
 }
@@ -1274,9 +1281,35 @@ function getConfiguredDefaultChatSenderRole(resource?: vscode.Uri): string | und
   return configured || undefined;
 }
 
+function getConfiguredQuickSelectRole(resource?: vscode.Uri): boolean {
+  return getProvenanceConfiguration(resource).get<boolean>("quickSelectRole", true) === true;
+}
+
+function getConfiguredHideRolesWithSameBody(resource?: vscode.Uri): boolean {
+  return getProvenanceConfiguration(resource).get<boolean>("hideRolesWithSameBody", false) === true;
+}
+
 interface ChatSenderRoleOption {
   label: string;
   value: string;
+}
+
+function ensureTraceableSenderTrackSuffix(
+  displayName: string,
+  entry: Pick<Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number], "candidate" | "experimental">
+): string {
+  const trimmedDisplayName = displayName.trim();
+  if (entry.experimental) {
+    return /\(experimental\)\s*$/iu.test(trimmedDisplayName) ? trimmedDisplayName : `${trimmedDisplayName} (Experimental)`;
+  }
+  if (entry.candidate) {
+    return /\(candidate\)\s*$/iu.test(trimmedDisplayName) ? trimmedDisplayName : `${trimmedDisplayName} (Candidate)`;
+  }
+  return trimmedDisplayName;
+}
+
+function stripTraceableSenderTrackSuffix(value: string): string {
+  return value.replace(/\s*\((?:candidate|experimental)\)\s*$/iu, "").trim();
 }
 
 function stripTraceableRoleModelSuffix(displayName: string): string {
@@ -1289,6 +1322,42 @@ function buildChatSenderRoleIdentityKey(displayName: string): string {
 
 function normalizeChatSenderRoleLookupValue(value: string): string {
   return value.trim().normalize("NFKC").toLowerCase();
+}
+
+function getTraceableSenderTrackRank(entry: Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number]): number {
+  const displayName = entry.displayName.trim();
+  if (entry.experimental || /\(experimental\)\s*$/iu.test(displayName)) {
+    return 2;
+  }
+  if (entry.candidate || /\(candidate\)\s*$/iu.test(displayName)) {
+    return 1;
+  }
+  return 0;
+}
+
+function getTraceableSenderOptionTrackRank(option: ChatSenderRoleOption): number {
+  const displayValue = `${option.label} ${option.value}`.trim();
+  if (/\(experimental\)\s*$/iu.test(displayValue)) {
+    return 2;
+  }
+  if (/\(candidate\)\s*$/iu.test(displayValue)) {
+    return 1;
+  }
+  return 0;
+}
+
+function compareChatSenderRoleOptions(left: ChatSenderRoleOption, right: ChatSenderRoleOption): number {
+  const leftLabel = stripTraceableSenderTrackSuffix(stripTraceableRoleModelSuffix(left.label || left.value));
+  const rightLabel = stripTraceableSenderTrackSuffix(stripTraceableRoleModelSuffix(right.label || right.value));
+  const labelComparison = leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+  if (labelComparison !== 0) {
+    return labelComparison;
+  }
+  const trackComparison = getTraceableSenderOptionTrackRank(left) - getTraceableSenderOptionTrackRank(right);
+  if (trackComparison !== 0) {
+    return trackComparison;
+  }
+  return (left.value || left.label).localeCompare((right.value || right.label), undefined, { sensitivity: "base" });
 }
 
 function resolveConfiguredDefaultChatSenderRoleOption(
@@ -1307,38 +1376,87 @@ function resolveConfiguredDefaultChatSenderRoleOption(
   if (exactLabelMatch) {
     return exactLabelMatch.value;
   }
+  const exactSimplifiedLabelMatches = options.filter((option) => normalizeChatSenderRoleLookupValue(stripTraceableRoleModelSuffix(option.label)) === normalizedConfiguredValue);
+  if (exactSimplifiedLabelMatches.length > 0) {
+    return exactSimplifiedLabelMatches[0].value;
+  }
   const prefixMatches = options.filter((option) => normalizeChatSenderRoleLookupValue(option.label).startsWith(normalizedConfiguredValue));
-  return prefixMatches.length === 1 ? prefixMatches[0].value : undefined;
+  if (prefixMatches.length === 1) {
+    return prefixMatches[0].value;
+  }
+  const simplifiedPrefixMatches = options.filter((option) => normalizeChatSenderRoleLookupValue(stripTraceableRoleModelSuffix(option.label)).startsWith(normalizedConfiguredValue));
+  return simplifiedPrefixMatches.length > 0 ? simplifiedPrefixMatches[0].value : undefined;
 }
 
 function comparePreferredChatSenderEntries(
   left: Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number],
   right: Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number]
 ): number {
-  if (left.experimental !== right.experimental) {
-    return left.experimental ? 1 : -1;
-  }
-  if (left.candidate !== right.candidate) {
-    return left.candidate ? 1 : -1;
-  }
   const leftLabel = stripTraceableRoleModelSuffix(left.displayName);
   const rightLabel = stripTraceableRoleModelSuffix(right.displayName);
   const labelComparison = leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
   if (labelComparison !== 0) {
     return labelComparison;
   }
+  const trackComparison = getTraceableSenderTrackRank(left) - getTraceableSenderTrackRank(right);
+  if (trackComparison !== 0) {
+    return trackComparison;
+  }
   return left.displayName.localeCompare(right.displayName, undefined, { sensitivity: "base" });
+}
+
+function buildTraceableSenderBodyToolsetIdentityKey(
+  entry: Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number]
+): string | undefined {
+  const bodySignature = entry.bodySignature.trim();
+  if (!bodySignature) {
+    return undefined;
+  }
+  const normalizedToolDeclarations = [...new Set(
+    entry.toolDeclarations
+      .map((toolName) => toolName.trim().normalize("NFKC").toLowerCase())
+      .filter(Boolean)
+  )].sort();
+  return JSON.stringify({
+    bodySignature,
+    toolDeclarations: normalizedToolDeclarations
+  });
+}
+
+function maybeHideChatSenderRolesWithSameBody(
+  entries: readonly Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number][],
+  resource?: vscode.Uri
+): Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number][] {
+  if (!getConfiguredHideRolesWithSameBody(resource)) {
+    return [...entries];
+  }
+  const dedupedEntriesByBodySignature = new Map<string, Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number]>();
+  const dedupedEntriesWithoutBodySignature: Awaited<ReturnType<typeof listTraceableAgentCatalogEntries>>[number][] = [];
+  for (const entry of entries) {
+    const bodyToolsetIdentityKey = buildTraceableSenderBodyToolsetIdentityKey(entry);
+    if (!bodyToolsetIdentityKey) {
+      dedupedEntriesWithoutBodySignature.push(entry);
+      continue;
+    }
+    const existing = dedupedEntriesByBodySignature.get(bodyToolsetIdentityKey);
+    if (!existing || comparePreferredChatSenderEntries(entry, existing) < 0) {
+      dedupedEntriesByBodySignature.set(bodyToolsetIdentityKey, entry);
+    }
+  }
+  return [...dedupedEntriesByBodySignature.values(), ...dedupedEntriesWithoutBodySignature].sort(comparePreferredChatSenderEntries);
 }
 
 async function listConfiguredChatSenderRoleOptions(resource?: vscode.Uri): Promise<ChatSenderRoleOption[]> {
   const allEntries = await listTraceableAgentCatalogEntries();
   const includeAllRoles = getConfiguredAllRolesAvailableAsChatSender(resource);
-  const filteredEntries = allEntries.filter((entry) => includeAllRoles || entry.humanRole);
+  const filteredEntries = maybeHideChatSenderRolesWithSameBody(allEntries
+    .filter((entry) => includeAllRoles || entry.humanRole)
+    .sort(comparePreferredChatSenderEntries), resource);
   if (includeAllRoles) {
     return filteredEntries.map((entry) => ({
-      label: entry.displayName,
-      value: entry.displayName
-    }));
+      label: ensureTraceableSenderTrackSuffix(entry.displayName, entry),
+      value: ensureTraceableSenderTrackSuffix(entry.displayName, entry)
+    })).sort(compareChatSenderRoleOptions);
   }
   const dedupedEntriesByRole = new Map<string, typeof filteredEntries[number]>();
   for (const entry of filteredEntries) {
@@ -1352,7 +1470,8 @@ async function listConfiguredChatSenderRoleOptions(resource?: vscode.Uri): Promi
     .map((entry) => ({
       label: stripTraceableRoleModelSuffix(entry.displayName),
       value: entry.displayName
-    }));
+    }))
+    .sort(compareChatSenderRoleOptions);
 }
 
 async function resolveConfiguredDefaultChatSenderRole(resource?: vscode.Uri): Promise<string | undefined> {
@@ -1362,6 +1481,40 @@ async function resolveConfiguredDefaultChatSenderRole(resource?: vscode.Uri): Pr
   }
   const availableOptions = await listConfiguredChatSenderRoleOptions(resource);
   return resolveConfiguredDefaultChatSenderRoleOption(configuredValue, availableOptions);
+}
+
+type PromptableChatSenderRoleOption = {
+  label: string;
+  description?: string;
+  senderRole: string;
+};
+
+function buildPromptableChatSenderRoleOptions(
+  availableRoles: readonly ChatSenderRoleOption[],
+  resolvedDefaultSenderRole: string | undefined
+): PromptableChatSenderRoleOption[] {
+  const defaultOption = resolvedDefaultSenderRole
+    ? availableRoles.find((roleOption) => roleOption.value === resolvedDefaultSenderRole)
+    : undefined;
+  const options: PromptableChatSenderRoleOption[] = [];
+  if (defaultOption) {
+    options.push({
+      label: defaultOption.label,
+      description: defaultOption.value !== defaultOption.label ? defaultOption.value : undefined,
+      senderRole: defaultOption.value
+    });
+  }
+  options.push({
+    label: "No sender role",
+    description: "Leave the sender empty",
+    senderRole: ""
+  });
+  options.push(...availableRoles.map((roleOption) => ({
+    label: roleOption.label,
+    description: roleOption.value !== roleOption.label ? roleOption.value : undefined,
+    senderRole: roleOption.value
+  })));
+  return options;
 }
 
 function resolveConfiguredNewTraceableChatExportFolder(resource?: vscode.Uri): string | undefined {
@@ -1601,6 +1754,7 @@ export function activate(context: vscode.ExtensionContext): void {
       pinnedOpen: true,
       hideToolbarControls: true,
       initialChatViewEnabled: traceableEvidencePanelInitialChatViewByKey.get(getTraceableEvidencePanelKey(resolvedUri)) === true,
+      chatCollapseMode: getConfiguredTraceableChatCollapse(resolvedUri),
       chatSenderRoleOptions,
       defaultChatSenderRole,
       loadedToolDetailsByCallId
@@ -1789,6 +1943,10 @@ export function activate(context: vscode.ExtensionContext): void {
 </body>
 </html>`;
   };
+  const syncTraceableAuxiliaryViewsFromEvidenceSnapshot = (snapshot: TraceableSubagentDetailSnapshot): void => {
+    traceableStatusDetail.update(snapshot);
+    traceableStatusPanel.update(snapshot);
+  };
   const refreshTraceableEvidencePanel = async (panelKey: string, resolvedUri: vscode.Uri, panel: vscode.WebviewPanel): Promise<boolean> => {
     const latestState = await readTraceableEvidenceViewState(resolvedUri);
     if (traceableEvidencePanels.get(panelKey) !== panel) {
@@ -1804,6 +1962,7 @@ export function activate(context: vscode.ExtensionContext): void {
       traceableEvidenceLoadedToolDetails.get(panelKey) ?? new Map()
     );
     traceableEvidenceLoadedToolDetails.set(panelKey, mergedLoadedDetails);
+    syncTraceableAuxiliaryViewsFromEvidenceSnapshot(latestState.parsedState.snapshot);
     await renderTraceableEvidencePanel(
       panel,
       resolvedUri,
@@ -2141,6 +2300,7 @@ export function activate(context: vscode.ExtensionContext): void {
       traceableEvidenceLoadedToolDetails.get(panelKey) ?? new Map()
     );
     traceableEvidenceLoadedToolDetails.set(panelKey, initialLoadedToolDetails);
+    syncTraceableAuxiliaryViewsFromEvidenceSnapshot(initialState.parsedState.snapshot);
     await renderTraceableEvidencePanel(
       panel,
       resolvedUri,
@@ -2185,6 +2345,14 @@ export function activate(context: vscode.ExtensionContext): void {
     const prompt = userInput.trim();
     if (!prompt) {
       return;
+    }
+    const { parsedState } = await readTraceableEvidenceViewState(resolvedUri);
+    const rawParentRequest = parsedState?.result?.request;
+    const parentRequest = rawParentRequest && typeof rawParentRequest === "object"
+      ? rawParentRequest as Record<string, unknown>
+      : undefined;
+    if (!parentRequest) {
+      throw new Error(`TRACEABLE continuation parent ${JSON.stringify(resolvedUri.fsPath)} does not expose a readable request contract.`);
     }
     const revealMode = getTraceableAutoRevealMode();
     const revealToPanel = revealMode === "yes" || revealMode === "always";
@@ -2284,8 +2452,21 @@ export function activate(context: vscode.ExtensionContext): void {
       const resource = evidenceFilePath ? vscode.Uri.file(evidenceFilePath) : undefined;
       return getConfiguredTraceableDefaultView(resource) === "chat";
     },
-    async () => listConfiguredChatSenderRoleOptions(),
-    async () => resolveConfiguredDefaultChatSenderRole(),
+    (snapshot) => {
+      const evidenceFilePath = snapshot.evidenceFile?.filePath?.trim();
+      const resource = evidenceFilePath ? vscode.Uri.file(evidenceFilePath) : undefined;
+      return getConfiguredTraceableChatCollapse(resource);
+    },
+    async (snapshot) => {
+      const evidenceFilePath = snapshot.evidenceFile?.filePath?.trim();
+      const resource = evidenceFilePath ? vscode.Uri.file(evidenceFilePath) : undefined;
+      return listConfiguredChatSenderRoleOptions(resource);
+    },
+    async (snapshot) => {
+      const evidenceFilePath = snapshot.evidenceFile?.filePath?.trim();
+      const resource = evidenceFilePath ? vscode.Uri.file(evidenceFilePath) : undefined;
+      return resolveConfiguredDefaultChatSenderRole(resource);
+    },
     async (callId) => traceableStatusBar.getObservedToolDetail(callId),
     async () => {
       if (!activeTraceableRun || activeTraceableRun.cancelSource.token.isCancellationRequested) {
@@ -2369,6 +2550,15 @@ export function activate(context: vscode.ExtensionContext): void {
       },
       afterRun: async (result: TraceableSubagentRunResult) => {
         const finalized = await traceableEvidence.finalizeRequestedExport(result, renderTraceableSubagentMarkdown(result));
+        const finalizedEvidenceFilePath = finalized.evidenceFile?.filePath?.trim();
+        if (finalizedEvidenceFilePath) {
+          const latestState = await readTraceableEvidenceViewState(vscode.Uri.file(finalizedEvidenceFilePath));
+          if (latestState.parsedState?.snapshot) {
+            const latestSnapshot = traceableEvidence.updateSnapshot(latestState.parsedState.snapshot);
+            syncTraceableAuxiliaryViewsFromEvidenceSnapshot(latestSnapshot);
+            return finalized;
+          }
+        }
         const snapshot = traceableEvidence.getSnapshot();
         traceableStatusDetail.update(snapshot);
         traceableStatusPanel.update(snapshot);
@@ -2489,19 +2679,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const promptForChatSenderRoleSelection = async (resource?: vscode.Uri): Promise<string | undefined> => {
     const availableRoles = await listConfiguredChatSenderRoleOptions(resource);
+    const resolvedDefaultSenderRole = await resolveConfiguredDefaultChatSenderRole(resource);
+    const promptableOptions = buildPromptableChatSenderRoleOptions(availableRoles, resolvedDefaultSenderRole);
     const picked = await vscode.window.showQuickPick(
-      [
-        {
-          label: "No sender role",
-          description: "Leave the sender empty",
-          senderRole: ""
-        },
-        ...availableRoles.map((roleOption) => ({
-          label: roleOption.label,
-          description: roleOption.value !== roleOption.label ? roleOption.value : undefined,
-          senderRole: roleOption.value
-        }))
-      ],
+      promptableOptions,
       {
         title: "New Traceable Chat",
         placeHolder: "Optional: choose which sender role is behind the opening message"

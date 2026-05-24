@@ -147,8 +147,22 @@ function getEvidenceRoleDisplay(snapshot: TraceableSubagentDetailSnapshot): stri
   return "-";
 }
 
+function collapseRepeatedTraceableModelSegments(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const collapsed = trimmed
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .filter((segment, index, segments) => index === 0 || segment !== segments[index - 1])
+    .join("/");
+  return collapsed || undefined;
+}
+
 function formatSelectedRuntimeModelLabel(result: TraceableSubagentRunResult | undefined): string | undefined {
-  const displayName = result?.modelDisplayName?.trim();
+  const displayName = collapseRepeatedTraceableModelSegments(result?.modelDisplayName);
   if (displayName) {
     return displayName;
   }
@@ -157,7 +171,8 @@ function formatSelectedRuntimeModelLabel(result: TraceableSubagentRunResult | un
   }
   const segments = [result.model.vendor, result.model.family, result.model.id, result.model.version]
     .map((value) => value.trim())
-    .filter((value) => value.length > 0);
+    .filter((value) => value.length > 0)
+    .filter((segment, index, values) => index === 0 || segment !== values[index - 1]);
   return segments.length > 0 ? segments.join("/") : undefined;
 }
 

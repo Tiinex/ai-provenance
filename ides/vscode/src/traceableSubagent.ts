@@ -304,8 +304,9 @@ function buildTraceableRuntimeDecisionSummary(
   if (matchedSelectorSummary) {
     rationale.push(`Runtime matched selector ${JSON.stringify(matchedSelectorSummary)}.`);
   }
-  if (model?.name?.trim() || model?.id?.trim()) {
-    rationale.push(`Selected runtime model ${JSON.stringify(model.name?.trim() || model.id.trim())}.`);
+  const selectedModelDisplayName = model ? formatTraceableSelectedModelDisplayName(model) : undefined;
+  if (selectedModelDisplayName) {
+    rationale.push(`Selected runtime model ${JSON.stringify(selectedModelDisplayName)}.`);
   }
 
   return {
@@ -313,7 +314,7 @@ function buildTraceableRuntimeDecisionSummary(
       requestedModel,
       selectionMode,
       matchedSelector: matchedSelectorSummary,
-      selectedModelDisplayName: model?.name?.trim() || model?.id?.trim() || undefined,
+      selectedModelDisplayName,
       selectedModelId: model?.id?.trim() || undefined,
       availableCandidateCount,
       sendableCandidateCount,
@@ -850,6 +851,7 @@ export interface TraceableAgentCatalogLintFinding {
 }
 
 export interface TraceableModelCatalogEntry {
+  displayName?: string;
   vendor?: string;
   family?: string;
   id?: string;
@@ -858,6 +860,7 @@ export interface TraceableModelCatalogEntry {
 }
 
 export interface TraceableModelCatalogEntry {
+  displayName?: string;
   vendor?: string;
   family?: string;
   id?: string;
@@ -1809,6 +1812,59 @@ function normalizeHumanModelLabel(value: string): string {
     .toLowerCase();
 }
 
+const TRACEABLE_MODEL_DISPLAY_NAME_BY_ID = new Map<string, string>([
+  ["auto", "Auto"],
+  ["claude-haiku-4.5", "Claude Haiku 4.5"],
+  ["claude-opus-4.7", "Claude Opus 4.7"],
+  ["claude-sonnet-4.5", "Claude Sonnet 4.5"],
+  ["claude-sonnet-4.6", "Claude Sonnet 4.6"],
+  ["gemini-2.5-pro", "Gemini 2.5 Pro"],
+  ["gemini-3-flash-preview", "Gemini 3 Flash (Preview)"],
+  ["gemini-3.1-pro-preview", "Gemini 3.1 Pro (Preview)"],
+  ["gemini-3.5-flash", "Gemini 3.5 Flash"],
+  ["gpt-4.1", "GPT-4.1"],
+  ["gpt-5-mini", "GPT-5 mini"],
+  ["gpt-5.2", "GPT-5.2"],
+  ["gpt-5.2-codex", "GPT-5.2-Codex"],
+  ["gpt-5.3-codex", "GPT-5.3-Codex"],
+  ["gpt-5.4", "GPT-5.4"],
+  ["gpt-5.4-mini", "GPT-5.4 mini"],
+  ["gpt-5.5", "GPT-5.5"],
+  ["oswe-vscode-prime", "Raptor mini (Preview)"]
+]);
+
+export function formatTraceableModelIdDisplayName(modelId: string | undefined): string | undefined {
+  const trimmed = modelId?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const normalizedSegments = trimmed.includes("/") ? trimmed.split("/").filter(Boolean) : [];
+  const normalized = normalizedSegments.length > 0 ? normalizedSegments[normalizedSegments.length - 1].trim() || trimmed : trimmed;
+  return TRACEABLE_MODEL_DISPLAY_NAME_BY_ID.get(normalized) || undefined;
+}
+
+function formatTraceableSelectedModelDisplayName(model: Pick<vscode.LanguageModelChat, "name" | "vendor" | "id">): string {
+  const rawName = model.name?.trim() || "";
+  const collapsedSlashName = rawName
+    ? rawName
+        .split("/")
+        .map((segment) => segment.trim())
+        .filter(Boolean)
+        .filter((segment, index, segments) => index === 0 || segment !== segments[index - 1])
+        .join("/")
+    : "";
+  const humanizedId = formatTraceableModelIdDisplayName(model.id);
+  if (humanizedId) {
+    return humanizedId;
+  }
+  if (collapsedSlashName && !collapsedSlashName.includes("/")) {
+    return collapsedSlashName;
+  }
+  const vendor = model.vendor?.trim() || "";
+  const id = model.id?.trim() || "";
+  return collapsedSlashName || (vendor && id ? `${vendor}/${id}` : id || "model");
+}
+
 const SUPPORTED_AGENT_MODEL_DECLARATIONS = new Map<string, TraceableModelSelector>([
   ["gpt-5-mini", { vendor: "copilot", id: "gpt-5-mini" }],
   ["gpt-5-mini-copilot", { vendor: "copilot", id: "gpt-5-mini" }],
@@ -2114,6 +2170,7 @@ export async function listTraceableModelCatalogEntries(
     version: model.version
   })));
   const entries = candidates.available.map((model) => ({
+    displayName: formatTraceableSelectedModelDisplayName(model),
     vendor: model.vendor,
     family: model.family,
     id: model.id,
@@ -3755,6 +3812,7 @@ function fallbackResult(
     request: buildTraceableSubagentRequestEnvelope(input),
     outputMode: normalizeTraceableOutputMode(input.outputMode) ?? (input.exportToFolder?.trim() ? "summary-with-evidence-path" : undefined),
     model: extra.model ?? null,
+    modelDisplayName: extra.modelDisplayName ?? formatTraceableModelIdDisplayName(extra.model?.id),
     allowedToolNames: extra.allowedToolNames ?? [],
     toolCalls,
     traceStatus: extra.traceStatus ?? "trace-incomplete",
@@ -4487,7 +4545,7 @@ export async function runTraceableSubagent(
     id: model.id,
     version: model.version
   };
-  const selectedModelDisplayName = model.name?.trim() || model.id;
+  const selectedModelDisplayName = formatTraceableSelectedModelDisplayName(model);
 
   try {
     options.statusReporter?.setHeader?.({

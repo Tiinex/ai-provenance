@@ -14,6 +14,35 @@ interface PanelChatSenderRoleOption {
   value: string;
 }
 
+function stripPanelChatSenderTrackSuffix(value: string): string {
+  return value.replace(/\s*\((?:candidate|experimental)\)\s*$/iu, "").trim();
+}
+
+function getPanelChatSenderTrackRank(option: PanelChatSenderRoleOption): number {
+  const displayValue = `${option.label} ${option.value}`.trim();
+  if (/\(experimental\)\s*$/iu.test(displayValue)) {
+    return 2;
+  }
+  if (/\(candidate\)\s*$/iu.test(displayValue)) {
+    return 1;
+  }
+  return 0;
+}
+
+function comparePanelChatSenderRoleOptions(left: PanelChatSenderRoleOption, right: PanelChatSenderRoleOption): number {
+  const leftLabel = stripPanelChatSenderTrackSuffix(left.label.replace(/(?:\s*\([^)]*\))+\s*$/u, "").trim() || left.label.trim());
+  const rightLabel = stripPanelChatSenderTrackSuffix(right.label.replace(/(?:\s*\([^)]*\))+\s*$/u, "").trim() || right.label.trim());
+  const labelComparison = leftLabel.localeCompare(rightLabel, undefined, { sensitivity: "base" });
+  if (labelComparison !== 0) {
+    return labelComparison;
+  }
+  const trackComparison = getPanelChatSenderTrackRank(left) - getPanelChatSenderTrackRank(right);
+  if (trackComparison !== 0) {
+    return trackComparison;
+  }
+  return (left.value || left.label).localeCompare((right.value || right.label), undefined, { sensitivity: "base" });
+}
+
 type PanelEventKind = "Read" | "Search" | "Tool";
 type PanelEventOutcome = "running" | "success" | "deferred" | "failure";
 type PanelToolEvent = TraceableSubagentDetailSnapshot["recentTools"][number];
@@ -1277,19 +1306,56 @@ function renderTimingChip(
   return `<span class="${className}"${dataAttributes}${titleAttribute}><span class="${partClassName}-label">${escapeHtml(label)}</span><span class="${partClassName}-value">${escapeHtml(value)}</span></span>`;
 }
 
+function formatPanelRequestSummaryCompactValue(item: PanelRequestSummaryItem): string {
+  const normalizedLabel = item.label.trim().toLowerCase();
+  if (normalizedLabel !== "parent roles") {
+    return item.value;
+  }
+  const explicitRoles = (item.title || "")
+    .split(/\r?\n/u)
+    .slice(1)
+    .map((line) => line.replace(/\s*\([^)]*\)\s*/gu, " ").replace(/\s+/gu, " ").trim())
+    .filter(Boolean);
+  if (explicitRoles.length > 0) {
+    return explicitRoles.join(", ");
+  }
+  const compactRoles = item.value
+    .split(/[·,]/u)
+    .map((value) => value.replace(/\s*\([^)]*\)\s*/gu, " ").replace(/\s+/gu, " ").trim())
+    .filter(Boolean);
+  return compactRoles.length > 0 ? compactRoles.join(", ") : item.value;
+}
+
+function formatPanelRequestSummaryCompactLabel(item: PanelRequestSummaryItem): string {
+  const normalizedLabel = item.label.trim().toLowerCase();
+  switch (normalizedLabel) {
+    case "parent trace":
+      return "Trace";
+    case "parent roles":
+      return "Roles";
+    case "context in":
+      return "Context";
+    case "inherited":
+      return "From";
+    default:
+      return item.label;
+  }
+}
+
 function renderRequestSummaryBadge(item: PanelRequestSummaryItem, snapshot?: TraceableSubagentDetailSnapshot): string {
   const normalizedLabel = item.label.trim().toLowerCase();
+  const compactLabel = formatPanelRequestSummaryCompactLabel(item);
   if (normalizedLabel === "track") {
     const trackClassName = item.value.trim().toLowerCase() === "candidate"
       ? "activity-request-badge header-badge-track-candidate"
       : "activity-request-badge header-badge-track-experimental";
-    return renderHeaderBadge(item.label, item.value, trackClassName, item.title);
+    return renderHeaderBadge(compactLabel, item.value, trackClassName, item.title);
   }
   if (normalizedLabel === "model") {
-    return renderHeaderBadge(item.label, item.value, "activity-request-badge header-badge-model", item.title);
+    return renderHeaderBadge(compactLabel, item.value, "activity-request-badge header-badge-model", item.title);
   }
   if (normalizedLabel === "inherited") {
-    return renderHeaderBadge(item.label, item.value, "activity-request-badge activity-request-badge-inherited", item.title, "link");
+    return renderHeaderBadge(compactLabel, item.value, "activity-request-badge activity-request-badge-inherited", item.title, "link");
   }
   if (normalizedLabel === "parent trace") {
     const parentTracePath = item.title?.trim() || item.value.trim();
@@ -1297,7 +1363,7 @@ function renderRequestSummaryBadge(item: PanelRequestSummaryItem, snapshot?: Tra
       ? { type: "openFile", filePath: parentTracePath }
       : undefined;
     return renderHeaderBadge(
-      item.label,
+      compactLabel,
       item.value,
       "activity-request-badge",
       item.title,
@@ -1316,7 +1382,7 @@ function renderRequestSummaryBadge(item: PanelRequestSummaryItem, snapshot?: Tra
     const className = `${isHuman ? "header-badge-role-human" : "header-badge-role-ai"} ${isResolved ? "header-badge-role-resolved" : "header-badge-role-pending"}`;
     const value = isResolved ? (snapshot.header.agentName || item.value) : `${snapshot.header.agentName || item.value} (requested)`;
     return renderHeaderBadge(
-      item.label,
+      compactLabel,
       value,
       `activity-request-badge ${className}`,
       title,
@@ -1329,9 +1395,9 @@ function renderRequestSummaryBadge(item: PanelRequestSummaryItem, snapshot?: Tra
     const countBadge = countMatch
       ? renderHeaderBadge("Tools", countMatch[1], "activity-request-badge activity-request-badge-count", `${countMatch[1]} allowed tool${countMatch[1] === "1" ? "" : "s"}`)
       : "";
-    return `${countBadge}${renderHeaderBadge(item.label, item.value, "activity-request-badge", item.title)}`;
+    return `${countBadge}${renderHeaderBadge(compactLabel, item.value, "activity-request-badge", item.title)}`;
   }
-  return renderHeaderBadge(item.label, item.value, "activity-request-badge", item.title);
+  return renderHeaderBadge(compactLabel, formatPanelRequestSummaryCompactValue(item), "activity-request-badge", item.title);
 }
 
 function normalizePanelModelDisplayName(modelLabel: string | undefined): string {
@@ -1412,6 +1478,42 @@ function splitRequestSummary(summary: PanelRequestSummaryItem[], snapshot: Trace
     secondaryMetadata.push(item);
   }
   return { task, userInput, prominentMetadata, secondaryMetadata };
+}
+
+function requestSummaryInlineBadgePriority(item: PanelRequestSummaryItem): number {
+  const normalizedLabel = item.label.trim().toLowerCase();
+  const compactValue = formatPanelRequestSummaryCompactValue(item).replace(/\s+/gu, " ").trim();
+  if (normalizedLabel === "role" || normalizedLabel === "model" || normalizedLabel === "track") {
+    return 0;
+  }
+  if (normalizedLabel === "mode" || normalizedLabel === "output") {
+    return 1;
+  }
+  if (normalizedLabel === "parent roles") {
+    return compactValue.length <= 20 ? 2 : 3;
+  }
+  if (normalizedLabel === "carry" || normalizedLabel === "budget") {
+    return 2;
+  }
+  if (normalizedLabel === "parent trace" || normalizedLabel === "context in" || normalizedLabel === "inherited") {
+    return 5;
+  }
+  if (compactValue.length > 22) {
+    return 4;
+  }
+  return 3;
+}
+
+function orderRequestSummaryItemsForInlineFlow(summary: PanelRequestSummaryItem[]): PanelRequestSummaryItem[] {
+  return summary
+    .map((item, index) => ({
+      item,
+      index,
+      priority: requestSummaryInlineBadgePriority(item),
+      compactLength: formatPanelRequestSummaryCompactValue(item).replace(/\s+/gu, " ").trim().length
+    }))
+    .sort((left, right) => left.priority - right.priority || left.compactLength - right.compactLength || left.index - right.index)
+    .map((entry) => entry.item);
 }
 
 function renderRequestSummaryChips(summary: PanelRequestSummaryItem[], snapshot?: TraceableSubagentDetailSnapshot): string {
@@ -2018,9 +2120,9 @@ function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "reque
     || summarizeChatProjectionText(task?.value)
     || "Compact launch parameters for this trace lane.";
   const noteTitleAttribute = previewSource?.title ? ` title="${escapeHtml(previewSource.title)}"` : "";
-  const orderedMetadata = [...prominentMetadata, ...secondaryMetadata];
+  const orderedMetadata = orderRequestSummaryItemsForInlineFlow([...prominentMetadata, ...secondaryMetadata]);
   const metadataInlineMarkup = orderedMetadata.length > 0
-    ? `<div class="event-chips event-request-inline-chips">${renderRequestSummaryChips(orderedMetadata, entry.snapshot)}</div>`
+    ? renderRequestSummaryChips(orderedMetadata, entry.snapshot)
     : "";
   const metadataDetailSections = [...prominentMetadata, ...secondaryMetadata]
     .map((item) => {
@@ -2040,7 +2142,7 @@ function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "reque
     : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
   return [
     `<li class="event-row event-request" title="Traceable input"${expandableAttributes}>`,
-    `<div class="event-body event-request-body"><div class="event-request-copy"><div class="event-main"><span class="event-icon">${renderCodicon("mail")}</span><span class="event-label">Input</span>${summaryMarkup}</div>${detailSections ? `<div class="event-request-detail">${detailSections}</div>` : ""}</div>${metadataInlineMarkup}</div>`,
+    `<div class="event-body event-request-body"><div class="event-main event-request-heading-row"><span class="event-icon">${renderCodicon("mail")}</span><span class="event-label">Input</span>${summaryMarkup}${metadataInlineMarkup}</div>${detailSections ? `<div class="event-request-detail">${detailSections}</div>` : ""}</div>`,
     `</li>`
   ].join("");
 }
@@ -2839,12 +2941,10 @@ function renderChatProjectionMessage(options: {
 }
 
 function formatChatProjectionUserInputLabel(summary: PanelRequestSummaryItem[]): string {
-  const directParentRole = extractSingleDirectParentRoleFromRequestSummary(summary);
-  const displayRole = directParentRole
-    ?.replace(/\s*\([^)]*\)\s*/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-  return displayRole || "User";
+  const directParentRoles = extractDirectParentRolesFromRequestSummary(summary)
+    .map((role) => role.replace(/\s*\([^)]*\)\s*/gu, " ").replace(/\s+/gu, " ").trim())
+    .filter(Boolean);
+  return directParentRoles.length > 0 ? directParentRoles.join(", ") : "User";
 }
 
 function formatChatProjectionOutputLabel(header: TraceableSubagentDetailSnapshot["header"] | NonNullable<TraceableSubagentDetailSnapshot["lineageEntries"]>[number]["header"]): string {
@@ -2971,12 +3071,14 @@ function renderChatProjection(snapshot: TraceableSubagentDetailSnapshot): string
 
 function renderChatComposer(
   snapshot: TraceableSubagentDetailSnapshot,
-  chatSenderRoleOptions: ReadonlyArray<PanelChatSenderRoleOption> = []
+  chatSenderRoleOptions: ReadonlyArray<PanelChatSenderRoleOption> = [],
+  chatCollapseMode: "auto" | "always" = "auto"
 ): string {
   const traceFilePath = snapshot.evidenceFile?.filePath?.trim() || "";
   const traceFilePathAttribute = escapeHtml(traceFilePath);
+  const evidenceFileStatus = snapshot.evidenceFile?.status;
   const running = snapshot.status.phase === "running";
-  const canSubmit = traceFilePath.length > 0 && !running;
+  const canSubmit = traceFilePath.length > 0 && evidenceFileStatus === "ready" && !running;
   const senderOptionsMarkup = [
     `<button class="chat-composer-sender-option" type="button" role="option" data-chat-sender-option="true" data-value="" data-label=""><span class="chat-composer-sender-option-label">&nbsp;</span></button>`,
     ...chatSenderRoleOptions.map((roleOption) => `<button class="chat-composer-sender-option" type="button" role="option" data-chat-sender-option="true" data-value="${escapeHtml(roleOption.value)}" data-label="${escapeHtml(roleOption.label)}"><span class="chat-composer-sender-option-label">${escapeHtml(roleOption.label)}</span></button>`)
@@ -2985,12 +3087,15 @@ function renderChatComposer(
     ? "Chat composer requires a saved TRACEABLE evidence file for continuation."
     : running
       ? "Please wait"
-      : "Enter sends the next turn. Shift+Enter adds a new line.";
+      : evidenceFileStatus !== "ready"
+        ? "Please wait for the evidence file to finish exporting."
+        : "Enter sends the next turn. Shift+Enter adds a new line.";
   return [
-    `<section class="chat-composer${canSubmit ? "" : " chat-composer-disabled"}" data-chat-composer="true" data-chat-trace-path="${traceFilePathAttribute}" data-chat-base-disabled="${canSubmit ? "false" : "true"}">`,
+    `<section class="chat-composer${canSubmit ? "" : " chat-composer-disabled"}" data-chat-composer="true" data-chat-trace-path="${traceFilePathAttribute}" data-chat-base-disabled="${canSubmit ? "false" : "true"}" data-chat-collapse-mode="${escapeHtml(chatCollapseMode)}" data-chat-composer-collapsed="false">`,
     `<div class="chat-composer-shell">`,
     `<textarea class="chat-composer-input" data-chat-input="true" rows="3" placeholder="Continue this trace..."${canSubmit ? "" : " readonly"}></textarea>`,
     `<div class="chat-composer-actions">`,
+    `<input class="chat-composer-compact-input" data-chat-input-compact="true" type="text" placeholder="Continue this trace..."${canSubmit ? "" : " readonly"} hidden />`,
     `<div class="chat-composer-hint">${escapeHtml(hint)}</div>`,
     `<div class="chat-composer-submit-controls">`,
     `<div class="chat-composer-sender" title="Sender role behind the current text, not the recipient agent role." data-chat-sender-picker="true">`,
@@ -3009,7 +3114,7 @@ function renderChatComposer(
   ].join("");
 }
 
-function extractSingleDirectParentRoleFromRequestSummary(summary: PanelRequestSummaryItem[]): string | undefined {
+function extractDirectParentRolesFromRequestSummary(summary: PanelRequestSummaryItem[]): string[] {
   let modeTitle = "";
   let parentRolesItem: PanelRequestSummaryItem | undefined;
   for (const item of summary) {
@@ -3023,21 +3128,24 @@ function extractSingleDirectParentRoleFromRequestSummary(summary: PanelRequestSu
     }
   }
   if (!/Declared input mode:\s*DIRECT\b/u.test(modeTitle)) {
-    return undefined;
+    return [];
   }
   const titleLines = (parentRolesItem?.title || "")
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .filter(Boolean);
   const explicitRoles = titleLines.length > 1 ? titleLines.slice(1) : [];
-  if (explicitRoles.length === 1) {
-    return explicitRoles[0];
+  if (explicitRoles.length > 0) {
+    return explicitRoles;
   }
   const compactValue = parentRolesItem?.value?.trim() || "";
-  if (!compactValue || /[·,]/u.test(compactValue)) {
-    return undefined;
+  if (!compactValue) {
+    return [];
   }
-  return compactValue;
+  return compactValue
+    .split(/[·,]/u)
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function normalizePanelChatSenderRoleIdentity(value: string): string {
@@ -3065,7 +3173,7 @@ function resolveAvailableChatSenderRoleValue(
     return undefined;
   }
   const identityMatches = chatSenderRoleOptions.filter((option) => normalizePanelChatSenderRoleIdentity(option.label) === normalizedIdentity);
-  return identityMatches.length === 1 ? identityMatches[0].value : undefined;
+  return identityMatches.length > 0 ? identityMatches[0].value : undefined;
 }
 
 function resolveInitialChatSenderRole(
@@ -3073,7 +3181,7 @@ function resolveInitialChatSenderRole(
   chatSenderRoleOptions: readonly PanelChatSenderRoleOption[],
   configuredDefaultValue: string | undefined
 ): string {
-  const previousDirectParentRole = extractSingleDirectParentRoleFromRequestSummary(snapshot.requestSummary);
+  const previousDirectParentRole = extractDirectParentRolesFromRequestSummary(snapshot.requestSummary)[0];
   const resolvedPreviousDirectParentRole = resolveAvailableChatSenderRoleValue(previousDirectParentRole, chatSenderRoleOptions);
   if (resolvedPreviousDirectParentRole) {
     return resolvedPreviousDirectParentRole;
@@ -3140,6 +3248,7 @@ export function renderTraceableSubagentPanelHtml(
     hideToolbarControls?: boolean;
     showChatToggle?: boolean;
     initialChatViewEnabled?: boolean;
+    chatCollapseMode?: "auto" | "always";
     chatSenderRoleOptions?: ReadonlyArray<PanelChatSenderRoleOption>;
     defaultChatSenderRole?: string;
     loadedToolDetailsByCallId?: ReadonlyMap<string, PanelLoadedToolDetail>;
@@ -3152,7 +3261,10 @@ export function renderTraceableSubagentPanelHtml(
   const hideToolbarControls = options.hideToolbarControls === true;
   const showChatToggle = options.showChatToggle !== false;
   const initialChatViewEnabled = options.initialChatViewEnabled === true;
-  const chatSenderRoleOptions = Array.isArray(options.chatSenderRoleOptions) ? options.chatSenderRoleOptions : [];
+  const chatCollapseMode = options.chatCollapseMode === "always" ? "always" : "auto";
+  const chatSenderRoleOptions = Array.isArray(options.chatSenderRoleOptions)
+    ? [...options.chatSenderRoleOptions].sort(comparePanelChatSenderRoleOptions)
+    : [];
   const initialChatSenderRole = resolveInitialChatSenderRole(
     snapshot,
     chatSenderRoleOptions,
@@ -4173,6 +4285,22 @@ export function renderTraceableSubagentPanelHtml(
       outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
       outline-offset: 1px;
     }
+    .chat-composer-compact-input {
+      display: none;
+      flex: 1 1 18rem;
+      min-width: 0;
+      height: 34px;
+      border-radius: 9px;
+      border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+      background: color-mix(in srgb, var(--bg) 94%, var(--chip-bg));
+      color: var(--fg);
+      font: inherit;
+      padding: 0 10px;
+    }
+    .chat-composer-compact-input:focus-visible {
+      outline: 1px solid color-mix(in srgb, var(--accent) 72%, transparent);
+      outline-offset: 1px;
+    }
     .chat-composer-actions {
       display: flex;
       flex-wrap: wrap;
@@ -4200,6 +4328,35 @@ export function renderTraceableSubagentPanelHtml(
     }
     .chat-composer-pending .chat-composer-shell {
       opacity: 0.72;
+    }
+    .chat-composer[data-chat-composer-collapsed="true"] .chat-composer-input {
+      display: none;
+    }
+    .chat-composer[data-chat-composer-collapsed="true"] .chat-composer-actions {
+      flex-wrap: nowrap;
+      justify-content: flex-start;
+      align-items: center;
+    }
+    .chat-composer[data-chat-composer-collapsed="true"] .chat-composer-compact-input {
+      display: block;
+      flex: 1 1 auto;
+      min-width: 10rem;
+    }
+    .chat-composer[data-chat-composer-collapsed="true"] .chat-composer-hint {
+      display: none;
+    }
+    .chat-composer[data-chat-composer-collapsed="true"] .chat-composer-submit-controls {
+      flex: 0 0 auto;
+      min-width: max-content;
+      margin-left: 0;
+    }
+    .chat-composer[data-chat-composer-collapsed="true"] .chat-composer-sender {
+      max-width: min(16rem, 34vw);
+      flex: 0 1 auto;
+    }
+    .chat-composer[data-chat-composer-collapsed="true"] .chat-composer-sender-toggle {
+      min-width: min(10rem, 30vw);
+      width: auto;
     }
     .chat-composer-send[disabled] {
       cursor: not-allowed;
@@ -4594,10 +4751,16 @@ export function renderTraceableSubagentPanelHtml(
     }
     .event-request-body {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      column-gap: 10px;
-      row-gap: 2px;
+      gap: 6px;
       align-items: start;
+    }
+    .event-request-heading-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-items: flex-start;
+      align-content: flex-start;
+      min-width: 0;
     }
     .event-request-copy {
       display: grid;
@@ -4607,6 +4770,7 @@ export function renderTraceableSubagentPanelHtml(
     .event-request .event-main {
       align-items: flex-start;
       min-width: 0;
+      flex: 1 1 24rem;
     }
     .event-request .event-label,
     .event-output .event-label {
@@ -4614,8 +4778,9 @@ export function renderTraceableSubagentPanelHtml(
       padding-right: 2px;
     }
     .event-request .event-summary-inline {
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-width: 0;
+      max-width: min(100%, 38rem);
       padding-left: 4px;
     }
     .event-output .event-summary-inline {
@@ -4633,16 +4798,15 @@ export function renderTraceableSubagentPanelHtml(
       gap: 6px;
       align-items: flex-start;
     }
-    .event-request-inline-chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      justify-content: flex-end;
-      align-self: start;
-      align-items: flex-start;
-      align-content: flex-start;
+    .event-request-heading-row > .activity-request-badge {
+      flex: 0 1 auto;
       min-width: 0;
-      max-width: min(42rem, 55vw);
+      max-width: 100%;
+    }
+    .event-request .event-summary-inline + .activity-request-badge,
+    .event-request .event-expand-indicator + .activity-request-badge,
+    .event-request .event-label + .activity-request-badge {
+      margin-left: auto;
     }
     .event-request .event-request-detail {
       padding-left: 20px;
@@ -5017,7 +5181,7 @@ export function renderTraceableSubagentPanelHtml(
     </section>
     ${renderToolsetDisclosure(snapshot)}
     <ul class="events">${eventRows}</ul>
-    <section class="chat-view">${renderChatProjection(snapshot)}${renderChatComposer(snapshot, chatSenderRoleOptions)}</section>
+    <section class="chat-view">${renderChatProjection(snapshot)}${renderChatComposer(snapshot, chatSenderRoleOptions, chatCollapseMode)}</section>
   </div>
   <script>
     const vscodeApi = acquireVsCodeApi();
@@ -5066,6 +5230,31 @@ export function renderTraceableSubagentPanelHtml(
       return fallback;
     };
 
+    const normalizePanelChatSenderRoleIdentity = (value) => {
+      return typeof value === 'string'
+        ? value.replace(/\s*\([^)]*\)\s*/gu, ' ').trim().normalize('NFKC').toLowerCase()
+        : '';
+    };
+
+    const reconcileRestoredChatSenderRole = (value) => {
+      const restoredValue = typeof value === 'string' ? value.trim() : '';
+      if (!restoredValue) {
+        return '';
+      }
+      const preferredDefaultValue = typeof defaultPanelState.chatSenderRole === 'string'
+        ? defaultPanelState.chatSenderRole.trim()
+        : '';
+      if (!preferredDefaultValue || restoredValue === preferredDefaultValue) {
+        return restoredValue;
+      }
+      const restoredIdentity = normalizePanelChatSenderRoleIdentity(restoredValue);
+      const preferredIdentity = normalizePanelChatSenderRoleIdentity(preferredDefaultValue);
+      if (restoredIdentity && preferredIdentity && restoredIdentity === preferredIdentity) {
+        return preferredDefaultValue;
+      }
+      return restoredValue;
+    };
+
     const readPanelState = () => {
       const state = vscodeApi.getState();
       return state && typeof state === 'object'
@@ -5102,7 +5291,7 @@ export function renderTraceableSubagentPanelHtml(
               : {},
             chatViewEnabled: coerceBooleanLike(state.chatViewEnabled, defaultPanelState.chatViewEnabled),
             chatComposerDraft: typeof state.chatComposerDraft === 'string' ? state.chatComposerDraft : '',
-            chatSenderRole: typeof state.chatSenderRole === 'string' ? state.chatSenderRole : '',
+            chatSenderRole: reconcileRestoredChatSenderRole(state.chatSenderRole),
             runId: typeof state.runId === 'string' ? state.runId : ''
           }
         : defaultPanelState;
@@ -5114,6 +5303,7 @@ export function renderTraceableSubagentPanelHtml(
     let initialChatViewApplyPending = true;
     let pendingFollowLatestLayoutSync = false;
     let lastManualChatScrollIntentAt = 0;
+    const CHAT_COMPOSER_COMPACT_HEIGHT_THRESHOLD_PX = 430;
     const currentRunId = ${JSON.stringify(snapshot.startedAt)};
     const panelRoot = document.querySelector('.panel-root');
     const toolsetDisclosure = document.querySelector('.toolset-disclosure');
@@ -5124,6 +5314,7 @@ export function renderTraceableSubagentPanelHtml(
     const chatToggleButton = document.querySelector('[data-chat-toggle="true"]');
     const chatComposer = document.querySelector('[data-chat-composer="true"]');
     const chatInput = document.querySelector('[data-chat-input="true"]');
+    const chatCompactInput = document.querySelector('[data-chat-input-compact="true"]');
     const chatSenderRolePicker = document.querySelector('[data-chat-sender-picker="true"]');
     const chatSenderRoleToggle = document.querySelector('[data-chat-sender-toggle="true"]');
     const chatSenderRoleCurrentLabel = document.querySelector('[data-chat-sender-current-label="true"]');
@@ -5151,6 +5342,63 @@ export function renderTraceableSubagentPanelHtml(
     const persistPanelState = (nextState) => {
       panelState = { ...panelState, ...nextState };
       vscodeApi.setState(panelState);
+    };
+
+    const chatCollapseMode = chatComposer instanceof HTMLElement && chatComposer.dataset.chatCollapseMode === 'always' ? 'always' : 'auto';
+
+    const syncChatComposerDraftControls = (value) => {
+      if (chatInput instanceof HTMLTextAreaElement && chatInput.value !== value) {
+        chatInput.value = value;
+      }
+      if (chatCompactInput instanceof HTMLInputElement && chatCompactInput.value !== value) {
+        chatCompactInput.value = value;
+      }
+    };
+
+    const resolveChatComposerCollapsed = () => {
+      if (chatCollapseMode === 'always') {
+        return true;
+      }
+      if (panelState.chatViewEnabled !== true) {
+        return false;
+      }
+      const candidateHeights = [];
+      if (chatViewSection instanceof HTMLElement && !chatViewSection.hidden && chatViewSection.clientHeight > 0) {
+        candidateHeights.push(chatViewSection.clientHeight);
+      }
+      if (panelRoot instanceof HTMLElement && panelRoot.clientHeight > 0) {
+        candidateHeights.push(panelRoot.clientHeight);
+      }
+      if (window.innerHeight > 0) {
+        candidateHeights.push(window.innerHeight);
+      }
+      const availableHeight = candidateHeights.length > 0 ? Math.min(...candidateHeights) : 0;
+      return availableHeight > 0 && availableHeight <= CHAT_COMPOSER_COMPACT_HEIGHT_THRESHOLD_PX;
+    };
+
+    const getActiveChatInputControl = () => {
+      const collapsed = chatComposer instanceof HTMLElement && chatComposer.dataset.chatComposerCollapsed === 'true';
+      if (collapsed && chatCompactInput instanceof HTMLInputElement) {
+        return chatCompactInput;
+      }
+      if (chatInput instanceof HTMLTextAreaElement) {
+        return chatInput;
+      }
+      return chatCompactInput instanceof HTMLInputElement ? chatCompactInput : undefined;
+    };
+
+    const applyChatComposerCollapseState = () => {
+      const collapsed = resolveChatComposerCollapsed();
+      if (chatComposer instanceof HTMLElement) {
+        chatComposer.dataset.chatComposerCollapsed = collapsed ? 'true' : 'false';
+      }
+      if (chatCompactInput instanceof HTMLInputElement) {
+        chatCompactInput.hidden = !collapsed;
+      }
+      if (chatInput instanceof HTMLTextAreaElement) {
+        chatInput.hidden = collapsed;
+      }
+      syncChatComposerDraftControls(panelState.chatComposerDraft);
     };
 
     const dispatchDataMessage = (target) => {
@@ -5518,12 +5766,18 @@ export function renderTraceableSubagentPanelHtml(
     };
 
     const updateChatComposerState = () => {
-      if (!(chatInput instanceof HTMLTextAreaElement) || !(chatSendButton instanceof HTMLButtonElement)) {
+      if (!(chatSendButton instanceof HTMLButtonElement)) {
         return;
       }
       const baseDisabled = chatComposer instanceof HTMLElement && chatComposer.dataset.chatBaseDisabled === 'true';
       const isDisabled = baseDisabled || chatSubmitPending;
-      chatInput.readOnly = false;
+      syncChatComposerDraftControls(panelState.chatComposerDraft);
+      if (chatInput instanceof HTMLTextAreaElement) {
+        chatInput.readOnly = false;
+      }
+      if (chatCompactInput instanceof HTMLInputElement) {
+        chatCompactInput.readOnly = false;
+      }
       if (chatSenderRoleToggle instanceof HTMLButtonElement) {
         chatSenderRoleToggle.disabled = baseDisabled || chatSubmitPending;
         if (baseDisabled || chatSubmitPending) {
@@ -5534,15 +5788,13 @@ export function renderTraceableSubagentPanelHtml(
         chatComposer.classList.toggle('chat-composer-pending', chatSubmitPending);
       }
       applyChatSenderRoleState();
-      const hasDraft = chatInput.value.trim().length > 0;
+      const activeInput = getActiveChatInputControl();
+      const hasDraft = (activeInput?.value || '').trim().length > 0;
       chatSendButton.disabled = isDisabled || !hasDraft;
       chatSendButton.textContent = chatSubmitPending ? 'Sending...' : 'Send';
     };
 
     const focusChatComposerInput = () => {
-      if (!(chatInput instanceof HTMLTextAreaElement)) {
-        return;
-      }
       if (panelState.chatViewEnabled !== true) {
         return;
       }
@@ -5550,15 +5802,19 @@ export function renderTraceableSubagentPanelHtml(
         return;
       }
       requestAnimationFrame(() => {
-        if (!(chatInput instanceof HTMLTextAreaElement) || document.activeElement === chatInput) {
+        const activeInput = getActiveChatInputControl();
+        if (!(activeInput instanceof HTMLTextAreaElement) && !(activeInput instanceof HTMLInputElement)) {
+          return;
+        }
+        if (document.activeElement === activeInput) {
           return;
         }
         try {
-          chatInput.focus({ preventScroll: true });
-          const valueLength = chatInput.value.length;
-          chatInput.setSelectionRange(valueLength, valueLength);
+          activeInput.focus({ preventScroll: true });
+          const valueLength = activeInput.value.length;
+          activeInput.setSelectionRange(valueLength, valueLength);
         } catch {
-          chatInput.focus();
+          activeInput.focus();
         }
       });
     };
@@ -5586,9 +5842,7 @@ export function renderTraceableSubagentPanelHtml(
           chatToggleButton.setAttribute('aria-pressed', chatViewEnabled ? 'true' : 'false');
           chatToggleButton.textContent = chatViewEnabled ? 'Detailed' : 'Chat';
         }
-        if (chatInput instanceof HTMLTextAreaElement && chatInput.value !== panelState.chatComposerDraft) {
-          chatInput.value = panelState.chatComposerDraft;
-        }
+        applyChatComposerCollapseState();
         updateChatComposerState();
         focusChatComposerInput();
         if (chatViewEnabled) {
@@ -5619,6 +5873,12 @@ export function renderTraceableSubagentPanelHtml(
 
     applyChatViewState();
 
+    const handleChatComposerInput = (value) => {
+      persistPanelState({ chatComposerDraft: value });
+      syncChatComposerDraftControls(value);
+      updateChatComposerState();
+    };
+
     if (chatToggleButton instanceof HTMLButtonElement) {
       chatToggleButton.addEventListener('click', (event) => {
         event.preventDefault();
@@ -5637,11 +5897,25 @@ export function renderTraceableSubagentPanelHtml(
 
     if (chatInput instanceof HTMLTextAreaElement) {
       chatInput.addEventListener('input', () => {
-        persistPanelState({ chatComposerDraft: chatInput.value });
-        updateChatComposerState();
+        handleChatComposerInput(chatInput.value);
       });
       chatInput.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter' || event.shiftKey) {
+          return;
+        }
+        event.preventDefault();
+        if (chatSendButton instanceof HTMLButtonElement && !chatSendButton.disabled) {
+          chatSendButton.click();
+        }
+      });
+    }
+
+    if (chatCompactInput instanceof HTMLInputElement) {
+      chatCompactInput.addEventListener('input', () => {
+        handleChatComposerInput(chatCompactInput.value);
+      });
+      chatCompactInput.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') {
           return;
         }
         event.preventDefault();
@@ -5715,10 +5989,11 @@ export function renderTraceableSubagentPanelHtml(
 
     if (chatSendButton instanceof HTMLButtonElement) {
       chatSendButton.addEventListener('click', () => {
-        if (!(chatInput instanceof HTMLTextAreaElement) || !(chatComposer instanceof HTMLElement)) {
+        const activeInput = getActiveChatInputControl();
+        if (((!(activeInput instanceof HTMLTextAreaElement)) && (!(activeInput instanceof HTMLInputElement))) || !(chatComposer instanceof HTMLElement)) {
           return;
         }
-        const prompt = chatInput.value.trim();
+        const prompt = activeInput.value.trim();
         const tracePath = chatComposer.dataset.chatTracePath || '';
         const parentRoles = typeof panelState.chatSenderRole === 'string' && panelState.chatSenderRole.trim()
           ? panelState.chatSenderRole.trim()
@@ -5731,7 +6006,7 @@ export function renderTraceableSubagentPanelHtml(
         closeChatSenderMenu();
         updateChatComposerState();
         persistPanelState({ chatComposerDraft: '' });
-        chatInput.value = '';
+        syncChatComposerDraftControls('');
         vscodeApi.postMessage({ type: 'submitChatTurn', prompt, ...(parentRoles ? { parentRoles } : {}) });
       });
     }
@@ -6244,6 +6519,7 @@ export function renderTraceableSubagentPanelHtml(
 
     if (typeof ResizeObserver === 'function') {
       const followLatestLayoutObserver = new ResizeObserver(() => {
+        applyChatComposerCollapseState();
         scheduleFollowLatestLayoutSync();
       });
       if (panelRoot instanceof HTMLElement) {
@@ -6424,8 +6700,9 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     private readonly onOpenFile: (target: string | TraceableResolvedPathTarget, startLine?: number, endLine?: number, baseDir?: string) => Promise<void>,
     private readonly onSubmitChatTurn: (input: { parentTracePath: string; userInput: string; parentRoles?: string | string[] }) => Promise<void>,
     private readonly getInitialChatViewEnabled: (snapshot: TraceableSubagentDetailSnapshot) => boolean,
-    private readonly getChatSenderRoleOptions: () => Promise<PanelChatSenderRoleOption[]>,
-    private readonly getDefaultChatSenderRole: () => Promise<string | undefined>,
+    private readonly getChatCollapseMode: (snapshot: TraceableSubagentDetailSnapshot) => "auto" | "always",
+    private readonly getChatSenderRoleOptions: (snapshot: TraceableSubagentDetailSnapshot) => Promise<PanelChatSenderRoleOption[]>,
+    private readonly getDefaultChatSenderRole: (snapshot: TraceableSubagentDetailSnapshot) => Promise<string | undefined>,
     private readonly onLoadToolDetail: (callId: string) => Promise<PanelLoadedToolDetail | undefined>,
     private readonly onStopRun: () => Promise<void>,
     private readonly onClosePanel: () => Promise<void>,
@@ -6615,12 +6892,13 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     if (!this.view) {
       return;
     }
-    const chatSenderRoleOptions = await this.getChatSenderRoleOptions();
-    const defaultChatSenderRole = await this.getDefaultChatSenderRole();
+    const chatSenderRoleOptions = await this.getChatSenderRoleOptions(this.snapshot);
+    const defaultChatSenderRole = await this.getDefaultChatSenderRole(this.snapshot);
     this.view.title = "Traceable";
     this.view.description = this.snapshot.status.message;
     this.view.webview.html = renderTraceableSubagentPanelHtml(this.snapshot, this.codiconCssHref, {
       initialChatViewEnabled: this.getInitialChatViewEnabled(this.snapshot),
+      chatCollapseMode: this.getChatCollapseMode(this.snapshot),
       pinnedOpen: this.pinnedOpen,
       chatSenderRoleOptions,
       defaultChatSenderRole,

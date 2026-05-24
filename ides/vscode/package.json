@@ -496,110 +496,157 @@
         "priority": "option"
       }
     ],
-    "configuration": {
-      "title": "Tiinex AI Provenance",
-      "properties": {
-        "tiinex.aiProvenance.traceableAutoReveal": {
-          "type": "string",
-          "enum": [
-            "yes",
-            "no",
-            "always"
-          ],
-          "default": "yes",
-          "description": "Control whether TRACEABLE opens automatically when run_traceable_subagent starts. `yes` honors the request flag `reveal: true`, `no` suppresses automatic opening, and `always` opens the TRACEABLE panel for every run regardless of the request flag."
-        },
-        "tiinex.aiProvenance.traceableAutoHide": {
-          "type": "string",
-          "enum": [
-            "yes",
-            "no"
-          ],
-          "default": "yes",
-          "description": "Control whether TRACEABLE hides automatically when the transient status-bar run clears. `yes` hides the panel together with the transient status surface unless you explicitly reopened TRACEABLE to keep it open, and `no` leaves the panel open until you close it manually."
-        },
-        "tiinex.aiProvenance.traceableEvidenceOpenTarget": {
-          "type": "string",
-          "enum": [
-            "traceable",
-            "markdown",
-            "source"
-          ],
-          "default": "traceable",
-          "description": "Control what the TRACEABLE View button and parent-trace openings use for `.trace.md` artifacts. `traceable` opens the reconstructed TRACEABLE evidence view, `markdown` opens the markdown preview, and `source` opens the source file directly."
-        },
-        "tiinex.aiProvenance.defaultView": {
-          "type": "string",
-          "enum": [
-            "detailed",
-            "chat"
-          ],
-          "default": "detailed",
-          "scope": "resource",
-          "description": "Control the default TRACEABLE view when you open an existing `.trace.md` file directly or VS Code rehydrates that editor. `detailed` keeps the activity view as the default, and `chat` opens the simplified chat projection by default. Explicit New Traceable Chat and Resume Traceable Chat opens still use their own flow-specific initial view."
-        },
-        "tiinex.aiProvenance.defaultNewTraceableChatExportTo": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "description": "Optional default export folder for New Traceable Chat when it starts from an `.agent.md` file. The command surface writes an absolute path so multi-root workspaces do not have to guess which repo a relative path belongs to. Relative values are only resolved automatically in single-root workspaces; an empty value means ask whether to pick a folder or start unsaved."
-        },
-        "tiinex.aiProvenance.allRolesAvailableAsChatSender": {
-          "type": "boolean",
-          "default": false,
-          "scope": "resource",
-          "description": "Control which roles the optional chat sender picker exposes for TRACEABLE chat turns and New Traceable Chat. `false` limits the sender list to human roles only, and `true` exposes every traceable role as a possible sender."
-        },
-        "tiinex.aiProvenance.defaultChatSenderRole": {
-          "type": "string",
-          "default": "",
-          "scope": "resource",
-          "description": "Optional default sender role hint for the TRACEABLE chat composer UI only. The UX resolves exact display-name matches first, then exact or unique prefix matches on the simplified sender label such as `Sigma` or `Sig`. Ambiguous values are ignored instead of guessing. This does not change tooling validation or runtime parentRoles semantics."
-        },
-        "tiinex.aiProvenance.traceablePreferredModels": {
-          "type": "array",
-          "items": {
-            "type": "string"
+    "configuration": [
+      {
+        "id": "tiinex.aiProvenance",
+        "title": "Tiinex AI Provenance",
+        "order": 1,
+        "properties": {
+          "tiinex.aiProvenance.traceableAutoReveal": {
+            "type": "string",
+            "enum": [
+              "yes",
+              "no",
+              "always"
+            ],
+            "default": "yes",
+            "description": "Control whether TRACEABLE opens automatically when run_traceable_subagent starts. `yes` honors the request flag `reveal: true`, `no` suppresses automatic opening, and `always` opens the TRACEABLE panel for every run regardless of the request flag."
           },
-          "default": [],
-          "description": "TRACEABLE fallback model declarations to treat as the candidate pool when a run does not provide modelSelector.id and the resolved agent role does not declare supported model/models entries. After block filtering, the runtime shuffles among the supported preferred candidates instead of always taking the first one. Use the same human-readable declaration syntax as agent frontmatter model/models, for example `GPT-5 mini (copilot)` or `GPT-5.4 mini (copilot)`."
-        },
-        "tiinex.aiProvenance.traceableBlockedModels": {
-          "type": "array",
-          "items": {
-            "type": "string"
+          "tiinex.aiProvenance.traceableAutoHide": {
+            "type": "string",
+            "enum": [
+              "yes",
+              "no"
+            ],
+            "default": "yes",
+            "description": "Control whether TRACEABLE hides automatically when the transient status-bar run clears. `yes` hides the panel together with the transient status surface unless you explicitly reopened TRACEABLE to keep it open, and `no` leaves the panel open until you close it manually."
           },
-          "default": [],
-          "description": "TRACEABLE model declarations to disallow for role-driven selection, preferred-model fallback selection, and explicit caller-provided modelSelector.id. Blocked declarations are also marked in `list_traceable_models` instead of being hidden. Use the same human-readable declaration syntax as agent frontmatter model/models."
-        },
-        "tiinex.aiProvenance.traceableUndeclaredMaxIterations": {
-          "type": "number",
-          "default": 100,
-          "description": "Runtime-only fail-safe maximum model iterations for TRACEABLE runs when the caller does not provide `budgetPolicy`. This hidden guard is not surfaced to the child request contract."
-        },
-        "tiinex.aiProvenance.traceableUndeclaredMaxToolCalls": {
-          "type": "number",
-          "default": 100,
-          "description": "Runtime-only fail-safe maximum tool calls for TRACEABLE runs when the caller does not provide `budgetPolicy`. This hidden guard is not surfaced to the child request contract."
-        },
-        "tiinex.aiProvenance.evidenceMaxItems": {
-          "type": "number",
-          "default": 10,
-          "description": "Default bounded item count for TRACEABLE evidence list surfaces."
-        },
-        "tiinex.aiProvenance.includeSupportArtifacts": {
-          "type": "boolean",
-          "default": true,
-          "description": "Include support-artifact references such as debug logs in reconstructed TRACEABLE markdown when available."
-        },
-        "tiinex.aiProvenance.maximumDepthOutsideOfWorkspaceRootForRelativePaths": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "description": "Maximum number of directory levels a TRACEABLE markdown path may travel above the containing workspace root before the extension falls back to an absolute file URI. This only affects extension-authored markdown output."
+          "tiinex.aiProvenance.traceableEvidenceOpenTarget": {
+            "type": "string",
+            "enum": [
+              "traceable",
+              "markdown",
+              "source"
+            ],
+            "default": "traceable",
+            "description": "Control what the TRACEABLE View button and parent-trace openings use for `.trace.md` artifacts. `traceable` opens the reconstructed TRACEABLE evidence view, `markdown` opens the markdown preview, and `source` opens the source file directly."
+          },
+          "tiinex.aiProvenance.defaultView": {
+            "type": "string",
+            "enum": [
+              "detailed",
+              "chat"
+            ],
+            "default": "detailed",
+            "scope": "resource",
+            "description": "Control the default TRACEABLE view when you open an existing `.trace.md` file directly or VS Code rehydrates that editor. `detailed` keeps the activity view as the default, and `chat` opens the simplified chat projection by default. Explicit New Traceable Chat and Resume Traceable Chat opens still use their own flow-specific initial view."
+          },
+          "tiinex.aiProvenance.defaultNewTraceableChatExportTo": {
+            "type": "string",
+            "default": "",
+            "scope": "resource",
+            "description": "Optional default export folder for New Traceable Chat when it starts from an `.agent.md` file. The command surface writes an absolute path so multi-root workspaces do not have to guess which repo a relative path belongs to. Relative values are only resolved automatically in single-root workspaces; an empty value means ask whether to pick a folder or start unsaved."
+          }
+        }
+      },
+      {
+        "id": "tiinex.aiProvenance.chat",
+        "title": "Traceable Chat",
+        "order": 2,
+        "properties": {
+          "tiinex.aiProvenance.allRolesAvailableAsChatSender": {
+            "type": "boolean",
+            "default": false,
+            "scope": "resource",
+            "description": "Control which roles the optional chat sender picker exposes for TRACEABLE chat turns and New Traceable Chat. `false` limits the sender list to human roles only, and `true` exposes every traceable role as a possible sender."
+          },
+          "tiinex.aiProvenance.hideRolesWithSameBody": {
+            "type": "boolean",
+            "default": false,
+            "scope": "resource",
+            "description": "Hide duplicate sender-role variants only when both the role body and the declared toolset match, then keep the first preferred match from the normal sender ordering. Roles that share body text but declare different tools remain visible as separate sender options."
+          },
+          "tiinex.aiProvenance.defaultChatSenderRole": {
+            "type": "string",
+            "default": "",
+            "scope": "resource",
+            "description": "Optional default sender role hint for the TRACEABLE chat composer UI only. The UX resolves exact display-name matches first, then exact or unique prefix matches on the simplified sender label such as `Sigma` or `Sig`. Ambiguous values are ignored instead of guessing. This does not change tooling validation or runtime parentRoles semantics."
+          },
+          "tiinex.aiProvenance.quickSelectRole": {
+            "type": "boolean",
+            "default": true,
+            "scope": "resource",
+            "description": "Reserved sender quick-pick preference for New Traceable Chat and Resume Traceable Chat. The sender quick pick remains visible, and a resolved default sender role is still promoted first so explicit sender selection stays stable."
+          },
+          "tiinex.aiProvenance.chatCollapse": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "always"
+            ],
+            "default": "auto",
+            "scope": "resource",
+            "description": "Control whether the TRACEABLE chat composer uses its compact single-line input variant. `auto` collapses when the available chat panel height is small, and `always` keeps the compact composer active whenever chat view is shown."
+          }
+        }
+      },
+      {
+        "id": "tiinex.aiProvenance.models",
+        "title": "Traceable Models",
+        "order": 3,
+        "properties": {
+          "tiinex.aiProvenance.traceablePreferredModels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "TRACEABLE fallback model declarations to treat as the candidate pool when a run does not provide modelSelector.id and the resolved agent role does not declare supported model/models entries. After block filtering, the runtime shuffles among the supported preferred candidates instead of always taking the first one. Use the same human-readable declaration syntax as agent frontmatter model/models, for example `GPT-5 mini (copilot)` or `GPT-5.4 mini (copilot)`."
+          },
+          "tiinex.aiProvenance.traceableBlockedModels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": [],
+            "description": "TRACEABLE model declarations to disallow for role-driven selection, preferred-model fallback selection, and explicit caller-provided modelSelector.id. Blocked declarations are also marked in `list_traceable_models` instead of being hidden. Use the same human-readable declaration syntax as agent frontmatter model/models."
+          },
+          "tiinex.aiProvenance.traceableUndeclaredMaxIterations": {
+            "type": "number",
+            "default": 100,
+            "description": "Runtime-only fail-safe maximum model iterations for TRACEABLE runs when the caller does not provide `budgetPolicy`. This hidden guard is not surfaced to the child request contract."
+          },
+          "tiinex.aiProvenance.traceableUndeclaredMaxToolCalls": {
+            "type": "number",
+            "default": 100,
+            "description": "Runtime-only fail-safe maximum tool calls for TRACEABLE runs when the caller does not provide `budgetPolicy`. This hidden guard is not surfaced to the child request contract."
+          }
+        }
+      },
+      {
+        "id": "tiinex.aiProvenance.evidence",
+        "title": "Evidence Output",
+        "order": 4,
+        "properties": {
+          "tiinex.aiProvenance.evidenceMaxItems": {
+            "type": "number",
+            "default": 10,
+            "description": "Default bounded item count for TRACEABLE evidence list surfaces."
+          },
+          "tiinex.aiProvenance.includeSupportArtifacts": {
+            "type": "boolean",
+            "default": true,
+            "description": "Include support-artifact references such as debug logs in reconstructed TRACEABLE markdown when available."
+          },
+          "tiinex.aiProvenance.maximumDepthOutsideOfWorkspaceRootForRelativePaths": {
+            "type": "number",
+            "default": 1,
+            "minimum": 0,
+            "description": "Maximum number of directory levels a TRACEABLE markdown path may travel above the containing workspace root before the extension falls back to an absolute file URI. This only affects extension-authored markdown output."
+          }
         }
       }
-    }
+    ]
   },
   "scripts": {
     "build": "npm run typecheck && node scripts/build.mjs",
