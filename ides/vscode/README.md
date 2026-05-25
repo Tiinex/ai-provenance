@@ -4,6 +4,26 @@ This package is the VS Code-specific extension surface for the `ai-provenance` r
 
 It intentionally lives under `ides/vscode` because the repo itself is broader than one IDE.
 
+## Marketplace Release
+
+`0.2.0` is the first Marketplace-oriented minor release for the provenance-side TRACEABLE package.
+
+It is aimed at operators who need bounded provenance work in VS Code rather than broad autonomous orchestration.
+
+Install path:
+
+1. open the VS Code Extensions view
+2. search for `Tiinex AI Provenance`
+3. install the extension published by `tiinex`
+
+Release highlights in `0.2.0`:
+
+- bounded TRACEABLE child-lane execution through `#runTraceableSubagent`
+- bounded role and model discovery through `#listTraceableAgents` and `#listTraceableModels`
+- reconstructed `.trace.md` evidence inspection through `#viewTraceableSubagent`
+- provenance-owned TRACEABLE viewer UX with reopen-to-source and reopen-to-markdown-preview flows
+- persisted runtime-decision visibility for model selection and request routing in evidence artifacts
+
 ## Quick Start
 
 After you install the extension in VS Code, the shortest useful first flow is:
@@ -22,6 +42,21 @@ This package is built for bounded provenance-first TRACEABLE work.
 - It can export and reopen `.trace.md` evidence artifacts when the lane requests `exportToFolder` or when the user explicitly chooses export.
 - It is designed for narrow investigation slices, not broad autonomous orchestration.
 - In chat, the first-class invocation surface is usually `#` plus the prompt reference name.
+
+## Marketplace Fit
+
+This extension is a good fit when you want to:
+
+- run a bounded TRACEABLE lane against one narrow investigative slice
+- export `.trace.md` evidence and inspect it without rerunning the child lane
+- inspect runtime decisions, request contracts, lineage, and outcome surfaces from one evidence artifact
+- keep provenance-oriented tooling separate from Local-chat session-store and delete tooling
+
+This extension is not trying to be:
+
+- a general autonomous agent framework
+- a replacement for `ai-vscode-tools` Local-chat/store workflows
+- a hidden tool-routing layer with opaque evidence output
 
 Current status:
 

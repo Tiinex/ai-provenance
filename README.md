@@ -24,6 +24,20 @@ Current repo state:
 
 The strongest provenance-oriented value in the current toolchain is now here: bounded request/result semantics, optional `.trace.md` evidence generation plus inspection, and a receiver-safe path between raw markdown source and reconstructed TRACEABLE evidence reading.
 
+## VS Code Marketplace
+
+The current VS Code package lives in `ides/vscode` and is being prepared for Marketplace delivery as `Tiinex AI Provenance` from publisher `tiinex`.
+
+Marketplace-facing highlights for the current extension package:
+
+- bounded TRACEABLE child-lane execution through `run_traceable_subagent`
+- bounded role/model discovery through `list_traceable_agents` and `list_traceable_models`
+- bounded evidence inspection through `view_traceable_subagent`
+- reconstructed `.trace.md` evidence viewing with reopen-to-source and reopen-to-markdown-preview flows
+- persisted runtime-decision visibility for model selection and request routing inside evidence artifacts
+
+The extension-specific install and operator documentation lives in `ides/vscode/README.md`.
+
 ## Intended Scope
 
 This repo is meant to hold provenance-first ecosystem tooling, starting with VS Code and leaving room for future IDE support later.
