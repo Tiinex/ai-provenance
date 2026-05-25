@@ -92,6 +92,7 @@ const traceableSubagentToolMutex = new QueuedMutex();
 
 const TRACEABLE_SURFACE_OPTIONS: Array<{ label: string; description: string; surface: TraceableEvidenceSurface }> = [
   { label: "Rendered Output", description: "Render the reconstructed TRACEABLE output surface", surface: "rendered-output" },
+  { label: "Conversation Brief", description: "Compact current-turn, parent-context, routing, and grounding-gap brief for agent inspection", surface: "conversation-brief" },
   { label: "Request Summary", description: "Bounded request-summary items captured in the evidence snapshot", surface: "request-summary" },
   { label: "Request Contract", description: "Separate explicit request, inherited state, contextual inputs, and safe implicit defaults", surface: "request-contract" },
   { label: "Summary", description: "Compact overview of the evidence artifact", surface: "summary" },

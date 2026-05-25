@@ -3,7 +3,14 @@ import path from "node:path";
 export interface TraceableEvidenceFileNameParts {
   lineageLabel: string;
   lineageDepth: number;
-  slug: string;
+  slug?: string;
+}
+
+export interface TraceableEvidenceFileNameFormatOptions {
+  topLevelMinDigits?: number;
+  childMinDigits?: number;
+  removeZeroPadding?: boolean;
+  omitRoleSlug?: boolean;
 }
 
 function normalizeComparablePath(value: string): string {
@@ -19,8 +26,26 @@ function isPathWithinRoot(filePath: string, rootPath: string): boolean {
   return normalizedFile === normalizedRoot || normalizedFile.startsWith(`${normalizedRoot}/`);
 }
 
-export function formatTraceableLineageIndex(index: number): string {
-  return String(index).padStart(2, "0");
+function normalizeTraceableEvidenceFileNameFormatOptions(
+  options?: TraceableEvidenceFileNameFormatOptions
+): Required<TraceableEvidenceFileNameFormatOptions> {
+  const topLevelMinDigits = Number.isInteger(options?.topLevelMinDigits) && (options?.topLevelMinDigits ?? 0) > 0
+    ? Number(options?.topLevelMinDigits)
+    : 2;
+  const childMinDigits = Number.isInteger(options?.childMinDigits) && (options?.childMinDigits ?? 0) > 0
+    ? Number(options?.childMinDigits)
+    : 2;
+  return {
+    topLevelMinDigits,
+    childMinDigits,
+    removeZeroPadding: options?.removeZeroPadding === true,
+    omitRoleSlug: options?.omitRoleSlug === true
+  };
+}
+
+export function formatTraceableLineageIndex(index: number, minDigits = 2): string {
+  const normalized = String(index);
+  return minDigits > 1 ? normalized.padStart(minDigits, "0") : normalized;
 }
 
 export function parseTraceableEvidenceFileName(fileName: string | undefined): TraceableEvidenceFileNameParts | undefined {
@@ -37,21 +62,34 @@ export function parseTraceableEvidenceFileName(fileName: string | undefined): Tr
     index += 1;
   }
   const slugParts = parts.slice(index);
-  if (lineageSegments.length === 0 || slugParts.length === 0) {
+  if (lineageSegments.length === 0) {
     return undefined;
   }
   return {
     lineageLabel: lineageSegments.join("-"),
     lineageDepth: lineageSegments.length,
-    slug: slugParts.join("-")
+    slug: slugParts.length > 0 ? slugParts.join("-") : undefined
   };
 }
 
-export function buildTraceableEvidenceFileName(lineageLabel: string, roleSlug: string): string {
+export function buildTraceableEvidenceFileName(
+  lineageLabel: string,
+  roleSlug: string,
+  options?: TraceableEvidenceFileNameFormatOptions
+): string {
+  const normalizedOptions = normalizeTraceableEvidenceFileNameFormatOptions(options);
+  if (normalizedOptions.omitRoleSlug || !roleSlug.trim()) {
+    return `${lineageLabel}.trace.md`;
+  }
   return `${lineageLabel}-${roleSlug}.trace.md`;
 }
 
-export function allocateNextTraceableLineageLabel(existingFileNames: string[], parentLineageLabel?: string): string {
+export function allocateNextTraceableLineageLabel(
+  existingFileNames: string[],
+  parentLineageLabel?: string,
+  options?: TraceableEvidenceFileNameFormatOptions
+): string {
+  const normalizedOptions = normalizeTraceableEvidenceFileNameFormatOptions(options);
   const parsedEntries = existingFileNames
     .map((entry) => parseTraceableEvidenceFileName(path.basename(entry)))
     .flatMap((entry) => entry ? [entry] : []);
@@ -64,14 +102,14 @@ export function allocateNextTraceableLineageLabel(existingFileNames: string[], p
       .map((segments) => Number.parseInt(segments[segments.length - 1], 10))
       .filter((value) => Number.isInteger(value) && value > 0);
     const nextIndex = directChildIndexes.length > 0 ? Math.max(...directChildIndexes) + 1 : 1;
-    return `${parentLineageLabel.trim()}-${formatTraceableLineageIndex(nextIndex)}`;
+    return `${parentLineageLabel.trim()}-${formatTraceableLineageIndex(nextIndex, normalizedOptions.removeZeroPadding ? 1 : normalizedOptions.childMinDigits)}`;
   }
 
   const topLevelIndexes = parsedEntries
     .map((entry) => Number.parseInt(entry.lineageLabel.split("-")[0], 10))
     .filter((value) => Number.isInteger(value) && value > 0);
   const nextIndex = topLevelIndexes.length > 0 ? Math.max(...topLevelIndexes) + 1 : 1;
-  return formatTraceableLineageIndex(nextIndex);
+  return formatTraceableLineageIndex(nextIndex, normalizedOptions.removeZeroPadding ? 1 : normalizedOptions.topLevelMinDigits);
 }
 
 export function computeStoredParentTracePath(parentTracePath: string, childEvidenceFilePath: string, workspaceRoots: string[]): string {

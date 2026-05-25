@@ -1,6 +1,7 @@
 import { existsSync, promises as fs } from "node:fs";
 import path from "node:path";
 import * as vscode from "vscode";
+import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import { parseTraceableEvidenceStateMarkdown } from "./traceableEvidence";
 import { allocateNextTraceableLineageLabel, parseTraceableEvidenceFileName } from "./traceableLineage";
 import { isRuntimeAgentArtifactPath, normalizeArtifactPath } from "./tools/runtimeAgentArtifactStructure";
@@ -865,6 +866,7 @@ export interface TraceableAgentCatalogEntry {
   artifactStem: string;
   filePath: string;
   workspaceFolderName: string;
+  description: string;
   bodySignature: string;
   modelDeclaration?: string;
   modelDeclarations: string[];
@@ -1031,26 +1033,51 @@ function normalizeTraceableSenderIdentityKey(value: string | undefined): string 
   return normalized ? normalized.toLowerCase() : undefined;
 }
 
-function buildTraceableParentRoleIdentitySummary(parentRoles: string[] | undefined): Array<{
+function buildTraceableParentRoleIdentitySummary(
+  parentRoles: string[] | undefined,
+  catalogEntries?: readonly TraceableAgentCatalogEntry[]
+): Array<{
   roleName: string;
   senderId: string;
   senderKey: string;
+  description?: string;
+  filePath?: string;
+  modelDeclaration?: string;
+  candidate?: boolean;
+  experimental?: boolean;
+  humanRole?: boolean;
 }> {
   const summaries: Array<{
     roleName: string;
     senderId: string;
     senderKey: string;
+    description?: string;
+    filePath?: string;
+    modelDeclaration?: string;
+    candidate?: boolean;
+    experimental?: boolean;
+    humanRole?: boolean;
 }> = [];
+  const catalogByDisplayName = new Map(
+    (catalogEntries ?? []).map((entry) => [normalizeTraceableAgentDisplayName(entry.displayName), entry] as const)
+  );
   for (const roleName of parentRoles ?? []) {
     const senderId = normalizeTraceableSenderIdentity(roleName);
     const senderKey = normalizeTraceableSenderIdentityKey(roleName);
     if (!roleName?.trim() || !senderId || !senderKey) {
       continue;
     }
+    const catalogEntry = catalogByDisplayName.get(normalizeTraceableAgentDisplayName(roleName));
     summaries.push({
       roleName,
       senderId,
-      senderKey
+      senderKey,
+      description: catalogEntry?.description,
+      filePath: catalogEntry?.filePath,
+      modelDeclaration: catalogEntry?.modelDeclaration,
+      candidate: catalogEntry?.candidate,
+      experimental: catalogEntry?.experimental,
+      humanRole: catalogEntry?.humanRole
     });
   }
   return summaries;
@@ -1681,7 +1708,16 @@ function mergeTraceableReductionHints(...groups: Array<string[] | undefined>): s
   for (const group of groups) {
     for (const entry of group ?? []) {
       const normalized = entry.trim();
-      if (!normalized || merged.includes(normalized)) {
+      if (!normalized) {
+        continue;
+      }
+      if (normalized.startsWith("Continuation role referent:")) {
+        const existingIndex = merged.findIndex((value) => value.startsWith("Continuation role referent:"));
+        if (existingIndex >= 0) {
+          merged.splice(existingIndex, 1);
+        }
+      }
+      if (merged.includes(normalized)) {
         continue;
       }
       merged.push(normalized);
@@ -1699,15 +1735,19 @@ function inferTraceableContinuationRoleReferent(userInput: string | undefined): 
   }
   if (
     /\b(vilken|vad)\s+roll\s+har\s+jag\b/u.test(normalized)
+    || /\bvem\s+är\s+jag\b/u.test(normalized)
     || /\b(which|what)\s+role\s+do\s+i\s+have\b/u.test(normalized)
     || /\bwhat\s+is\s+my\s+role\b/u.test(normalized)
+    || /\bwho\s+am\s+i\b/u.test(normalized)
   ) {
     return "sender";
   }
   if (
     /\b(vilken|vad)\s+roll\s+har\s+du\b/u.test(normalized)
+    || /\bvem\s+är\s+du\b/u.test(normalized)
     || /\b(which|what)\s+role\s+do\s+you\s+have\b/u.test(normalized)
     || /\bwhat\s+is\s+your\s+role\b/u.test(normalized)
+    || /\bwho\s+are\s+you\b/u.test(normalized)
   ) {
     return "agent";
   }
@@ -1850,7 +1890,11 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
   const siblingNames = (await fs.readdir(path.dirname(resolvedParentTracePath), { withFileTypes: true }).catch(() => []))
     .filter((entry) => entry.isFile())
     .map((entry) => entry.name);
-  const lineageLabel = allocateNextTraceableLineageLabel(siblingNames, parentFileParts.lineageLabel);
+  const lineageLabel = allocateNextTraceableLineageLabel(
+    siblingNames,
+    parentFileParts.lineageLabel,
+    getTraceableEvidenceFileNameFormatOptions(vscode.workspace.getConfiguration("tiinex.aiProvenance"))
+  );
   const inheritedCarriedContext = normalizeInheritedCarriedContext(parentRequest.carriedContext);
   const inheritedActiveCarryForward = normalizeTraceableCarryForwardState(parsed.result?.activeCarryForward);
   const inheritedSenderAdaptationState = filterTraceableSenderAdaptationStateForParentRoles(
@@ -2200,6 +2244,7 @@ async function readTraceableAgentCatalogEntry(filePath: string, workspaceFolderN
     artifactStem: path.basename(filePath, ".agent.md"),
     filePath,
     workspaceFolderName,
+    description,
     bodySignature: buildTraceableAgentBodySignature(parsed.body),
     modelDeclaration: modelDeclarations[0],
     modelDeclarations,
@@ -2860,17 +2905,20 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   return request;
 }
 
-export function buildTraceableSubagentPromptSections(
+export async function buildTraceableSubagentPromptSections(
   input: TraceableSubagentInput,
   selectedToolNames: string[],
   resolvedAgentArtifact?: ResolvedTraceableAgentArtifact
-): { requestEnvelope: Record<string, unknown>; promptTexts: string[] } {
+): Promise<{ requestEnvelope: Record<string, unknown>; promptTexts: string[] }> {
   const requestEnvelope = buildTraceableSubagentRequestEnvelope(input);
   const wrapperPolicy = normalizedWrapperPolicy(input);
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const normalizedValidationMode = normalizeTraceableValidationMode(input.validationMode);
   const normalizedParentRoles = normalizeTraceableParentRoles(input.parentRoles);
-  const parentRoleIdentitySummary = buildTraceableParentRoleIdentitySummary(normalizedParentRoles);
+  const parentRoleCatalogEntries = normalizedParentRoles?.length
+    ? await listTraceableAgentCatalogEntries()
+    : undefined;
+  const parentRoleIdentitySummary = buildTraceableParentRoleIdentitySummary(normalizedParentRoles, parentRoleCatalogEntries);
   const normalizedSenderAdaptationState = normalizedParentRoles?.length
     ? filterTraceableSenderAdaptationStateForParentRoles(normalizeTraceableSenderAdaptationState(input.senderAdaptationState), normalizedParentRoles)
     : undefined;
@@ -2917,7 +2965,7 @@ export function buildTraceableSubagentPromptSections(
     ...(parentRoleIdentitySummary.length
       ? [
         `Parent role identities for the incoming turn:\n${JSON.stringify(parentRoleIdentitySummary, null, 2)}`,
-        "Parent-role grounding rule:\n- Treat these parent role identities as the source-side roles behind the incoming userInput.\n- Use roleName as the exact display identity when you need to mention who sent or backed the message.\n- Use senderId as the normalized identity behind that source role when weighing continuity, sender adaptation, or repeated turns from the same sender family.\n- Do not collapse parent role identities into your own role identity.\n- If the user asks who they are, who sent the message, or which role is behind the current turn, answer from these parent role identities rather than guessing from broader context."
+        "Parent-role grounding rule:\n- Treat these parent role identities as the source-side roles behind the incoming userInput.\n- Use roleName as the exact display identity when you need to mention who sent or backed the message.\n- Use senderId as the normalized identity behind that source role when weighing continuity, sender adaptation, or repeated turns from the same sender family.\n- Do not collapse parent role identities into your own role identity.\n- If the user asks who they are, who sent the message, or which role is behind the current turn, answer from these parent role identities rather than guessing from broader context.\n- When a parent role identity includes an explicit description or model declaration, use that grounded role metadata before generic inference when explaining what that sender-side role is for or what it means."
       ]
       : []),
     ...(normalizedParentRoles?.length
@@ -3041,12 +3089,12 @@ function sanitizeResolvedAgentRoleBodyForTraceablePrompt(body: string): string {
   ].join("\n\n");
 }
 
-function buildTraceableSubagentMessages(
+async function buildTraceableSubagentMessages(
   input: TraceableSubagentInput,
   selectedToolNames: string[],
   resolvedAgentArtifact?: ResolvedTraceableAgentArtifact
-): vscode.LanguageModelChatMessage[] {
-  const promptSections = buildTraceableSubagentPromptSections(input, selectedToolNames, resolvedAgentArtifact);
+): Promise<vscode.LanguageModelChatMessage[]> {
+  const promptSections = await buildTraceableSubagentPromptSections(input, selectedToolNames, resolvedAgentArtifact);
   const combinedPrompt = promptSections.promptTexts.join("\n\n---\n\n");
   return [vscode.LanguageModelChatMessage.User(combinedPrompt)];
 }
@@ -4846,7 +4894,7 @@ export async function runTraceableSubagent(
     // Best-effort UI status only; runtime correctness should not depend on it.
   }
 
-  const messages = buildTraceableSubagentMessages(input, selectedToolNames, resolvedAgentArtifact);
+  const messages = await buildTraceableSubagentMessages(input, selectedToolNames, resolvedAgentArtifact);
   let lastRawModelText = "";
   let completedIterations = 0;
   let lastIterationSummary: Record<string, unknown> | undefined;

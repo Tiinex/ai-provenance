@@ -19,6 +19,7 @@ export interface ParsedTraceableEvidenceState {
 
 export type TraceableEvidenceSurface =
   | "rendered-output"
+  | "conversation-brief"
   | "request-summary"
   | "request-contract"
   | "summary"
@@ -648,6 +649,7 @@ export function normalizeTraceableViewSurface(value: unknown): TraceableEvidence
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   switch (normalized) {
     case "rendered-output":
+    case "conversation-brief":
     case "request-summary":
     case "request-contract":
     case "summary":
@@ -940,6 +942,144 @@ function renderTraceableCarryStateSection(lines: string[], title: string, state:
   renderStringList("Drop Reasons", getArray(state.dropReasons));
 }
 
+function describeTraceableViewedEvidenceStatus(parsed: ParsedTraceableEvidenceState): { value: string; reconciled: boolean } {
+  const snapshotEvidence = getRecord(parsed.snapshot.evidenceFile) ?? {};
+  const resultEvidence = getRecord(getRecord(parsed.result)?.evidenceFile) ?? {};
+  const persistedStatus = getString(resultEvidence.status) ?? getString(snapshotEvidence.status) ?? "-";
+  const currentPhase = getString(getRecord(parsed.snapshot.status)?.phase);
+  const stopReason = getString(getRecord(parsed.result)?.stopReason);
+  if (persistedStatus === "writing" && (currentPhase === "completed" || stopReason === "completed")) {
+    return {
+      value: "writing (persisted status on an otherwise completed artifact)",
+      reconciled: true
+    };
+  }
+  return {
+    value: persistedStatus,
+    reconciled: false
+  };
+}
+
+function getTraceableRequestUserInput(parsed: ParsedTraceableEvidenceState): string | undefined {
+  const request = getRecord(parsed.result?.request);
+  const direct = getString(request?.userInput)?.trim();
+  if (direct) {
+    return direct;
+  }
+  const requestSummary = getArray<Record<string, unknown>>(parsed.snapshot.requestSummary);
+  const userInputItem = requestSummary.find((item) => (getString(item.label) ?? "").trim().toLowerCase() === "user input");
+  return getString(userInputItem?.title) ?? getString(userInputItem?.value) ?? undefined;
+}
+
+function getTraceableRequestParentRoles(parsed: ParsedTraceableEvidenceState): string[] {
+  const request = getRecord(parsed.result?.request);
+  const parentRoles = request?.parentRoles;
+  if (typeof parentRoles === "string") {
+    return parentRoles.trim() ? [parentRoles.trim()] : [];
+  }
+  return getArray(parentRoles)
+    .map((value) => getString(value)?.trim())
+    .filter((value): value is string => Boolean(value));
+}
+
+function normalizeTraceableConversationBriefGap(value: string): { key: string; display: string } {
+  const trimmed = value.trim();
+  const withoutPrefix = trimmed.replace(/^Unsupported claim:\s*/iu, "");
+  const withoutMissingSuffix = withoutPrefix.replace(/:\s*Reported as a plain-text missing item by the child lane\.?$/iu, "");
+  const display = withoutMissingSuffix.trim() || trimmed;
+  const key = display.toLowerCase();
+  return { key, display };
+}
+
+function collectTraceableConversationBriefGaps(parsed: ParsedTraceableEvidenceState): string[] {
+  const result = getRecord(parsed.result) ?? {};
+  const evidenceBasis = getRecord(result.evidenceBasis) ?? {};
+  const unsupportedClaims = getArray(evidenceBasis.unsupportedClaims)
+    .map((value) => getString(value)?.trim())
+    .filter((value): value is string => Boolean(value))
+    .map((value) => `Unsupported claim: ${value}`);
+  const expectedButMissing = getArray(result.expectedButMissing)
+    .map((value) => getString(value)?.trim())
+    .filter((value): value is string => Boolean(value));
+  const carryState = getRecord(result.activeCarryForward) ?? getRecord(result.recoverableCarryState);
+  const remainingGoals = getArray(carryState?.remainingGoals)
+    .map((value) => getString(value)?.trim())
+    .filter((value): value is string => Boolean(value));
+  const nextSuggestedStart = getString(carryState?.nextSuggestedStart)?.trim();
+  const seen = new Set<string>();
+  const candidates: string[] = [...expectedButMissing, ...remainingGoals, ...(nextSuggestedStart ? [nextSuggestedStart] : []), ...unsupportedClaims];
+  return candidates
+    .flatMap((value) => {
+      const normalized = normalizeTraceableConversationBriefGap(value);
+      if (seen.has(normalized.key)) {
+        return [];
+      }
+      seen.add(normalized.key);
+      return [normalized.display];
+    })
+    .slice(0, 4);
+}
+
+export function renderTraceableEvidenceConversationBriefMarkdown(input: {
+  filePath: string;
+  parsed: ParsedTraceableEvidenceState;
+}): string {
+  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const snapshot = input.parsed.snapshot;
+  const result = getRecord(input.parsed.result) ?? {};
+  const header = getRecord(snapshot.header) ?? {};
+  const runtimeDecision = getRecord(result.runtimeDecisionSummary) ?? {};
+  const requestRouting = getRecord(runtimeDecision.requestRouting) ?? {};
+  const evidenceFile = getRecord(getRecord(result.evidenceFile) ?? getRecord(snapshot.evidenceFile)) ?? {};
+  const evidenceStatus = describeTraceableViewedEvidenceStatus(input.parsed);
+  const requestUserInput = getTraceableRequestUserInput(input.parsed);
+  const parentRoles = getTraceableRequestParentRoles(input.parsed);
+  const parentTraceReference = getString(result.parentTracePath);
+  const parentTracePath = resolveTraceableEvidenceReference(input.filePath, parentTraceReference);
+  const parentParsed = parentTracePath ? readParsedTraceableEvidenceAtPath(parentTracePath) : undefined;
+  const parentFinalSummary = getString(parentParsed?.result?.finalSummary)?.trim();
+  const groundingGaps = collectTraceableConversationBriefGaps(input.parsed);
+
+  const lines = [
+    "# Traceable Evidence Conversation Brief",
+    "",
+    `- Evidence File: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
+    `- Role: ${getString(header.roleDisplay) ?? getString(header.agentName) ?? "-"}`,
+    `- Model: ${getString(header.modelLabel) ?? "-"}`,
+    `- Routing Mode: ${getString(requestRouting.mode) ?? "-"}`,
+    `- Carry Disposition: ${getTraceableCarryStateDisposition(input.parsed) ?? "-"}`,
+    `- Evidence File Status: ${evidenceStatus.value}`,
+    ""
+  ];
+
+  lines.push("## Current Turn", "");
+  lines.push(`- User Input: ${requestUserInput ?? "-"}`);
+  lines.push(`- Final Answer: ${getString(result.finalSummary) ?? "-"}`);
+  if (parentRoles.length > 0) {
+    lines.push(`- Parent Roles: ${parentRoles.join(" | ")}`);
+  }
+
+  lines.push("", "## Parent Context", "");
+  lines.push(`- Parent Trace: ${parentTracePath ? formatTraceablePathReference(parentTracePath, pathRenderOptions) : "-"}`);
+  lines.push(`- Parent Final Summary: ${parentFinalSummary ?? "-"}`);
+
+  lines.push("", "## Grounding Gap", "");
+  if (groundingGaps.length === 0) {
+    lines.push("- No explicit grounding gap was persisted in this evidence artifact.");
+  } else {
+    for (const gap of groundingGaps) {
+      lines.push(`- ${gap}`);
+    }
+  }
+  if (evidenceStatus.reconciled) {
+    lines.push("", "Current evidence-file status looks stale relative to the completed run result.");
+  } else if (getString(evidenceFile.status) && getString(evidenceFile.status) !== "ready") {
+    lines.push("", `Current evidence-file status is ${getString(evidenceFile.status)} rather than ready.`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 function formatTraceableBoundedTextPreview(value: string | undefined, maxChars = 800): string | undefined {
   const text = value?.trim();
   if (!text) {
@@ -958,6 +1098,7 @@ export function renderTraceableEvidenceSummaryMarkdown(input: {
   const snapshot = input.parsed.snapshot;
   const header = getRecord(snapshot.header) ?? {};
   const evidenceFile = getRecord(snapshot.evidenceFile) ?? {};
+  const evidenceStatus = describeTraceableViewedEvidenceStatus(input.parsed);
   const toolCalls = getArrayLength(input.parsed.result?.toolCalls);
   const statusCount = getArrayLength(snapshot.statusHistory);
   const recentToolCount = getArrayLength(snapshot.recentTools);
@@ -972,7 +1113,7 @@ export function renderTraceableEvidenceSummaryMarkdown(input: {
     `- Role: ${getString(header.roleDisplay) ?? "-"}`,
     `- Model: ${getString(header.modelLabel) ?? "-"}`,
     `- Updated: ${getString(snapshot.updatedAt) ?? "-"}`,
-    `- Export status: ${getString(evidenceFile.status) ?? "-"}`,
+    `- Export status: ${evidenceStatus.value}`,
     `- Trace status: ${getString(input.parsed.result?.traceStatus) ?? "-"}`,
     `- Completion claim: ${getString(input.parsed.result?.completionClaim) ?? "-"}`,
     `- Tool calls: ${toolCalls ?? 0}`,
@@ -1135,6 +1276,7 @@ export function renderTraceableEvidenceOutcomeMarkdown(input: {
   const status = getRecord(snapshot.status) ?? {};
   const result = input.parsed.result;
   const evidenceFile = getRecord(snapshot.evidenceFile) ?? {};
+  const evidenceStatus = describeTraceableViewedEvidenceStatus(input.parsed);
   const lines = [
     "# Traceable Evidence Outcome",
     "",
@@ -1144,7 +1286,7 @@ export function renderTraceableEvidenceOutcomeMarkdown(input: {
   ];
   if (!result) {
     lines.push(
-      `- Evidence File Status: ${getString(evidenceFile.status) ?? "idle"}`,
+      `- Evidence File Status: ${evidenceStatus.value}`,
       "- Final Run Result: unavailable in this evidence artifact"
     );
     return `${lines.join("\n")}\n`;
@@ -1156,7 +1298,7 @@ export function renderTraceableEvidenceOutcomeMarkdown(input: {
     `- Completion Claim: ${getString(result.completionClaim) ?? "-"}`,
     `- Final Summary: ${getString(result.finalSummary) ?? "-"}`,
     `- Model: ${getString(model.vendor) && getString(model.family) && getString(model.id) ? `${getString(model.vendor)}/${getString(model.family)}/${getString(model.id)}` : "-"}`,
-    `- Evidence File Status: ${getString(getRecord(result.evidenceFile)?.status) ?? getString(evidenceFile.status) ?? "idle"}`
+    `- Evidence File Status: ${evidenceStatus.value}`
   );
   lines.push("", ...buildTraceableEvidenceLineageLines(input));
   return `${lines.join("\n")}\n`;
@@ -1662,6 +1804,8 @@ export function renderTraceableEvidenceSurfaceMarkdown(input: {
   includeSupportArtifacts?: boolean;
 }): string {
   switch (input.surface) {
+    case "conversation-brief":
+      return renderTraceableEvidenceConversationBriefMarkdown(input);
     case "request-summary":
       return renderTraceableEvidenceRequestSummaryMarkdown(input);
     case "request-contract":

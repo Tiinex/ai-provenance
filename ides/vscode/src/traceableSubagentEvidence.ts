@@ -1,6 +1,7 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
 import * as vscode from "vscode";
+import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import { allocateNextTraceableLineageLabel, buildTraceableEvidenceFileName, computeStoredParentTracePath, parseTraceableEvidenceFileName } from "./traceableLineage";
 import { buildTraceableMarkdownPathRenderOptions, formatTraceablePathReference } from "./traceableContract";
 import type {
@@ -43,9 +44,11 @@ function getEvidenceRoleSlug(snapshot: TraceableSubagentDetailSnapshot, modelLab
 
 async function allocateEvidenceFilePath(folderPath: string, roleSlug: string): Promise<{ filePath: string; fileName: string }> {
   const entries = await fs.readdir(folderPath, { withFileTypes: true }).catch(() => []);
+  const fileNameFormatOptions = getTraceableEvidenceFileNameFormatOptions();
   const fileName = buildTraceableEvidenceFileName(
-    allocateNextTraceableLineageLabel(entries.filter((entry) => entry.isFile()).map((entry) => entry.name)),
-    roleSlug
+    allocateNextTraceableLineageLabel(entries.filter((entry) => entry.isFile()).map((entry) => entry.name), undefined, fileNameFormatOptions),
+    roleSlug,
+    fileNameFormatOptions
   );
   return {
     fileName,
@@ -59,11 +62,13 @@ async function allocateContinuationEvidenceFilePath(folderPath: string, parentTr
     throw new Error(`TRACEABLE continuation parent ${JSON.stringify(parentTracePath)} does not use a supported lineage filename.`);
   }
   const entries = await fs.readdir(folderPath, { withFileTypes: true }).catch(() => []);
+  const fileNameFormatOptions = getTraceableEvidenceFileNameFormatOptions();
   const lineageLabel = allocateNextTraceableLineageLabel(
     entries.filter((entry) => entry.isFile()).map((entry) => entry.name),
-    parentParts.lineageLabel
+    parentParts.lineageLabel,
+    fileNameFormatOptions
   );
-  const fileName = buildTraceableEvidenceFileName(lineageLabel, roleSlug);
+  const fileName = buildTraceableEvidenceFileName(lineageLabel, roleSlug, fileNameFormatOptions);
   return {
     fileName,
     filePath: path.join(folderPath, fileName)
@@ -77,7 +82,7 @@ function parseAllocatedEvidenceFileName(fileName: string | undefined): { index: 
   }
   return {
     index: parsed.lineageLabel,
-    slug: parsed.slug
+    slug: parsed.slug ?? ""
   };
 }
 
@@ -96,10 +101,11 @@ async function renameEvidenceFileForSnapshot(
     return exportState;
   }
   const desiredSlug = getEvidenceRoleSlug(snapshot, formatSelectedRuntimeModelLabel(result));
-  if (!desiredSlug || parsed.slug === desiredSlug) {
+  const fileNameFormatOptions = getTraceableEvidenceFileNameFormatOptions();
+  if ((!desiredSlug && !fileNameFormatOptions.omitRoleSlug) || (!fileNameFormatOptions.omitRoleSlug && parsed.slug === desiredSlug)) {
     return exportState;
   }
-  const nextFileName = buildTraceableEvidenceFileName(parsed.index, desiredSlug);
+  const nextFileName = buildTraceableEvidenceFileName(parsed.index, desiredSlug, fileNameFormatOptions);
   const nextFilePath = path.join(path.dirname(currentFilePath), nextFileName);
   if (nextFilePath === currentFilePath) {
     return exportState;

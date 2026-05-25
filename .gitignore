@@ -5,7 +5,7 @@ dist/
 ides/*/node_modules/
 ides/*/dist/
 ides/*/*.vsix
-
+assets/demo/video/*.mp4
 .venv/
 .venv*/
 .topics/*.trace.md

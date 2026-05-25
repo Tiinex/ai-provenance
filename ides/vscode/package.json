@@ -301,7 +301,7 @@
         "name": "view_traceable_subagent",
         "displayName": "View Traceable Subagent",
         "userDescription": "Inspect a stored TRACEABLE evidence artifact with bounded output and optional reconstructed-view reveal.",
-        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, request summary, request contract, outcome, runtime decision, evidence basis, a replay-oriented timeline, carry handoff, lineage-scoped latest role state, lineage-scoped latest carry package, tool forensics, lineage, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by run_traceable_subagent, start with `surface: \"summary\"` or `surface: \"outcome\"`, then inspect `request-contract`, `runtime-decision`, `evidence-basis`, `timeline`, `carry-handoff`, `latest-role-state`, `latest-carry-package`, `tool-forensics`, `lineage`, `tool-ledger`, or `state-json` only when you need deeper provenance detail. Prefer this over rerunning the same child lane when evidence already exists.",
+        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, a compact conversation brief, request summary, request contract, outcome, runtime decision, evidence basis, a replay-oriented timeline, carry handoff, lineage-scoped latest role state, lineage-scoped latest carry package, tool forensics, lineage, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by run_traceable_subagent, start with `surface: \"conversation-brief\"`, `surface: \"summary\"`, or `surface: \"outcome\"`, then inspect `request-contract`, `runtime-decision`, `evidence-basis`, `timeline`, `carry-handoff`, `latest-role-state`, `latest-carry-package`, `tool-forensics`, `lineage`, `tool-ledger`, or `state-json` only when you need deeper provenance detail. Prefer this over rerunning the same child lane when evidence already exists.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "viewTraceableSubagent",
         "inputSchema": {
@@ -329,6 +329,7 @@
               "description": "Bounded evidence surface to render.",
               "enum": [
                 "rendered-output",
+                "conversation-brief",
                 "request-summary",
                 "request-contract",
                 "summary",
@@ -652,6 +653,30 @@
             "default": 1,
             "minimum": 0,
             "description": "Maximum number of directory levels a TRACEABLE markdown path may travel above the containing workspace root before the extension falls back to an absolute file URI. This only affects extension-authored markdown output."
+          },
+          "tiinex.aiProvenance.traceableFilenameTopLevelIndexDigits": {
+            "type": "number",
+            "default": 3,
+            "minimum": 1,
+            "maximum": 6,
+            "description": "Minimum digit width for the first TRACEABLE lineage segment in newly created `.trace.md` filenames. Child continuation segments use the configured sub-index digit width unless zero padding is removed entirely."
+          },
+          "tiinex.aiProvenance.traceableFilenameSubIndexDigits": {
+            "type": "number",
+            "default": 1,
+            "minimum": 1,
+            "maximum": 6,
+            "description": "Minimum digit width for all TRACEABLE lineage segments after the first one in newly created `.trace.md` filenames. Use `1` for compact values like `001-1-2` or `2` for padded values like `001-01-02`."
+          },
+          "tiinex.aiProvenance.traceableRemoveZeroPaddingFromFilename": {
+            "type": "boolean",
+            "default": false,
+            "description": "Remove zero padding from newly created TRACEABLE evidence filenames. When enabled, both the first lineage segment and continuation segments use natural numbers like `1-2` regardless of the configured digit-width settings."
+          },
+          "tiinex.aiProvenance.traceableRemoveModelOrRoleFromFilename": {
+            "type": "boolean",
+            "default": false,
+            "description": "Remove the model or role slug from newly created TRACEABLE evidence filenames so the filenames contain lineage indexes only, for example `01-02.trace.md`."
           }
         }
       }
