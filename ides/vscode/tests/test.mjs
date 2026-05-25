@@ -593,6 +593,8 @@ async function main() {
   assert.ok(evidenceExportSource.includes("continuedFromParent: result.continuedFromParent"), "Traceable evidence export source is missing continuation metadata persistence for child runs.");
   assert.ok(evidenceExportSource.includes("allocateContinuationEvidenceFilePath"), "Traceable evidence export source is missing continuation-aware evidence file allocation.");
   assert.ok(evidenceExportSource.includes("evidenceFile: { ...exportState }"), "Traceable evidence export source is missing finalized export-state persistence in the embedded Traceable State block.");
+  assert.ok(evidenceExportSource.includes("writeReadyEvidenceFile") && evidenceExportSource.includes("readPersistedEvidenceStatus"), "Traceable evidence export source should verify that finalized evidence persists as ready on disk.");
+  assert.ok(evidenceExportSource.includes('still persisted with status \\\"writing\\\" after ready-state verification'), "Traceable evidence export source should fail loudly when finalized evidence still persists as writing.");
   const senderAdaptationProbeHarnessSource = await readFile(path.join(packageRoot, "scripts", "check-sender-adaptation-probes.mjs"), "utf8");
   assert.ok(senderAdaptationProbeHarnessSource.includes("05-anchor.trace.md") && senderAdaptationProbeHarnessSource.includes("05-02-anchor.trace.md") && senderAdaptationProbeHarnessSource.includes("05-07-anchor.trace.md"), "Sender adaptation probe harness is missing the expected observed/reinforced/weakened evidence anchors.");
   assert.ok(senderAdaptationProbeHarnessSource.includes("sender adaptation probe checks passed"), "Sender adaptation probe harness is missing its success marker.");

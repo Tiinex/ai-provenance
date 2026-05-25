@@ -650,7 +650,7 @@ export class TraceableSubagentEvidenceController {
     });
     const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, readyState, outputMode, linkedSummaryMarkdown, finalizedResult);
     try {
-      await this.writeEvidenceFile(readyFilePath, evidenceMarkdown);
+      await this.writeReadyEvidenceFile(readyFilePath, evidenceMarkdown);
       await cleanupStaleEvidenceFile(previousFilePath, readyFilePath);
       this.exportState = readyState;
       this.lastResult = finalizedResult;
@@ -705,7 +705,7 @@ export class TraceableSubagentEvidenceController {
       : this.lastResultMarkdown;
     const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, readyState, state.outputMode ?? "summary-with-evidence-path", renderedResultMarkdown, this.lastResult);
     try {
-      await this.writeEvidenceFile(readyFilePath, evidenceMarkdown);
+      await this.writeReadyEvidenceFile(readyFilePath, evidenceMarkdown);
       await cleanupStaleEvidenceFile(previousFilePath, readyFilePath);
       this.exportState = readyState;
       this.lastResultMarkdown = renderedResultMarkdown ?? evidenceMarkdown;
@@ -792,5 +792,30 @@ export class TraceableSubagentEvidenceController {
 
   private async writeEvidenceFile(filePath: string, content: string): Promise<void> {
     await fs.writeFile(filePath, content, "utf8");
+  }
+
+  private async writeReadyEvidenceFile(filePath: string, content: string): Promise<void> {
+    await this.writeEvidenceFile(filePath, content);
+    const firstPassStatus = await this.readPersistedEvidenceStatus(filePath);
+    if (firstPassStatus !== "writing") {
+      return;
+    }
+    await this.writeEvidenceFile(filePath, content);
+    const secondPassStatus = await this.readPersistedEvidenceStatus(filePath);
+    if (secondPassStatus === "writing") {
+      throw new Error(`TRACEABLE finalized evidence file ${JSON.stringify(filePath)} still persisted with status \"writing\" after ready-state verification.`);
+    }
+  }
+
+  private async readPersistedEvidenceStatus(filePath: string): Promise<string | undefined> {
+    try {
+      const markdown = await fs.readFile(filePath, "utf8");
+      const parsed = parseTraceableEvidenceStateMarkdown(markdown);
+      return parsed?.result?.evidenceFile?.status?.trim()
+        || parsed?.snapshot?.evidenceFile?.status?.trim()
+        || undefined;
+    } catch {
+      return undefined;
+    }
   }
 }
