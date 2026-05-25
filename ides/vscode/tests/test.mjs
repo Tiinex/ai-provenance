@@ -126,7 +126,7 @@ async function main() {
   assert.ok(viewTraceableTool?.modelDescription?.includes("tool-forensics"), "view_traceable_subagent model description is missing tool-forensics guidance.");
   assert.ok(viewTraceableTool?.modelDescription?.includes("lineage"), "view_traceable_subagent model description is missing lineage guidance.");
   assert.ok(configurationEntries.length >= 4, "Provenance settings should be split into grouped configuration sections instead of one flat block.");
-  assert.ok(configurationEntries.some((entry) => entry?.title === "Tiinex AI Provenance" && entry?.id === "tiinex.aiProvenance" && entry?.order === 1), "Default provenance settings category should use the extension display name and lead the grouped settings order.");
+  assert.ok(configurationEntries.some((entry) => entry?.title === "Tiinex Traceable Provenance" && entry?.id === "tiinex.aiProvenance" && entry?.order === 1), "Default provenance settings category should use the extension display name and lead the grouped settings order.");
   assert.ok(configurationEntries.some((entry) => entry?.title === "Traceable Chat" && entry?.id === "tiinex.aiProvenance.chat" && entry?.order === 2), "Traceable chat settings section is missing or unordered.");
   assert.ok(configurationEntries.some((entry) => entry?.title === "Traceable Models" && entry?.id === "tiinex.aiProvenance.models" && entry?.order === 3), "Traceable models settings section is missing or unordered.");
   assert.ok(configurationEntries.some((entry) => entry?.title === "Evidence Output" && entry?.id === "tiinex.aiProvenance.evidence" && entry?.order === 4), "Traceable evidence settings section is missing or unordered.");

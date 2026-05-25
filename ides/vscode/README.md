@@ -1,4 +1,4 @@
-# Tiinex AI Provenance for VS Code
+# Tiinex Traceable Provenance for VS Code
 
 This package is the VS Code-specific extension surface for the `ai-provenance` repo.
 
@@ -13,7 +13,7 @@ It is aimed at operators who need bounded provenance work in VS Code rather than
 Install path:
 
 1. open the VS Code Extensions view
-2. search for `Tiinex AI Provenance`
+2. search for `Tiinex Traceable Provenance`
 3. install the extension published by `tiinex`
 
 Release highlights in `0.2.0`:
@@ -80,7 +80,7 @@ Current included surface:
 
 What it exposes in VS Code:
 
-- display name: `Tiinex AI Provenance`
+- display name: `Tiinex Traceable Provenance`
 - LM tool surfaces: `list_traceable_agents`, `list_traceable_models`, `view_traceable_subagent`, `run_traceable_subagent`
 - command namespace: `tiinex.aiProvenance.*`
 - settings namespace: `tiinex.aiProvenance.*`

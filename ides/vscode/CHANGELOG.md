@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- rename the Marketplace display label to `Tiinex Traceable Provenance` to avoid a global display-name collision during publication
+- keep the package, README, and VS Code settings title aligned with the published extension label
+
 ## 0.2.0
 
 - prepare the first Marketplace-oriented minor release for `Tiinex AI Provenance`

@@ -26,7 +26,7 @@ The strongest provenance-oriented value in the current toolchain is now here: bo
 
 ## VS Code Marketplace
 
-The current VS Code package lives in `ides/vscode` and is being prepared for Marketplace delivery as `Tiinex AI Provenance` from publisher `tiinex`.
+The current VS Code package lives in `ides/vscode` and is being prepared for Marketplace delivery as `Tiinex Traceable Provenance` from publisher `tiinex`.
 
 Marketplace-facing highlights for the current extension package:
 

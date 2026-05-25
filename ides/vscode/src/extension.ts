@@ -1593,8 +1593,8 @@ async function renderTraceableEvidenceSurfaceFromFile(input: {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel("Tiinex AI Provenance");
-  output.appendLine("Activated Tiinex AI Provenance extension scaffold.");
+  const output = vscode.window.createOutputChannel("Tiinex Traceable Provenance");
+  output.appendLine("Activated Tiinex Traceable Provenance extension scaffold.");
   const unsavedTraceableAgentChatState = new Map<string, {
     priorTurnsSummary?: string;
     activeCarryForward?: TraceableSubagentRunResult["activeCarryForward"];
