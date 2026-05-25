@@ -218,6 +218,9 @@ export function renderTraceableSubagentDetailMarkdown(snapshot: TraceableSubagen
   if (toolsetSummary) {
     lines.push(`Toolset: ${escapeMarkdown(toolsetSummary)}`);
   }
+  if ((snapshot.header.routingNote ?? "").trim()) {
+    lines.push(`Routing: ${escapeMarkdown((snapshot.header.routingNote ?? "").trim())}`);
+  }
   if (snapshot.evidenceFile && snapshot.evidenceFile.status !== "idle") {
     lines.push(`Evidence: ${escapeMarkdown(snapshot.evidenceFile.status)}`);
     if (snapshot.evidenceFile.filePath) {
@@ -247,7 +250,8 @@ export class TraceableSubagentStatusDetailController implements vscode.TextDocum
       humanRole: false,
       toolsetNames: [],
       selectedToolNames: [],
-      toolSelectionRestricted: false
+      toolSelectionRestricted: false,
+      routingNote: ""
     },
     status: {
       phase: "idle",

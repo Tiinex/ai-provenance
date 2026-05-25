@@ -21,6 +21,7 @@ export interface TraceableSubagentStatusHeader {
   toolsetNames?: string[];
   selectedToolNames?: string[];
   toolSelectionRestricted?: boolean;
+  routingNote?: string;
 }
 
 export interface TraceableSubagentRequestSummaryItem {
@@ -272,7 +273,12 @@ function buildTraceableRuntimeDecisionSummary(
   matchedSelector: vscode.LanguageModelChatSelector | undefined,
   model: vscode.LanguageModelChat | undefined,
   availableCandidateCount: number,
-  sendableCandidateCount: number
+  sendableCandidateCount: number,
+  routing: {
+    toolSelectionBudgetZero: boolean;
+    forceToolFreeDirectResponse: boolean;
+    selectedToolNames: string[];
+  }
 ): TraceableRuntimeDecisionSummary {
   const normalizedSelector = normalizeModelSelector(input.modelSelector);
   const requestedModel = normalizedSelector.id?.trim() || undefined;
@@ -309,6 +315,23 @@ function buildTraceableRuntimeDecisionSummary(
     rationale.push(`Selected runtime model ${JSON.stringify(selectedModelDisplayName)}.`);
   }
 
+  const routingMode = routing.toolSelectionBudgetZero
+    ? "tool-free-budget-zero"
+    : routing.forceToolFreeDirectResponse
+      ? "tool-free-lightweight-direct"
+      : "tool-enabled";
+  const routingRationale: string[] = routing.toolSelectionBudgetZero
+    ? ["budgetPolicy.maxToolCalls resolved to 0, so the request ran with no exposed tools."]
+    : routing.forceToolFreeDirectResponse
+      ? [
+        "The request matched the lightweight conversational DIRECT routing rule.",
+        "TRACEABLE intentionally hid tools to keep this turn on a simpler conversational path."
+      ]
+      : [`The request remained on the normal tool-enabled path with ${routing.selectedToolNames.length} selected tools.`];
+  if (routing.selectedToolNames.length > 0) {
+    routingRationale.push(`Selected tools: ${JSON.stringify(routing.selectedToolNames)}.`);
+  }
+
   return {
     modelSelection: {
       requestedModel,
@@ -319,6 +342,10 @@ function buildTraceableRuntimeDecisionSummary(
       availableCandidateCount,
       sendableCandidateCount,
       rationale
+    },
+    requestRouting: {
+      mode: routingMode,
+      rationale: routingRationale
     }
   };
 }
@@ -488,6 +515,10 @@ export interface TraceableRuntimeModelSelectionSummary {
 
 export interface TraceableRuntimeDecisionSummary {
   modelSelection: TraceableRuntimeModelSelectionSummary;
+  requestRouting?: {
+    mode: "tool-enabled" | "tool-free-lightweight-direct" | "tool-free-budget-zero";
+    rationale: string[];
+  };
 }
 
 export interface TraceableRuntimeFingerprint {
@@ -925,6 +956,45 @@ function normalizeTraceableParentRoles(value: string | string[] | undefined): st
     return trimmed ? [trimmed] : undefined;
   }
   return getTrimmedStringArray(value);
+}
+
+function isLightweightConversationalDirectTurn(input: TraceableSubagentInput): boolean {
+  const inputMode = normalizeTraceableInputMode(input.inputMode);
+  if (!isDirectTraceableInputMode(inputMode)) {
+    return false;
+  }
+  if (getTrimmedString(input.parentTask) || getTrimmedString(input.parentFrame)) {
+    return false;
+  }
+  if (Array.isArray(input.carriedContext?.fileContext) && input.carriedContext.fileContext.length > 0) {
+    return false;
+  }
+  if ((input.parentExpectations?.expectedToolFamilies?.length ?? 0) > 0) {
+    return false;
+  }
+  const normalized = input.userInput?.trim().normalize("NFKC");
+  if (!normalized) {
+    return false;
+  }
+  if (normalized.length > 160 || /[\r\n]/u.test(normalized)) {
+    return false;
+  }
+  if (/[`{}\[\]<>]/u.test(normalized)) {
+    return false;
+  }
+  if (/https?:\/\//iu.test(normalized)) {
+    return false;
+  }
+  if (/(^|\s)([A-Za-z]:\\|\\\\|\/[^\s]|\.\.?[\\/])/u.test(normalized)) {
+    return false;
+  }
+  if (/\b[a-z0-9_-]+\.(ts|tsx|js|jsx|mjs|cjs|json|md|py|ps1|sh|yml|yaml|toml|ini|txt)\b/iu.test(normalized)) {
+    return false;
+  }
+  if (/\b(npm|node|pnpm|yarn|tsc|git|rg|ripgrep|powershell|cmd|bash)\b/iu.test(normalized)) {
+    return false;
+  }
+  return true;
 }
 
 function normalizeInheritedRequestExpectations(value: unknown): TraceableRequestExpectations | undefined {
@@ -1489,7 +1559,7 @@ function normalizeExplicitBudgetPolicy(input: TraceableSubagentInput): Traceable
   const maxIterations = Number.isInteger(input.budgetPolicy?.maxIterations) && (input.budgetPolicy?.maxIterations ?? 0) > 0
     ? input.budgetPolicy!.maxIterations!
     : undefined;
-  const maxToolCalls = Number.isInteger(input.budgetPolicy?.maxToolCalls) && (input.budgetPolicy?.maxToolCalls ?? 0) > 0
+  const maxToolCalls = Number.isInteger(input.budgetPolicy?.maxToolCalls) && (input.budgetPolicy?.maxToolCalls ?? 0) >= 0
     ? input.budgetPolicy!.maxToolCalls!
     : undefined;
   if (maxIterations === undefined && maxToolCalls === undefined) {
@@ -1606,6 +1676,62 @@ function buildParentContinuationSummary(parentTracePath: string, parentResult: T
   ].filter((value): value is string => Boolean(value)).join("\n");
 }
 
+function mergeTraceableReductionHints(...groups: Array<string[] | undefined>): string[] | undefined {
+  const merged: string[] = [];
+  for (const group of groups) {
+    for (const entry of group ?? []) {
+      const normalized = entry.trim();
+      if (!normalized || merged.includes(normalized)) {
+        continue;
+      }
+      merged.push(normalized);
+    }
+  }
+  return merged.length > 0 ? merged : undefined;
+}
+
+type TraceableContinuationRoleReferent = "sender" | "agent";
+
+function inferTraceableContinuationRoleReferent(userInput: string | undefined): TraceableContinuationRoleReferent | undefined {
+  const normalized = userInput?.trim().toLowerCase().normalize("NFKC");
+  if (!normalized) {
+    return undefined;
+  }
+  if (
+    /\b(vilken|vad)\s+roll\s+har\s+jag\b/u.test(normalized)
+    || /\b(which|what)\s+role\s+do\s+i\s+have\b/u.test(normalized)
+    || /\bwhat\s+is\s+my\s+role\b/u.test(normalized)
+  ) {
+    return "sender";
+  }
+  if (
+    /\b(vilken|vad)\s+roll\s+har\s+du\b/u.test(normalized)
+    || /\b(which|what)\s+role\s+do\s+you\s+have\b/u.test(normalized)
+    || /\bwhat\s+is\s+your\s+role\b/u.test(normalized)
+  ) {
+    return "agent";
+  }
+  return undefined;
+}
+
+function buildTraceableContinuationRoleReferentReductions(input: {
+  parentRequest: Record<string, unknown>;
+  parentRoles: string[] | undefined;
+}): string[] | undefined {
+  const referent = inferTraceableContinuationRoleReferent(getTrimmedString(input.parentRequest.userInput));
+  if (referent === "sender" && input.parentRoles?.length) {
+    return [
+      `Continuation role referent: the immediately previous turn asked about the sender-side role, and the resolved sender-side role for this chain is ${input.parentRoles.join(", ")}. If the current follow-up uses anaphora such as "den rollen", "that role", or "the role", keep that referent on the same sender-side role unless the current userInput explicitly switches target.`
+    ];
+  }
+  if (referent === "agent") {
+    return [
+      "Continuation role referent: the immediately previous turn asked about your own resolved role identity for this lane. If the current follow-up uses anaphora such as \"den rollen\", \"that role\", or \"the role\", keep that referent on your own resolved role unless the current userInput explicitly switches target. This reduction is only for ambiguous follow-up wording; do not use it to override an explicit first-person sender-side question such as \"my role\" when parentRoles are present."
+    ];
+  }
+  return undefined;
+}
+
 function mergeContinuationCarriedContext(
   inheritedContext: TraceableCarriedContext | undefined,
   explicitContext: TraceableCarriedContext | undefined,
@@ -1614,7 +1740,7 @@ function mergeContinuationCarriedContext(
   const priorTurnsSummary = getTrimmedString(explicitContext?.priorTurnsSummary)
     ?? mergeContinuationSummaries(inheritedContext?.priorTurnsSummary, continuationSummary);
   const fileContext = explicitContext?.fileContext ?? inheritedContext?.fileContext;
-  const reductions = explicitContext?.reductions ?? inheritedContext?.reductions;
+  const reductions = mergeTraceableReductionHints(inheritedContext?.reductions, explicitContext?.reductions);
   if (!priorTurnsSummary && !fileContext?.length && !reductions?.length) {
     return undefined;
   }
@@ -1732,6 +1858,10 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
     normalizedParentRoles
   );
   const continuationSummary = buildParentContinuationSummary(resolvedParentTracePath, parsed.result);
+  const continuationRoleReferentReductions = buildTraceableContinuationRoleReferentReductions({
+    parentRequest,
+    parentRoles: normalizedParentRoles
+  });
   const inheritedModelSelector = deriveContinuationInheritedModelSelector(parsed.result, parentRequest);
   const inheritedInputMode = normalizeTraceableInputMode(parentRequest.inputMode);
   const effectiveInputMode = normalizedInputMode ?? inheritedInputMode;
@@ -1752,7 +1882,16 @@ export async function prepareTraceableSubagentInput(input: TraceableSubagentInpu
     agentRole: input.agentRole ?? normalizeInheritedAgentRole(parentRequest.agentRole),
     parentRoles: normalizedParentRoles,
     parentExpectations: input.parentExpectations ?? normalizeInheritedRequestExpectations(parentRequest.parentExpectations),
-    carriedContext: mergeContinuationCarriedContext(inheritedCarriedContext, input.carriedContext, continuationSummary),
+    carriedContext: mergeContinuationCarriedContext(
+      inheritedCarriedContext,
+      continuationRoleReferentReductions?.length
+        ? {
+          ...(input.carriedContext ?? {}),
+          reductions: mergeTraceableReductionHints(input.carriedContext?.reductions, continuationRoleReferentReductions)
+        }
+        : input.carriedContext,
+      continuationSummary
+    ),
     senderAdaptationState: normalizedParentRoles?.length
       ? filterTraceableSenderAdaptationStateForParentRoles(
         normalizeTraceableSenderAdaptationState(input.senderAdaptationState) ?? inheritedSenderAdaptationState,
@@ -2784,7 +2923,7 @@ export function buildTraceableSubagentPromptSections(
     ...(normalizedParentRoles?.length
       ? [
         `Parent roles for the incoming turn:\n${JSON.stringify(normalizedParentRoles, null, 2)}`,
-        "Parent-role rule:\n- Treat parentRoles as the source-side roles behind the current userInput.\n- Do not treat parentRoles as your own role identity.\n- Do not answer as if you are any parent role unless the explicit userInput asks for quoted or role-played output.\n- Use parentRoles as continuity metadata about who the message came from, and prefer the explicit parent role identities above when you need receiver-facing attribution."
+        "Parent-role rule:\n- Treat parentRoles as the source-side roles behind the current userInput.\n- Do not treat parentRoles as your own role identity.\n- Do not answer as if you are any parent role unless the explicit userInput asks for quoted or role-played output.\n- Use parentRoles as continuity metadata about who the message came from, and prefer the explicit parent role identities above when you need receiver-facing attribution.\n- If the current userInput explicitly asks about the sender-side role in first-person terms such as \"my role\", \"my sender role\", or Swedish equivalents like \"min roll\", answer from parentRoles rather than from your own lane role or carried reductions."
       ]
       : []),
     ...(normalizedSenderAdaptationState?.entries.length
@@ -2803,6 +2942,12 @@ export function buildTraceableSubagentPromptSections(
         "Follow-up rule:\n- Treat the prior turns summary as carried context for continuity, not as a replacement for fresh grounding on the current parent frame.\n- If the current turn asks a narrower follow-up question, answer that question directly rather than re-solving the whole previous frame unless new grounding makes that necessary.\n- If the prior turns summary already contains a directly relevant earlier finding, start from that finding and only reread the minimum source needed to verify or refine it.\n- Do not restart from the top of a large file unless the narrower follow-up actually requires that broader reread."
       ]
       : []),
+    ...(input.carriedContext?.reductions?.length
+      ? [
+        `Carry reductions for this run:\n${JSON.stringify(input.carriedContext.reductions, null, 2)}`,
+        "Carry-reduction rule:\n- Treat these reductions as bounded continuity hints that preserve referent, scope, or constraints across turns.\n- When the current follow-up uses ambiguous anaphora such as \"den rollen\", \"that role\", or \"the role\", prefer these reductions over re-inferring the referent from your own role or broader prompt context.\n- Do not let a carried reduction override an explicit first-person sender-side role question such as \"my role\" or \"min roll\" when parentRoles are present.\n- Override a carried reduction when the current userInput clearly switches target or directly contradicts it."
+      ]
+      : []),
     ...(fileContextAnchors.length > 0
       ? [
         `Task file anchors (use these exact absolute paths first when the task refers to them):\n${JSON.stringify(fileContextAnchors, null, 2)}`,
@@ -2819,7 +2964,7 @@ export function buildTraceableSubagentPromptSections(
       ? [
         `Current incoming userInput:\n${input.userInput.trim()}`,
         isDirectTraceableInputMode(normalizedInputMode)
-          ? "Direct-turn response rule:\n- Treat the current incoming userInput as the message to answer now.\n- If the userInput is a greeting, acknowledgement, or small direct request, answer it directly in your resolved role rather than analyzing the role artifact, frontmatter, or prompt scaffold.\n- Only analyze the role artifact, runtime contract, or prompt structure when the explicit userInput asks about those things."
+          ? "Direct-turn response rule:\n- Treat the current incoming userInput as the message to answer now.\n- If the current DIRECT turn is lightweight and conversational, answer it directly in your resolved role rather than analyzing the role artifact, frontmatter, or prompt scaffold.\n- Only analyze the role artifact, runtime contract, or prompt structure when the explicit userInput asks about those things or when the turn is clearly tool-shaped, file-shaped, or implementation-shaped."
           : "Current-turn rule:\n- Treat the current incoming userInput as the fresh message that this run must address.\n- Do not replace it with a summary of the role artifact or runtime scaffold unless the explicit userInput asks for that meta-analysis."
       ]
       : []),
@@ -3970,6 +4115,33 @@ function buildUnparseableChildPayloadFallback(
   const trimmed = rawModelText.trim();
   const askedForMoreReads = /\b(i will read|read the remainder|read more|going to read more)\b/i.test(trimmed)
     || /"filePath"\s*:/i.test(trimmed);
+  const canSalvagePlainTextReply = Boolean(trimmed)
+    && !askedForMoreReads
+    && toolCalls.length === 0
+    && allowedToolNames.length === 0;
+
+  if (canSalvagePlainTextReply) {
+    return fallbackResult(
+      input,
+      toolCalls,
+      trimmed,
+      "completed",
+      "partial",
+      {
+        model,
+        allowedToolNames,
+        validationIssues,
+        rawModelText,
+        expectedButMissing: [
+          {
+            kind: "step",
+            label: "Final JSON payload",
+            reason: "The child returned a usable plain-text reply but omitted the required final JSON object, so TRACEABLE salvaged the reply as a partial completion."
+          }
+        ]
+      }
+    );
+  }
 
   return fallbackResult(
     input,
@@ -4358,19 +4530,30 @@ export async function runTraceableSubagent(
     }
   }
 
+  const budgetPolicy = normalizeBudgetPolicy(input);
   const availableToolNames = vscode.lm.tools.map((tool) => tool.name);
   const requestedAllowedToolNames = uniqueStrings(input.allowedToolNames);
   const inheritedAllowedToolNames = resolvedAgentArtifact?.toolDeclarations ?? [];
   const requestedBlockedToolNames = uniqueStrings(input.blockedToolNames);
-  const selectedTools = selectTraceableSubagentTools(vscode.lm.tools, {
-    allowedToolNames: requestedAllowedToolNames,
-    blockedToolNames: requestedBlockedToolNames,
-    defaultAllowedToolNames: inheritedAllowedToolNames
-  });
+  const toolSelectionBudgetZero = budgetPolicy.maxToolCalls <= 0;
+  const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
+  const forceToolFreeDirectResponse = isLightweightConversationalDirectTurn(input);
+  const selectedTools = toolSelectionBudgetZero || forceToolFreeDirectResponse
+    ? []
+    : selectTraceableSubagentTools(vscode.lm.tools, {
+      allowedToolNames: requestedAllowedToolNames,
+      blockedToolNames: requestedBlockedToolNames,
+      defaultAllowedToolNames: inheritedAllowedToolNames
+    });
   const selectedToolNames = selectedTools.map((tool) => tool.name);
   const toolSelectionRestricted = requestedAllowedToolNames.length > 0
     || inheritedAllowedToolNames.length > 0
     || requestedBlockedToolNames.length > 0;
+  const routingNote = toolSelectionBudgetZero
+    ? "tool-free: maxToolCalls=0"
+    : forceToolFreeDirectResponse
+      ? "tool-free: lightweight DIRECT turn"
+      : "tool-enabled";
   let broadRuntimeModelsPromise: Promise<{ available: vscode.LanguageModelChat[]; sendable: vscode.LanguageModelChat[] }> | undefined;
   const loadBroadRuntimeModels = () => {
     broadRuntimeModelsPromise ??= listBroadRuntimeModelCandidates(options.accessInformation);
@@ -4384,6 +4567,8 @@ export async function runTraceableSubagent(
     requestedAllowedToolNames,
     requestedBlockedToolNames,
     inheritedAllowedToolNames,
+    toolSelectionBudgetZero,
+    forceToolFreeDirectResponse,
     selectedToolCount: selectedToolNames.length,
     selectedToolNames
   });
@@ -4391,7 +4576,8 @@ export async function runTraceableSubagent(
   try {
     options.statusReporter?.setHeader?.({
       selectedToolNames,
-      toolSelectionRestricted
+      toolSelectionRestricted,
+      routingNote
     });
   } catch {
     // Best-effort UI status only; runtime correctness should not depend on it.
@@ -4468,7 +4654,6 @@ export async function runTraceableSubagent(
 
   const selectors = buildTraceableSubagentModelSelectorsFromSources(input, resolvedAgentArtifact);
 
-  const budgetPolicy = normalizeBudgetPolicy(input);
   const toolCalls: TraceableSubagentToolCallRecord[] = [];
   const opaqueDelegations: TraceableOpaqueDelegation[] = [];
   let availableModels: vscode.LanguageModelChat[] = [];
@@ -4499,7 +4684,12 @@ export async function runTraceableSubagent(
       matchedSelector,
       model,
       broadRuntimeModels.available.length,
-      broadRuntimeModels.sendable.length
+      broadRuntimeModels.sendable.length,
+      {
+        toolSelectionBudgetZero,
+        forceToolFreeDirectResponse,
+        selectedToolNames
+      }
     );
     return finalizeResult(fallbackResult(
       input,
@@ -4524,7 +4714,7 @@ export async function runTraceableSubagent(
     });
   }
 
-  if (selectedToolNames.length === 0 && (requestedAllowedToolNames.length > 0 || inheritedAllowedToolNames.length > 0)) {
+  if (!toolSelectionBudgetZero && !forceToolFreeDirectResponse && selectedToolNames.length === 0 && (requestedAllowedToolNames.length > 0 || inheritedAllowedToolNames.length > 0)) {
     return finalizeResult(fallbackResult(
       input,
       [],
@@ -4571,7 +4761,12 @@ export async function runTraceableSubagent(
       matchedSelector,
       model,
       broadRuntimeModels.available.length,
-      broadRuntimeModels.sendable.length
+      broadRuntimeModels.sendable.length,
+      {
+        toolSelectionBudgetZero,
+        forceToolFreeDirectResponse,
+        selectedToolNames
+      }
     );
     return finalizeResult(fallbackResult(
       input,
@@ -4609,7 +4804,12 @@ export async function runTraceableSubagent(
       matchedSelector,
       model,
       broadRuntimeModels.available.length,
-      broadRuntimeModels.sendable.length
+      broadRuntimeModels.sendable.length,
+      {
+        toolSelectionBudgetZero,
+        forceToolFreeDirectResponse,
+        selectedToolNames
+      }
     );
     return finalizeResult(fallbackResult(
       input,
@@ -4881,7 +5081,12 @@ export async function runTraceableSubagent(
         matchedSelector,
         model,
         availableModels.length,
-        sendableModels.length
+        sendableModels.length,
+        {
+          toolSelectionBudgetZero,
+          forceToolFreeDirectResponse,
+          selectedToolNames
+        }
       );
       return finalizeResult({
         request: buildTraceableSubagentRequestEnvelope(input),

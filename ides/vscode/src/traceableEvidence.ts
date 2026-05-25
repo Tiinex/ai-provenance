@@ -1182,6 +1182,7 @@ export function renderTraceableEvidenceRuntimeDecisionMarkdown(input: {
     return `${lines.join("\n")}\n`;
   }
   lines.push("", "## Model Selection", "", "```json", JSON.stringify(runtimeDecision.modelSelection ?? {}, null, 2), "```");
+  lines.push("", "## Request Routing", "", "```json", JSON.stringify(runtimeDecision.requestRouting ?? {}, null, 2), "```");
   lines.push("", "## Runtime Fingerprint", "", "```json", JSON.stringify(runtimeFingerprint, null, 2), "```");
   lines.push("");
   return lines.join("\n");
@@ -1297,6 +1298,7 @@ export function renderTraceableEvidenceTimelineMarkdown(input: {
     `- Steps Recorded: ${stepCount}`
   ];
   if (Object.keys(result).length > 0 || Object.keys(modelSelection).length > 0) {
+    const requestRouting = getRecord(runtimeDecision.requestRouting ?? {}) ?? {};
     lines.push(
       "",
       "## Decision Points",
@@ -1305,7 +1307,8 @@ export function renderTraceableEvidenceTimelineMarkdown(input: {
       `- Stop Reason: ${getString(result.stopReason) ?? "-"}`,
       `- Completion Claim: ${getString(result.completionClaim) ?? "-"}`,
       `- Selection Mode: ${getString(modelSelection.selectionMode) ?? "-"}`,
-      `- Selected Model: ${getString(modelSelection.selectedModelDisplayName) ?? getString(modelSelection.selectedModelId) ?? "-"}`
+      `- Selected Model: ${getString(modelSelection.selectedModelDisplayName) ?? getString(modelSelection.selectedModelId) ?? "-"}`,
+      `- Routing Mode: ${getString(requestRouting.mode) ?? "-"}`
     );
   }
   if (timelineEntries.length === 0) {

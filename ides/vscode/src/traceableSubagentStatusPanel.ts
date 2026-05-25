@@ -1730,7 +1730,8 @@ function renderAncestorActivity(entry: Extract<PanelActivityEntry, { kind: "ance
       humanRole: false,
       toolsetNames: [],
       selectedToolNames: [],
-      toolSelectionRestricted: false
+      toolSelectionRestricted: false,
+      routingNote: ""
     },
     status: entry.status ?? {
       phase: "completed",
@@ -5202,6 +5203,8 @@ export function renderTraceableSubagentPanelHtml(
       statusGroupOpenById: {},
       chatViewEnabled: ${initialChatViewEnabled ? "true" : "false"},
       chatComposerDraft: '',
+      chatComposerFocused: false,
+      restoreChatComposerFocusOnRunChange: false,
       chatSenderRole: ${JSON.stringify(initialChatSenderRole)},
       runId: ''
     };
@@ -5291,6 +5294,8 @@ export function renderTraceableSubagentPanelHtml(
               : {},
             chatViewEnabled: coerceBooleanLike(state.chatViewEnabled, defaultPanelState.chatViewEnabled),
             chatComposerDraft: typeof state.chatComposerDraft === 'string' ? state.chatComposerDraft : '',
+            chatComposerFocused: coerceBooleanLike(state.chatComposerFocused, false),
+            restoreChatComposerFocusOnRunChange: coerceBooleanLike(state.restoreChatComposerFocusOnRunChange, false),
             chatSenderRole: reconcileRestoredChatSenderRole(state.chatSenderRole),
             runId: typeof state.runId === 'string' ? state.runId : ''
           }
@@ -5299,6 +5304,9 @@ export function renderTraceableSubagentPanelHtml(
 
     let panelState = readPanelState();
     let chatSubmitPending = false;
+    let chatComposerHasFocus = false;
+    let chatComposerHadFocusBeforeSubmit = false;
+    let pendingChatComposerAutofocus = false;
     let suppressScrollStateSync = false;
     let initialChatViewApplyPending = true;
     let pendingFollowLatestLayoutSync = false;
@@ -5342,6 +5350,15 @@ export function renderTraceableSubagentPanelHtml(
     const persistPanelState = (nextState) => {
       panelState = { ...panelState, ...nextState };
       vscodeApi.setState(panelState);
+    };
+
+    const syncChatComposerFocusState = () => {
+      chatComposerHasFocus = document.activeElement === chatInput || document.activeElement === chatCompactInput;
+      persistPanelState({ chatComposerFocused: chatComposerHasFocus });
+    };
+
+    const requestChatComposerAutofocus = () => {
+      pendingChatComposerAutofocus = true;
     };
 
     const chatCollapseMode = chatComposer instanceof HTMLElement && chatComposer.dataset.chatCollapseMode === 'always' ? 'always' : 'auto';
@@ -5418,6 +5435,7 @@ export function renderTraceableSubagentPanelHtml(
     };
 
     if (panelState.runId !== currentRunId) {
+      const restoreChatComposerFocusOnRunChange = panelState.chatComposerFocused === true;
       persistPanelState({
         runId: currentRunId,
         followLatest: true,
@@ -5431,10 +5449,17 @@ export function renderTraceableSubagentPanelHtml(
         ancestorGroupOpenById: {},
         namespaceOpenById: {},
         statusGroupOpenById: {},
-        chatViewEnabled: defaultPanelState.chatViewEnabled,
+        chatViewEnabled: restoreChatComposerFocusOnRunChange ? true : defaultPanelState.chatViewEnabled,
         chatComposerDraft: '',
+        chatComposerFocused: false,
+        restoreChatComposerFocusOnRunChange,
         chatSenderRole: defaultPanelState.chatSenderRole
       });
+    }
+
+    if (panelState.restoreChatComposerFocusOnRunChange === true) {
+      requestChatComposerAutofocus();
+      persistPanelState({ restoreChatComposerFocusOnRunChange: false });
     }
 
     for (const messageTarget of messageTargets) {
@@ -5801,20 +5826,29 @@ export function renderTraceableSubagentPanelHtml(
       if (chatSubmitPending) {
         return;
       }
+      if (!pendingChatComposerAutofocus) {
+        return;
+      }
       requestAnimationFrame(() => {
         const activeInput = getActiveChatInputControl();
         if (!(activeInput instanceof HTMLTextAreaElement) && !(activeInput instanceof HTMLInputElement)) {
           return;
         }
         if (document.activeElement === activeInput) {
+          pendingChatComposerAutofocus = false;
+          syncChatComposerFocusState();
           return;
         }
         try {
           activeInput.focus({ preventScroll: true });
           const valueLength = activeInput.value.length;
           activeInput.setSelectionRange(valueLength, valueLength);
+          pendingChatComposerAutofocus = false;
+          syncChatComposerFocusState();
         } catch {
           activeInput.focus();
+          pendingChatComposerAutofocus = false;
+          syncChatComposerFocusState();
         }
       });
     };
@@ -5861,6 +5895,9 @@ export function renderTraceableSubagentPanelHtml(
 
     const toggleChatView = () => {
       const nextChatViewEnabled = panelState.chatViewEnabled !== true;
+      if (nextChatViewEnabled) {
+        requestChatComposerAutofocus();
+      }
       persistPanelState({
         chatViewEnabled: nextChatViewEnabled,
         ...(nextChatViewEnabled ? { followLatest: true } : {})
@@ -5899,6 +5936,14 @@ export function renderTraceableSubagentPanelHtml(
       chatInput.addEventListener('input', () => {
         handleChatComposerInput(chatInput.value);
       });
+      chatInput.addEventListener('focus', () => {
+        syncChatComposerFocusState();
+      });
+      chatInput.addEventListener('blur', () => {
+        requestAnimationFrame(() => {
+          syncChatComposerFocusState();
+        });
+      });
       chatInput.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter' || event.shiftKey) {
           return;
@@ -5913,6 +5958,14 @@ export function renderTraceableSubagentPanelHtml(
     if (chatCompactInput instanceof HTMLInputElement) {
       chatCompactInput.addEventListener('input', () => {
         handleChatComposerInput(chatCompactInput.value);
+      });
+      chatCompactInput.addEventListener('focus', () => {
+        syncChatComposerFocusState();
+      });
+      chatCompactInput.addEventListener('blur', () => {
+        requestAnimationFrame(() => {
+          syncChatComposerFocusState();
+        });
       });
       chatCompactInput.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter') {
@@ -6002,6 +6055,8 @@ export function renderTraceableSubagentPanelHtml(
           updateChatComposerState();
           return;
         }
+        chatComposerHadFocusBeforeSubmit = document.activeElement === activeInput || chatComposerHasFocus;
+        pendingChatComposerAutofocus = false;
         chatSubmitPending = true;
         closeChatSenderMenu();
         updateChatComposerState();
@@ -6620,12 +6675,20 @@ export function renderTraceableSubagentPanelHtml(
 
     window.addEventListener('message', (event) => {
       if (event?.data?.type === 'revealLatest') {
+        if (event.data.focusComposer === true) {
+          requestChatComposerAutofocus();
+        }
         persistPanelState({ followLatest: true });
         scheduleScrollToLatestEvent();
+        focusChatComposerInput();
         return;
       }
       if (event?.data?.type === 'chatSubmitState' && event.data.pending === false) {
         chatSubmitPending = false;
+        if (chatComposerHadFocusBeforeSubmit) {
+          requestChatComposerAutofocus();
+        }
+        chatComposerHadFocusBeforeSubmit = false;
         if (chatInput instanceof HTMLTextAreaElement) {
           chatInput.value = panelState.chatComposerDraft;
         }
@@ -6684,7 +6747,8 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
       humanRole: false,
       toolsetNames: [],
       selectedToolNames: [],
-      toolSelectionRestricted: false
+      toolSelectionRestricted: false,
+      routingNote: ""
     },
     status: { phase: "idle", message: "idle" },
     requestSummary: [],
@@ -6820,13 +6884,14 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     void this.render();
   }
 
-  async open(): Promise<void> {
+  async open(options: { reason?: "auto" | "manual"; focusComposer?: boolean } = {}): Promise<void> {
+    const reason = options.reason === "manual" ? "manual" : "auto";
     if (!this.view) {
-      await this.revealContainerUntilViewResolves();
+      await this.revealContainerUntilViewResolves(reason);
     }
     const view = await this.waitForView();
-    view?.show?.(true);
-    await view?.webview.postMessage({ type: "revealLatest" });
+    view?.show?.(reason !== "manual");
+    await view?.webview.postMessage({ type: "revealLatest", focusComposer: options.focusComposer === true });
   }
 
   dispose(): void {
@@ -6856,18 +6921,20 @@ export class TraceableSubagentStatusPanelProvider implements vscode.WebviewViewP
     });
   }
 
-  private async revealContainerUntilViewResolves(): Promise<void> {
+  private async revealContainerUntilViewResolves(reason: "auto" | "manual" = "manual"): Promise<void> {
     const startedAt = Date.now();
     while (!this.view && Date.now() - startedAt < 2000) {
-      try {
-        await vscode.commands.executeCommand("workbench.action.focusPanel");
-      } catch {
-        // Some hosts may not expose a direct panel focus command.
-      }
-      try {
-        await vscode.commands.executeCommand(`${TRACEABLE_SUBAGENT_PANEL_VIEW_ID}.focus`);
-      } catch {
-        // Some hosts do not expose a direct focus command for contributed views.
+      if (reason === "manual") {
+        try {
+          await vscode.commands.executeCommand("workbench.action.focusPanel");
+        } catch {
+          // Some hosts may not expose a direct panel focus command.
+        }
+        try {
+          await vscode.commands.executeCommand(`${TRACEABLE_SUBAGENT_PANEL_VIEW_ID}.focus`);
+        } catch {
+          // Some hosts do not expose a direct focus command for contributed views.
+        }
       }
       await vscode.commands.executeCommand(`workbench.view.extension.${TRACEABLE_SUBAGENT_PANEL_CONTAINER_ID}`);
       if (this.view) {

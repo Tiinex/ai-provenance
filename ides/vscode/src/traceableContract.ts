@@ -141,6 +141,7 @@ export interface TraceableSubagentStatusHeader {
   toolsetNames?: string[];
   selectedToolNames?: string[];
   toolSelectionRestricted?: boolean;
+  routingNote?: string;
 }
 
 export interface TraceableSubagentRequestSummaryItem {
@@ -357,6 +358,10 @@ export interface TraceableRuntimeModelSelectionSummary {
 
 export interface TraceableRuntimeDecisionSummary {
   modelSelection: TraceableRuntimeModelSelectionSummary;
+  requestRouting?: {
+    mode: "tool-enabled" | "tool-free-lightweight-direct" | "tool-free-budget-zero";
+    rationale: string[];
+  };
 }
 
 export interface TraceableRuntimeFingerprint {

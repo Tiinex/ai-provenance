@@ -48,7 +48,8 @@ function defaultHeaderState(): Required<TraceableSubagentStatusHeader> {
     humanRole: false,
     toolsetNames: [],
     selectedToolNames: [],
-    toolSelectionRestricted: false
+    toolSelectionRestricted: false,
+    routingNote: ""
   };
 }
 
@@ -414,6 +415,9 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
     if (typeof header.toolSelectionRestricted === "boolean") {
       this.currentHeader.toolSelectionRestricted = header.toolSelectionRestricted;
     }
+    if (typeof header.routingNote === "string") {
+      this.currentHeader.routingNote = header.routingNote.trim();
+    }
     this.item.tooltip = this.buildMainTooltip();
     this.publishDetailView();
   }
@@ -531,6 +535,9 @@ export class TraceableSubagentStatusBarController implements vscode.Disposable {
     }
     if (this.currentHeader.toolsetNames.length > 0) {
       lines.push(`Toolset: ${this.currentHeader.toolsetNames.join(", ")}`);
+    }
+    if (this.currentHeader.routingNote) {
+      lines.push(`Routing: ${this.currentHeader.routingNote}`);
     }
     if (this.currentStatus.detail) {
       lines.push(`Detail: ${this.currentStatus.detail}`);

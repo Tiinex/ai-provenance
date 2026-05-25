@@ -1623,7 +1623,8 @@ export function activate(context: vscode.ExtensionContext): void {
       humanRole: false,
       toolsetNames: [],
       selectedToolNames: [],
-      toolSelectionRestricted: false
+      toolSelectionRestricted: false,
+      routingNote: ""
     },
     status: { phase: "idle", message: "idle" },
     evidenceFile: { status: "idle" },
@@ -2495,7 +2496,7 @@ export function activate(context: vscode.ExtensionContext): void {
       traceableStatusPanel.setPinnedOpen(true);
     }
   );
-  const revealTraceablePanel = async (reason: "auto" | "manual" = "manual"): Promise<void> => {
+  const revealTraceablePanel = async (reason: "auto" | "manual" = "manual", options: { focusComposer?: boolean } = {}): Promise<void> => {
     traceablePanelRestoreCommand = await getTraceablePanelRestoreCommand();
     traceablePanelPinnedOpen = shouldKeepTraceablePanelPinned({
       reason,
@@ -2504,7 +2505,7 @@ export function activate(context: vscode.ExtensionContext): void {
     });
     traceableStatusPanel.setPinnedOpen(traceablePanelPinnedOpen);
     await vscode.commands.executeCommand("setContext", TRACEABLE_PANEL_VISIBLE_CONTEXT, true);
-    await traceableStatusPanel.open();
+    await traceableStatusPanel.open({ reason, focusComposer: options.focusComposer === true });
   };
   const traceableStatusBar = new TraceableSubagentStatusBarController({
     detailCommandId: OPEN_TRACEABLE_SUBAGENT_STATUS_DETAIL_COMMAND,
@@ -2535,12 +2536,17 @@ export function activate(context: vscode.ExtensionContext): void {
     | { kind: "folder"; uri: vscode.Uri; folderPath: string }
     | { kind: "trace"; uri: vscode.Uri; filePath: string };
 
-  const prepareTraceableRunExecution = async (requestedInput: TraceableSubagentInput) => {
+  const prepareTraceableRunExecution = async (
+    requestedInput: TraceableSubagentInput,
+    options: { revealReason?: "auto" | "manual"; focusComposerOnReveal?: boolean } = {}
+  ) => {
     const preparedInput = await prepareTraceableSubagentInput(requestedInput);
     const effectiveInput = preparedInput.input;
     if (shouldAutoRevealTraceablePanel(effectiveInput.reveal)) {
       void (async () => {
-        await revealTraceablePanel("auto");
+        await revealTraceablePanel(options.revealReason === "manual" ? "manual" : "auto", {
+          focusComposer: options.focusComposerOnReveal === true
+        });
       })();
     }
     const reporter = traceableStatusBar.startRun({
@@ -2727,11 +2733,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const runTraceableSubagentFromCommand = async (
     requestedInput: TraceableSubagentInput,
     logLabel: string,
-    options: { openResult?: boolean; rejectIfBusy?: boolean } = {}
+    options: { openResult?: boolean; rejectIfBusy?: boolean; focusComposerOnReveal?: boolean } = {}
   ): Promise<TraceableSubagentRunResult> => {
     const lease = await acquireTraceableRunLease(logLabel, options.rejectIfBusy !== false);
     try {
-      const prepared = await prepareTraceableRunExecution(requestedInput);
+      const prepared = await prepareTraceableRunExecution(requestedInput, {
+        revealReason: options.focusComposerOnReveal === true ? "manual" : "auto",
+        focusComposerOnReveal: options.focusComposerOnReveal === true
+      });
       const result = await executePreparedTraceableRun(requestedInput, prepared);
       if (options.openResult !== false) {
         await openTraceableCommandResult(result);
@@ -2771,7 +2780,7 @@ export function activate(context: vscode.ExtensionContext): void {
         inputMode: "DIRECT",
         reveal: true,
         exportToFolder: resolvedTarget.folderPath
-      }, "New Traceable Chat (folder)", { openResult: false });
+      }, "New Traceable Chat (folder)", { openResult: false, focusComposerOnReveal: true });
       await openTraceableChatResultWhenPanelNotAutoRevealed(result);
       return;
     }
@@ -2791,7 +2800,7 @@ export function activate(context: vscode.ExtensionContext): void {
         inputMode: "DIRECT",
         reveal: true,
         exportToFolder: path.dirname(resolvedTarget.filePath)
-      }, "New Traceable Chat (continuation)", { openResult: false });
+      }, "New Traceable Chat (continuation)", { openResult: false, focusComposerOnReveal: true });
       await openTraceableChatResultWhenPanelNotAutoRevealed(result);
       return;
     }
@@ -2832,7 +2841,7 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         : {}),
       ...(exportFolder ? { exportToFolder: exportFolder } : {})
-    }, "New Traceable Chat (agent)", { openResult: false });
+    }, "New Traceable Chat (agent)", { openResult: false, focusComposerOnReveal: true });
     await openTraceableChatResultWhenPanelNotAutoRevealed(result);
     if (result.evidenceFile?.filePath) {
       unsavedTraceableAgentChatState.delete(resolvedTarget.uri.fsPath);
