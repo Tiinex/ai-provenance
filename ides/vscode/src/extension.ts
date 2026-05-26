@@ -47,17 +47,28 @@ import {
 import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import {
   buildTraceableRenameMoveWorkspaceEdit,
+  planTraceableLineageMoveRetainedDescendantRewrites,
+  planTraceableStandaloneMoveDependencyRewrites,
   inspectTraceableLineageMoveScopes,
   normalizeTraceableRenameMoveFileSelection,
   planTraceableStandaloneMoveReturnDisplacementMoves,
   planTraceableStandaloneMoveDependencyMoves,
   planTraceableRewriteMove,
-  planTraceableRewriteAfterRename,
+  planTraceableRewriteRequestedRename,
   planTraceableRenameMoveOperation,
   type TraceablePreparedRenameMove,
+  type TraceablePreparedRewriteFile,
   type TraceableLineageMoveScope,
   type TraceableRenameMoveRewriteBehavior
 } from "./traceableFileOperations";
+import {
+  createTraceableCopyMutation,
+  createTraceableMoveMutation,
+  createTraceableRewriteMutation,
+  type PreparedTraceableMutationPlan,
+  type TraceableMutationPlan,
+  type TraceableMutationPlanMutation
+} from "./traceableMutationPlan";
 
 const OPEN_OVERVIEW_COMMAND = "tiinex.aiProvenance.openOverview";
 const INSPECT_TRACEABLE_EVIDENCE_COMMAND = "tiinex.aiProvenance.inspectTraceableEvidence";
@@ -67,6 +78,7 @@ const OPEN_TRACEABLE_EVIDENCE_EDITOR_COMMAND = "tiinex.aiProvenance.openTraceabl
 const REOPEN_TRACEABLE_EVIDENCE_SOURCE_COMMAND = "tiinex.aiProvenance.reopenTraceableEvidenceSource";
 const REOPEN_TRACEABLE_EVIDENCE_PREVIEW_COMMAND = "tiinex.aiProvenance.reopenTraceableEvidencePreview";
 const REWRITE_MOVE_TRACE_COMMAND = "tiinex.aiProvenance.rewriteMoveTrace";
+const REWRITE_COPY_TRACE_COMMAND = "tiinex.aiProvenance.rewriteCopyTrace";
 const RETURN_TO_PARENT_TRACE_COMMAND = "tiinex.aiProvenance.returnToParentTrace";
 const ADD_FILE_TO_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.addFileToTraceableChat";
 const NEW_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.newTraceableChat";
@@ -129,6 +141,15 @@ interface TransferTraceInput {
   action: TransferTraceAction;
   lineageScope?: TraceableLineageMoveScope;
   reveal?: boolean;
+}
+
+interface PendingTraceableRewriteRename {
+  oldUri: vscode.Uri;
+  newUri: vscode.Uri;
+  finalUri: vscode.Uri;
+  rewrittenMarkdown: string;
+  additionalMoves: readonly TraceablePreparedRenameMove[];
+  additionalRewrites: readonly TraceablePreparedRewriteFile[];
 }
 
 const traceableSubagentToolMutex = new QueuedMutex();
@@ -1226,6 +1247,11 @@ function getConfiguredTraceableDefaultMoveAction(resource?: vscode.Uri): Traceab
   return "ask";
 }
 
+function getConfiguredTraceableDefaultCopyAction(resource?: vscode.Uri): TraceableDefaultFileAction {
+  const configured = getProvenanceConfiguration(resource).get<string>("traceableDefaultCopyAction", "ask");
+  return configured === "alone" || configured === "lineage" ? configured : "ask";
+}
+
 function getConfiguredTraceableDefaultMultiSelectLineageScope(resource?: vscode.Uri): TraceableLineageMoveScope | "ask" {
   const configured = getProvenanceConfiguration(resource).get<string>("traceableDefaultMultiSelectLineageScope", "ask");
   return configured === "leaves" || configured === "branch" ? configured : "ask";
@@ -1234,6 +1260,9 @@ function getConfiguredTraceableDefaultMultiSelectLineageScope(resource?: vscode.
 function pickPreferredTraceableLineageScope(
   availableScopes: readonly TraceableLineageMoveScope[]
 ): TraceableLineageMoveScope | undefined {
+  if (availableScopes.includes("tree-plus-seeds")) {
+    return "tree-plus-seeds";
+  }
   if (availableScopes.includes("tree")) {
     return "tree";
   }
@@ -1279,12 +1308,25 @@ function getConfiguredTraceableMovePromptOutcome(
   return undefined;
 }
 
+function getConfiguredTraceableCopyPromptOutcome(
+  resource: vscode.Uri | undefined,
+  availableScopes: readonly TraceableLineageMoveScope[]
+): TraceableRenameMovePromptOutcome | undefined {
+  if (getConfiguredTraceableDisableMoveCopyLogic(resource)) {
+    return undefined;
+  }
+  return mapConfiguredTraceableActionToPromptOutcome(getConfiguredTraceableDefaultCopyAction(resource), availableScopes);
+}
+
 function formatTraceableLineageScopeLabel(scope: TraceableLineageMoveScope): string {
   if (scope === "leaves") {
     return "Leaves";
   }
   if (scope === "branch") {
     return "Branch";
+  }
+  if (scope === "tree-plus-seeds") {
+    return "Tree + Seeds";
   }
   return "Tree";
 }
@@ -1314,13 +1356,14 @@ async function confirmTraceableLineageMoveScope(
 
 }
 
-async function confirmTraceableRenameMoveRewrite(
+async function confirmTraceableTransferRewrite(
   files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[],
-  availableScopes: readonly TraceableLineageMoveScope[]
+  availableScopes: readonly TraceableLineageMoveScope[],
+  operationLabel: "move" | "copy"
 ): Promise<TraceableRenameMovePromptOutcome> {
   const message = files.length === 1
-    ? `Choose how TRACEABLE should handle ${path.basename(files[0].oldUri.fsPath)} in the destination.`
-    : `Choose how TRACEABLE should handle ${files.length} renamed or moved evidence files in the destination.`;
+    ? `Choose how TRACEABLE should ${operationLabel} ${path.basename(files[0].oldUri.fsPath)} into the destination.`
+    : `Choose how TRACEABLE should ${operationLabel} these ${files.length} evidence files into the destination.`;
   const options = [
     "Alone",
     ...(availableScopes.length > 0 ? ["Lineage"] : [])
@@ -1347,6 +1390,13 @@ async function confirmTraceableRenameMoveRewrite(
     return scope ? { action: "lineage", scope } : { action: "cancel" };
   }
   return { action: "cancel" };
+}
+
+async function confirmTraceableRenameMoveRewrite(
+  files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[],
+  availableScopes: readonly TraceableLineageMoveScope[]
+): Promise<TraceableRenameMovePromptOutcome> {
+  return confirmTraceableTransferRewrite(files, availableScopes, "move");
 }
 
 function buildTraceableRenamePairKey(oldUri: vscode.Uri, newUri: vscode.Uri): string {
@@ -1390,7 +1440,7 @@ async function filterMeaningfulTraceableLineageScopes(
   }
   return meaningfulScopes;
 }
-  const pendingTraceableRewriteRenames = new Map<string, { oldUri: vscode.Uri; newUri: vscode.Uri }>();
+  const pendingTraceableRewriteRenames = new Map<string, PendingTraceableRewriteRename>();
   const cancelledTraceableRenamePairs = new Map<string, { oldUri: vscode.Uri; newUri: vscode.Uri }>();
   const suppressedTraceableRenamePairs = new Set<string>();
   let traceableExtensionOwnedRenameDepth = 0;
@@ -1521,6 +1571,26 @@ async function performTraceablePreparedCopyOperation(copies: readonly TraceableP
   }
 }
 
+async function ApplyTraceableMutationPlan(plan: TraceableMutationPlan): Promise<void> {
+  if (plan.blocked) {
+    throw new Error("TRACEABLE mutation plan is blocked and cannot be applied.");
+  }
+  const moveMutations = plan.mutations.filter((mutation) => mutation.kind === "move-file");
+  const copyMutations = plan.mutations.filter((mutation) => mutation.kind === "copy-file");
+  const rewriteMutations = plan.mutations.filter((mutation) => mutation.kind === "rewrite-file");
+  if (moveMutations.length > 0 && copyMutations.length > 0) {
+    throw new Error("TRACEABLE mutation plan cannot mix move-file and copy-file mutations in the current apply surface.");
+  }
+  if (moveMutations.length > 0) {
+    await performTraceableStagedFileMoveOperation(moveMutations);
+  } else if (copyMutations.length > 0) {
+    await performTraceablePreparedCopyOperation(copyMutations);
+  }
+  for (const mutation of rewriteMutations) {
+    await vscode.workspace.fs.writeFile(mutation.fileUri, Buffer.from(mutation.nextContent, "utf8"));
+  }
+}
+
 function enqueueTraceableOwnedMoveOperation(operation: () => Promise<void>): void {
   void runTraceableOwnedMoveOperation(operation).catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
@@ -1551,6 +1621,38 @@ async function performTraceableLineageMoveOperation(
   }
   await performTraceableStagedFileMoveOperation(plannedMoves);
   return plannedMoves;
+}
+
+async function prepareTraceableLineageMoveMutationPlan(
+  files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[],
+  lineageScope: TraceableLineageMoveScope,
+  workspaceRoots: readonly string[]
+): Promise<PreparedTraceableMutationPlan> {
+  const plannedMoves = await planTraceableRenameMoveOperation({
+    files,
+    workspaceRoots,
+    allowExistingRequestedTargets: false,
+    lineageScope,
+    hostOwnedRequestedFiles: files
+  });
+  if (!plannedMoves || plannedMoves.length === 0) {
+    throw new Error("TRACEABLE lineage move could not prepare any file updates.");
+  }
+  const retainedDescendantRewrites = await planTraceableLineageMoveRetainedDescendantRewrites({
+    files,
+    workspaceRoots,
+    lineageScope
+  });
+  return {
+    plan: {
+      blocked: false,
+        mutations: [
+          ...plannedMoves.map((move) => createTraceableMoveMutation(move)),
+          ...retainedDescendantRewrites.map((rewrite) => createTraceableRewriteMutation(rewrite.fileUri, rewrite.nextContent))
+        ]
+    },
+    outputPaths: plannedMoves.map((move) => move.newUri.fsPath)
+  };
 }
 
 function buildTraceableModelPolicyAliases(entry: Awaited<ReturnType<typeof listTraceableModelCatalogEntries>>[number]): string[] {
@@ -3563,36 +3665,108 @@ export function activate(context: vscode.ExtensionContext): void {
     scheduleReturnToParentTraceContextRefresh();
   }));
 
-  const performTraceableRewriteMoveToFolder = async (candidate: vscode.Uri, destinationFolder: vscode.Uri): Promise<string[]> => {
+  const prepareTraceableRewriteRequestedMove = async (
+    sourceUri: vscode.Uri,
+    requestedUri: vscode.Uri
+  ): Promise<PendingTraceableRewriteRename> => {
     const workspaceRoots = getTraceableWorkspaceRoots();
-    const plan = await planTraceableRewriteMove({
-      sourcePath: candidate.fsPath,
-      destinationFolderPath: destinationFolder.fsPath,
+    const fileNameFormatOptions = getTraceableEvidenceFileNameFormatOptions(getProvenanceConfiguration(requestedUri));
+    const requestedFolderChanged = path.resolve(path.dirname(sourceUri.fsPath)).toLowerCase() !== path.resolve(path.dirname(requestedUri.fsPath)).toLowerCase();
+    const requestedBaseNameUnchanged = path.basename(sourceUri.fsPath).toLowerCase() === path.basename(requestedUri.fsPath).toLowerCase();
+
+    if (requestedFolderChanged && requestedBaseNameUnchanged) {
+      const plan = await planTraceableRewriteMove({
+        sourcePath: sourceUri.fsPath,
+        destinationFolderPath: path.dirname(requestedUri.fsPath),
+        workspaceRoots,
+        fileNameFormatOptions
+      });
+      if (!plan) {
+        throw new Error("TRACEABLE rewrite move could not read a supported Traceable State block from the selected file.");
+      }
+      const returnDisplacementMoves = await planTraceableStandaloneMoveReturnDisplacementMoves({
+        sourcePath: sourceUri.fsPath,
+        destinationPath: plan.finalPath,
+        workspaceRoots
+      });
+      const dependentRewrites = await planTraceableStandaloneMoveDependencyRewrites({
+        sourcePath: sourceUri.fsPath,
+        destinationPath: plan.finalPath,
+        workspaceRoots
+      });
+      return {
+        oldUri: sourceUri,
+        newUri: requestedUri,
+        finalUri: vscode.Uri.file(plan.finalPath),
+        rewrittenMarkdown: plan.rewrittenMarkdown,
+        additionalMoves: [...returnDisplacementMoves],
+        additionalRewrites: dependentRewrites
+      };
+    }
+
+    const plan = await planTraceableRewriteRequestedRename({
+      sourcePath: sourceUri.fsPath,
+      requestedPath: requestedUri.fsPath,
       workspaceRoots,
-      fileNameFormatOptions: getTraceableEvidenceFileNameFormatOptions(getProvenanceConfiguration(destinationFolder))
+      fileNameFormatOptions
     });
     if (!plan) {
-      throw new Error("TRACEABLE rewrite move could not read a supported Traceable State block from the selected file.");
+      throw new Error("TRACEABLE rewrite rename could not read a supported Traceable State block from the selected file.");
     }
-    const returnDisplacementMoves: TraceablePreparedRenameMove[] = await planTraceableStandaloneMoveReturnDisplacementMoves({
-      sourcePath: candidate.fsPath,
-      destinationPath: plan.finalPath,
-      workspaceRoots
-    });
-    const dependentMoves: TraceablePreparedRenameMove[] = await planTraceableStandaloneMoveDependencyMoves({
-      sourcePath: candidate.fsPath,
-      destinationPath: plan.finalPath,
-      workspaceRoots
-    });
-    await performTraceableStagedFileMoveOperation([{
-      oldUri: candidate,
-      newUri: vscode.Uri.file(plan.finalPath),
-      rewrittenMarkdown: plan.rewrittenMarkdown
-    }, ...returnDisplacementMoves, ...dependentMoves]);
-    return [plan.finalPath];
+    return {
+      oldUri: sourceUri,
+      newUri: requestedUri,
+      finalUri: vscode.Uri.file(plan.finalPath),
+      rewrittenMarkdown: plan.rewrittenMarkdown,
+      additionalMoves: [],
+      additionalRewrites: []
+    };
+  };
+
+  const performTraceableRewriteMoveToFolder = async (candidate: vscode.Uri, destinationFolder: vscode.Uri): Promise<string[]> => {
+    const preparedPlan = await prepareTraceableRewriteMoveMutationPlan(
+      candidate,
+      vscode.Uri.file(path.join(destinationFolder.fsPath, path.basename(candidate.fsPath)))
+    );
+    await ApplyTraceableMutationPlan(preparedPlan.plan);
+    return preparedPlan.outputPaths;
+  };
+
+  const prepareTraceableRewriteMoveMutationPlan = async (
+    candidate: vscode.Uri,
+    requestedUri: vscode.Uri
+  ): Promise<PreparedTraceableMutationPlan> => {
+    const preparedMove = await prepareTraceableRewriteRequestedMove(
+      candidate,
+      requestedUri
+    );
+    return {
+      plan: {
+        blocked: false,
+        mutations: [
+          createTraceableMoveMutation({
+            oldUri: candidate,
+            newUri: preparedMove.finalUri,
+            rewrittenMarkdown: preparedMove.rewrittenMarkdown
+          }),
+          ...preparedMove.additionalMoves.map((move) => createTraceableMoveMutation(move)),
+          ...preparedMove.additionalRewrites.map((rewrite) => createTraceableRewriteMutation(rewrite.fileUri, rewrite.nextContent))
+        ]
+      },
+      outputPaths: [preparedMove.finalUri.fsPath]
+    };
   };
 
   const performTraceableRewriteCopyToFolder = async (candidate: vscode.Uri, destinationFolder: vscode.Uri): Promise<string[]> => {
+    const preparedPlan = await prepareTraceableRewriteCopyMutationPlan(candidate, destinationFolder);
+    await ApplyTraceableMutationPlan(preparedPlan.plan);
+    return preparedPlan.outputPaths;
+  };
+
+  const prepareTraceableRewriteCopyMutationPlan = async (
+    candidate: vscode.Uri,
+    destinationFolder: vscode.Uri
+  ): Promise<PreparedTraceableMutationPlan> => {
     const plan = await planTraceableRewriteMove({
       sourcePath: candidate.fsPath,
       destinationFolderPath: destinationFolder.fsPath,
@@ -3602,12 +3776,17 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!plan) {
       throw new Error("TRACEABLE rewrite copy could not read a supported Traceable State block from the selected file.");
     }
-    await performTraceablePreparedCopyOperation([{
-      oldUri: candidate,
-      newUri: vscode.Uri.file(plan.finalPath),
-      rewrittenMarkdown: plan.rewrittenMarkdown
-    }]);
-    return [plan.finalPath];
+    return {
+      plan: {
+        blocked: false,
+        mutations: [createTraceableCopyMutation({
+          oldUri: candidate,
+          newUri: vscode.Uri.file(plan.finalPath),
+          rewrittenMarkdown: plan.rewrittenMarkdown
+        })]
+      },
+      outputPaths: [plan.finalPath]
+    };
   };
 
   const performTraceablePreserveMoveToFolder = async (
@@ -3615,11 +3794,12 @@ export function activate(context: vscode.ExtensionContext): void {
     destinationFolder: vscode.Uri,
     lineageScope: TraceableLineageMoveScope
   ): Promise<string[]> => {
-    const plannedMoves = await performTraceableLineageMoveOperation([{
+    const preparedPlan = await prepareTraceableLineageMoveMutationPlan([{
       oldUri: candidate,
       newUri: vscode.Uri.file(path.join(destinationFolder.fsPath, path.basename(candidate.fsPath)))
     }], lineageScope, getTraceableWorkspaceRoots());
-    return plannedMoves.map((move) => move.newUri.fsPath);
+    await ApplyTraceableMutationPlan(preparedPlan.plan);
+    return preparedPlan.outputPaths;
   };
 
   const performTraceablePreserveCopyToFolder = async (
@@ -3641,8 +3821,15 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!plannedMoves || plannedMoves.length === 0) {
       throw new Error("TRACEABLE lineage copy could not prepare any file updates.");
     }
-    await performTraceablePreparedCopyOperation(plannedMoves);
-    return plannedMoves.map((move) => move.newUri.fsPath);
+    const preparedPlan: PreparedTraceableMutationPlan = {
+      plan: {
+        blocked: false,
+        mutations: plannedMoves.map((move) => createTraceableCopyMutation(move))
+      },
+      outputPaths: plannedMoves.map((move) => move.newUri.fsPath)
+    };
+    await ApplyTraceableMutationPlan(preparedPlan.plan);
+    return preparedPlan.outputPaths;
   };
 
   const performTraceablePlainMoveToFolder = async (candidate: vscode.Uri, destinationFolder: vscode.Uri): Promise<string[]> => {
@@ -3651,11 +3838,18 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage("TRACEABLE plain move skipped because the file is already in the destination folder.");
       return [finalUri.fsPath];
     }
-    await performTraceableStagedFileMoveOperation([{
-      oldUri: candidate,
-      newUri: finalUri
-    }]);
-    return [finalUri.fsPath];
+    const preparedPlan: PreparedTraceableMutationPlan = {
+      plan: {
+        blocked: false,
+        mutations: [createTraceableMoveMutation({
+          oldUri: candidate,
+          newUri: finalUri
+        })]
+      },
+      outputPaths: [finalUri.fsPath]
+    };
+    await ApplyTraceableMutationPlan(preparedPlan.plan);
+    return preparedPlan.outputPaths;
   };
 
   const transferTrace = async (input: TransferTraceInput): Promise<{ outputPaths: string[]; lineageScope?: TraceableLineageMoveScope; sourcePaths: string[]; droppedSourcePaths: string[] }> => {
@@ -3712,7 +3906,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return [...scopes];
       }
       return result.filter((scope) => scopes.includes(scope));
-    }, []).filter((scope) => plannedFiles.length <= 1 || scope !== "tree");
+    }, []).filter((scope) => plannedFiles.length <= 1 || (scope !== "tree" && scope !== "tree-plus-seeds"));
     const requestedLineageScope = input.lineageScope;
     const lineageScope = requestedLineageScope
       ? await resolveTransferTraceLineageScope(plannedFiles[0].oldUri, destinationFolderUri, requestedLineageScope)
@@ -3759,11 +3953,67 @@ export function activate(context: vscode.ExtensionContext): void {
     if (!destinationFolder || destinationFolder.scheme !== "file") {
       return;
     }
+    const requestedFiles = [{ oldUri: candidate, newUri: vscode.Uri.file(path.join(destinationFolder.fsPath, path.basename(candidate.fsPath))) }];
+    const workspaceRoots = getTraceableWorkspaceRoots();
+    const availableScopes = await inspectTraceableLineageMoveScopes(candidate.fsPath, workspaceRoots);
+    const meaningfulScopes = await filterMeaningfulTraceableLineageScopes(requestedFiles, availableScopes, workspaceRoots);
+    const promptOutcome = getConfiguredTraceableMovePromptOutcome(candidate, meaningfulScopes)
+      ?? await confirmTraceableRenameMoveRewrite(requestedFiles, meaningfulScopes);
+    if (promptOutcome.action === "cancel") {
+      return;
+    }
     try {
-      await performTraceableRewriteMoveToFolder(candidate, destinationFolder);
+      if (promptOutcome.action === "alone") {
+        await performTraceableRewriteMoveToFolder(candidate, destinationFolder);
+        return;
+      }
+      await performTraceablePreserveMoveToFolder(candidate, destinationFolder, promptOutcome.scope);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       void vscode.window.showErrorMessage(`TRACEABLE move could not be completed: ${message}`);
+    }
+  };
+
+  const rewriteCopyTrace = async (target?: vscode.Uri): Promise<void> => {
+    const candidate = target;
+    if (!candidate || candidate.scheme !== "file" || !candidate.fsPath.toLowerCase().endsWith(".trace.md")) {
+      void vscode.window.showErrorMessage("Invoke Copy Trace from a .trace.md file in the Explorer.");
+      return;
+    }
+    if (getConfiguredTraceableDisableMoveCopyLogic(candidate)) {
+      void vscode.window.showInformationMessage("TRACEABLE move/copy logic is disabled for this resource. Re-enable `tiinex.aiProvenance.traceableDisableMoveCopyLogic` to use rewrite or lineage copy flows again.");
+      return;
+    }
+    const pickedFolders = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      defaultUri: vscode.Uri.file(path.dirname(candidate.fsPath)),
+      openLabel: "Copy Trace Here",
+      title: "Choose TRACEABLE copy destination folder"
+    });
+    const destinationFolder = pickedFolders?.[0];
+    if (!destinationFolder || destinationFolder.scheme !== "file") {
+      return;
+    }
+    const requestedFiles = [{ oldUri: candidate, newUri: vscode.Uri.file(path.join(destinationFolder.fsPath, path.basename(candidate.fsPath))) }];
+    const workspaceRoots = getTraceableWorkspaceRoots();
+    const availableScopes = await inspectTraceableLineageMoveScopes(candidate.fsPath, workspaceRoots);
+    const meaningfulScopes = await filterMeaningfulTraceableLineageScopes(requestedFiles, availableScopes, workspaceRoots);
+    const promptOutcome = getConfiguredTraceableCopyPromptOutcome(candidate, meaningfulScopes)
+      ?? await confirmTraceableTransferRewrite(requestedFiles, meaningfulScopes, "copy");
+    if (promptOutcome.action === "cancel") {
+      return;
+    }
+    try {
+      if (promptOutcome.action === "alone") {
+        await performTraceableRewriteCopyToFolder(candidate, destinationFolder);
+        return;
+      }
+      await performTraceablePreserveCopyToFolder(candidate, destinationFolder, promptOutcome.scope);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      void vscode.window.showErrorMessage(`TRACEABLE copy could not be completed: ${message}`);
     }
   };
 
@@ -3882,7 +4132,7 @@ export function activate(context: vscode.ExtensionContext): void {
             return [...scopes];
           }
           return sharedScopes.filter((scope) => scopes.includes(scope));
-        }, []).filter((scope) => plannedRelevantFiles.length <= 1 || scope !== "tree");
+        }, []).filter((scope) => plannedRelevantFiles.length <= 1 || (scope !== "tree" && scope !== "tree-plus-seeds"));
         const meaningfulScopes = await filterMeaningfulTraceableLineageScopes(plannedRelevantFiles, availableScopes, workspaceRoots);
         const configuredPromptOutcome = getConfiguredTraceableMovePromptOutcome(plannedRelevantFiles[0]?.newUri, meaningfulScopes);
         const promptOutcome = configuredPromptOutcome
@@ -3895,8 +4145,9 @@ export function activate(context: vscode.ExtensionContext): void {
           return Promise.reject(new Error("TRACEABLE rename or move cancelled by user."));
         }
         if (promptOutcome.action === "alone") {
-          for (const file of relevantFiles) {
-            pendingTraceableRewriteRenames.set(buildTraceableRenamePairKey(file.oldUri, file.newUri), file);
+          for (const file of plannedRelevantFiles) {
+            const preparedMove = await prepareTraceableRewriteRequestedMove(file.oldUri, file.newUri);
+            pendingTraceableRewriteRenames.set(buildTraceableRenamePairKey(file.oldUri, file.newUri), preparedMove);
           }
           return new vscode.WorkspaceEdit();
         }
@@ -3962,23 +4213,21 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         for (const file of pendingFiles) {
           try {
-            const plan = await planTraceableRewriteAfterRename({
-              oldPath: file.oldUri.fsPath,
-              newPath: file.newUri.fsPath,
-              workspaceRoots: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
-              fileNameFormatOptions: getTraceableEvidenceFileNameFormatOptions(getProvenanceConfiguration(file.newUri))
-            });
-            if (!plan) {
-              continue;
-            }
             let targetUri = file.newUri;
-            if (path.resolve(plan.finalPath).toLowerCase() !== path.resolve(file.newUri.fsPath).toLowerCase()) {
-              const finalUri = vscode.Uri.file(plan.finalPath);
+            if (path.resolve(file.finalUri.fsPath).toLowerCase() !== path.resolve(file.newUri.fsPath).toLowerCase()) {
+              const finalUri = file.finalUri;
               suppressedTraceableRenamePairs.add(buildTraceableRenamePairKey(file.newUri, finalUri));
               await vscode.workspace.fs.rename(file.newUri, finalUri, { overwrite: false });
               targetUri = finalUri;
             }
-            await vscode.workspace.fs.writeFile(targetUri, Buffer.from(plan.rewrittenMarkdown, "utf8"));
+            await ApplyTraceableMutationPlan({
+              blocked: false,
+              mutations: [
+                createTraceableRewriteMutation(targetUri, file.rewrittenMarkdown),
+                ...file.additionalMoves.map((move) => createTraceableMoveMutation(move)),
+                ...file.additionalRewrites.map((rewrite) => createTraceableRewriteMutation(rewrite.fileUri, rewrite.nextContent))
+              ]
+            });
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             void vscode.window.showErrorMessage(`TRACEABLE rewrite could not be completed: ${message}`);
@@ -4016,6 +4265,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand(REWRITE_MOVE_TRACE_COMMAND, async (target?: vscode.Uri) => {
       await rewriteMoveTrace(target);
+    }),
+    vscode.commands.registerCommand(REWRITE_COPY_TRACE_COMMAND, async (target?: vscode.Uri) => {
+      await rewriteCopyTrace(target);
     }),
     vscode.commands.registerCommand(RETURN_TO_PARENT_TRACE_COMMAND, async (target?: vscode.Uri) => {
       await returnToParentTrace(target);

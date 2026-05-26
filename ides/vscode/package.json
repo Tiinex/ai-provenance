@@ -27,6 +27,7 @@
     "onCommand:tiinex.aiProvenance.newTraceableChat",
     "onCommand:tiinex.aiProvenance.resumeTraceableChat",
     "onCommand:tiinex.aiProvenance.rewriteMoveTrace",
+    "onCommand:tiinex.aiProvenance.rewriteCopyTrace",
     "onCommand:tiinex.aiProvenance.returnToParentTrace",
     "onCommand:tiinex.aiProvenance.addFileToTraceableChat",
     "onCommand:tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
@@ -424,7 +425,8 @@
               "enum": [
                 "leaves",
                 "branch",
-                "tree"
+                "tree",
+                "tree-plus-seeds"
               ],
               "description": "Optional lineage scope for `action: \"lineage\"`. Required when more than one meaningful lineage scope is available for the destination."
             },
@@ -464,6 +466,10 @@
       {
         "command": "tiinex.aiProvenance.rewriteMoveTrace",
         "title": "Move Trace..."
+      },
+      {
+        "command": "tiinex.aiProvenance.rewriteCopyTrace",
+        "title": "Copy Trace..."
       },
       {
         "command": "tiinex.aiProvenance.returnToParentTrace",
@@ -518,14 +524,19 @@
           "group": "4_traceable@3"
         },
         {
+          "command": "tiinex.aiProvenance.rewriteCopyTrace",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "4_traceable@4"
+        },
+        {
           "command": "tiinex.aiProvenance.returnToParentTrace",
           "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && resourcePath in tiinex.aiProvenance.returnToParentEligibleResources",
-          "group": "4_traceable@4"
+          "group": "4_traceable@5"
         },
         {
           "command": "tiinex.aiProvenance.addFileToTraceableChat",
           "when": "resourceScheme == file && !explorerResourceIsFolder",
-          "group": "4_traceable@5"
+          "group": "4_traceable@6"
         },
         {
           "command": "tiinex.aiProvenance.newTraceableChat",
@@ -665,7 +676,7 @@
             ],
             "default": "ask",
             "scope": "resource",
-            "description": "Reserve the default action shape for upcoming TRACEABLE copy flows so move and copy can share the same Alone and Lineage mental model. `ask` keeps future copy flows interactive, while `alone` and `lineage` preselect that action when a trace-aware copy surface is introduced."
+            "description": "Control the default action for TRACEABLE copy flows that use the Alone and Lineage decision model. `ask` keeps the chooser, `alone` applies the trace-aware selected-file copy, and `lineage` prefers the broadest meaningful lineage scope for the selected file."
           },
           "tiinex.aiProvenance.traceableDefaultMultiSelectLineageScope": {
             "type": "string",

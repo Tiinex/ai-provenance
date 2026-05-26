@@ -16,9 +16,10 @@ import {
 } from "./traceableLineage";
 import { renderEvidenceMarkdown } from "./traceableSubagentEvidence";
 import type { TraceableSubagentEvidenceFileState, TraceableSubagentRequestSummaryItem } from "./traceableSubagent";
+import { planStandaloneMoveRetainedDescendantRewrites } from "./traceableStandaloneMoveRetainedDescendants.js";
 
 export type TraceableRenameMoveRewriteBehavior = "ask" | "always" | "never";
-export type TraceableLineageMoveScope = "leaves" | "branch" | "tree";
+export type TraceableLineageMoveScope = "leaves" | "branch" | "tree" | "tree-plus-seeds";
 export type TraceableNormalizedRenameMoveFileSelection = {
   plannedFiles: Array<{ oldUri: vscode.Uri; newUri: vscode.Uri }>;
   droppedFiles: Array<{ oldUri: vscode.Uri; newUri: vscode.Uri }>;
@@ -28,6 +29,11 @@ export type TraceablePreparedRenameMove = {
   oldUri: vscode.Uri;
   newUri: vscode.Uri;
   rewrittenMarkdown?: string;
+};
+
+export type TraceablePreparedRewriteFile = {
+  fileUri: vscode.Uri;
+  nextContent: string;
 };
 
 type TraceableLineageMovePlan = {
@@ -513,6 +519,39 @@ function collectTraceableSubtreePathKeys(
   return includedPathKeys;
 }
 
+function normalizeDirectoryPathKey(filePath: string): string {
+  return normalizePathKey(path.dirname(filePath));
+}
+
+function collectTraceableDirectoryLocalPathKeys(graph: ConnectedTraceableLineageGraph): Set<string> {
+  const seedDirectoryKey = normalizeDirectoryPathKey(graph.seedNode.path);
+  const includedPathKeys = new Set<string>();
+  for (const node of graph.nodesByPathKey.values()) {
+    if (normalizeDirectoryPathKey(node.path) === seedDirectoryKey) {
+      includedPathKeys.add(node.pathKey);
+    }
+  }
+  return includedPathKeys;
+}
+
+function collectTraceableDescendantClosureFromSeeds(
+  graph: ConnectedTraceableLineageGraph,
+  seedPathKeys: ReadonlySet<string>
+): Set<string> {
+  const includedPathKeys = new Set<string>();
+  const pendingNodes = [...seedPathKeys].map((pathKey) => graph.nodesByPathKey.get(pathKey));
+  while (pendingNodes.length > 0) {
+    const currentNode = pendingNodes.pop();
+    if (!currentNode || includedPathKeys.has(currentNode.pathKey)) {
+      continue;
+    }
+    includedPathKeys.add(currentNode.pathKey);
+    const children = graph.childrenByParentPathKey.get(currentNode.pathKey) ?? [];
+    pendingNodes.push(...children);
+  }
+  return includedPathKeys;
+}
+
 function buildTraceableSeedAncestorChain(graph: ConnectedTraceableLineageGraph): ConnectedTraceableLineageNode[] {
   const chain: ConnectedTraceableLineageNode[] = [];
   let currentNode: ConnectedTraceableLineageNode | undefined = graph.seedNode;
@@ -560,7 +599,11 @@ function buildTraceableLineageScopePathKeys(
     const branchRootNode = resolveTraceableBranchRootNode(graph);
     return collectTraceableSubtreePathKeys(graph, branchRootNode.pathKey);
   }
-  return new Set(graph.nodesByPathKey.keys());
+  const directoryLocalPathKeys = collectTraceableDirectoryLocalPathKeys(graph);
+  if (scope === "tree-plus-seeds") {
+    return collectTraceableDescendantClosureFromSeeds(graph, directoryLocalPathKeys);
+  }
+  return directoryLocalPathKeys;
 }
 
 export async function inspectTraceableLineageMoveScopes(oldPath: string, workspaceRoots: readonly string[]): Promise<TraceableLineageMoveScope[]> {
@@ -572,6 +615,7 @@ export async function inspectTraceableLineageMoveScopes(oldPath: string, workspa
   const leavesPathKeys = buildTraceableLineageScopePathKeys(graph, "leaves");
   const branchPathKeys = buildTraceableLineageScopePathKeys(graph, "branch");
   const treePathKeys = buildTraceableLineageScopePathKeys(graph, "tree");
+  const treePlusSeedsPathKeys = buildTraceableLineageScopePathKeys(graph, "tree-plus-seeds");
   const availableScopes: TraceableLineageMoveScope[] = [];
   if (leavesPathKeys.size > 1) {
     availableScopes.push("leaves");
@@ -585,6 +629,14 @@ export async function inspectTraceableLineageMoveScopes(oldPath: string, workspa
     && !arePathKeySetsEqual(treePathKeys, branchPathKeys)
   ) {
     availableScopes.push("tree");
+  }
+  if (
+    treePlusSeedsPathKeys.size > 1
+    && !arePathKeySetsEqual(treePlusSeedsPathKeys, leavesPathKeys)
+    && !arePathKeySetsEqual(treePlusSeedsPathKeys, branchPathKeys)
+    && !arePathKeySetsEqual(treePlusSeedsPathKeys, treePathKeys)
+  ) {
+    availableScopes.push("tree-plus-seeds");
   }
   return availableScopes;
 }
@@ -694,6 +746,74 @@ async function buildTraceableLineageMovePlans(
       }];
     }))).flatMap((plans) => plans)
     .sort((left, right) => left.oldLineageLabel.localeCompare(right.oldLineageLabel));
+}
+
+export async function planTraceableLineageMoveRetainedDescendantRewrites(input: {
+  files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[];
+  workspaceRoots: readonly string[];
+  lineageScope?: TraceableLineageMoveScope;
+}): Promise<TraceablePreparedRewriteFile[]> {
+  const relevantFiles = input.files.filter(({ oldUri, newUri }) => (
+    oldUri.scheme === "file"
+    && newUri.scheme === "file"
+    && isTraceableEvidencePath(oldUri.fsPath)
+    && isTraceableEvidencePath(newUri.fsPath)
+  ));
+  if (relevantFiles.length === 0) {
+    return [];
+  }
+
+  const plannedMoveGroups = await Promise.all(relevantFiles.map(({ oldUri, newUri }) => (
+    buildTraceableLineageMovePlans(oldUri.fsPath, newUri.fsPath, input.workspaceRoots, input.lineageScope)
+  )));
+  const plannedMoves = plannedMoveGroups.flatMap((plans) => plans ?? []);
+  if (plannedMoves.length === 0) {
+    return [];
+  }
+
+  const pathMapping = new Map(plannedMoves.map((plan) => [normalizePathKey(plan.oldPath), plan.newPath] as const));
+  const rewritesByPathKey = new Map<string, TraceablePreparedRewriteFile>();
+
+  for (const file of relevantFiles) {
+    const searchRoots = resolveTraceableSearchRoots(file.oldUri.fsPath, input.workspaceRoots);
+    const graph = await buildConnectedTraceableLineageGraph(file.oldUri.fsPath, searchRoots);
+    if (!graph) {
+      continue;
+    }
+    const includedPathKeys = buildTraceableLineageScopePathKeys(graph, input.lineageScope ?? "tree");
+    const retainedDirectChildren = [...graph.nodesByPathKey.values()].filter((node) => (
+      !includedPathKeys.has(node.pathKey)
+      && Boolean(node.parentPathKey)
+      && includedPathKeys.has(node.parentPathKey as string)
+    ));
+
+    for (const retainedNode of retainedDirectChildren) {
+      if (rewritesByPathKey.has(retainedNode.pathKey)) {
+        continue;
+      }
+      const markdown = await fs.readFile(retainedNode.path, "utf8").catch(() => undefined);
+      if (typeof markdown !== "string") {
+        continue;
+      }
+      const rewrittenMarkdown = rewriteParsedTraceableStateForMove({
+        markdown,
+        currentPath: retainedNode.path,
+        nextPath: retainedNode.path,
+        nextLineageLabel: retainedNode.parsedFileName.lineageLabel,
+        pathMapping,
+        workspaceRoots: input.workspaceRoots
+      });
+      if (!rewrittenMarkdown || rewrittenMarkdown === markdown) {
+        continue;
+      }
+      rewritesByPathKey.set(retainedNode.pathKey, {
+        fileUri: vscode.Uri.file(retainedNode.path),
+        nextContent: rewrittenMarkdown
+      });
+    }
+  }
+
+  return [...rewritesByPathKey.values()];
 }
 
 async function assertNoTraceableMoveConflicts(
@@ -843,6 +963,11 @@ export async function buildTraceableRenameMoveWorkspaceEdit(input: {
   const requestedPathKeys = new Set(hostOwnedRequestedFiles.map(({ oldUri }) => normalizePathKey(oldUri.fsPath)));
   const hostOwnsRequestedSourceRenames = input.hostOwnsRequestedSourceRenames === true;
   const edit = new vscode.WorkspaceEdit();
+  const retainedDescendantRewrites = await planTraceableLineageMoveRetainedDescendantRewrites({
+    files: relevantFiles,
+    workspaceRoots: input.workspaceRoots,
+    lineageScope: input.lineageScope
+  });
 
   for (const plan of plannedMoves) {
     if (plan.adoptExistingTarget === true) {
@@ -872,6 +997,14 @@ export async function buildTraceableRenameMoveWorkspaceEdit(input: {
       input.onPlannedRename?.({ oldUri, newUri });
       edit.renameFile(oldUri, newUri);
     }
+  }
+
+  for (const rewrite of retainedDescendantRewrites) {
+    const currentMarkdown = await fs.readFile(rewrite.fileUri.fsPath, "utf8").catch(() => undefined);
+    if (typeof currentMarkdown !== "string") {
+      continue;
+    }
+    edit.replace(rewrite.fileUri, fullDocumentRange(currentMarkdown), rewrite.nextContent);
   }
 
   return edit.size > 0 ? edit : undefined;
@@ -1011,7 +1144,7 @@ export async function planTraceableRewriteAfterRename(input: {
     nextLineageLabel,
     pathMapping: new Map<string, string>(),
     workspaceRoots: input.workspaceRoots,
-    parentPathOverride: shouldAllocateUnderParent ? destinationParentPath : null
+    parentPathOverride: shouldAllocateUnderParent ? destinationParentPath : undefined
   });
   if (!rewrittenMarkdown) {
     return undefined;
@@ -1082,7 +1215,7 @@ export async function planTraceableRewriteRequestedRename(input: {
     nextLineageLabel,
     pathMapping: new Map<string, string>(),
     workspaceRoots: input.workspaceRoots,
-    parentPathOverride: shouldAllocateUnderParent ? destinationParentPath : null
+    parentPathOverride: shouldAllocateUnderParent ? destinationParentPath : undefined
   });
   if (!rewrittenMarkdown) {
     return undefined;
@@ -1192,7 +1325,7 @@ export async function planTraceableRewriteMove(input: {
     nextLineageLabel,
     pathMapping: new Map<string, string>(),
     workspaceRoots: input.workspaceRoots,
-    parentPathOverride: shouldAllocateUnderParent ? destinationParentPath : null
+    parentPathOverride: shouldAllocateUnderParent ? destinationParentPath : undefined
   });
   if (!rewrittenMarkdown) {
     return undefined;
@@ -1390,4 +1523,55 @@ export async function planTraceableStandaloneMoveDependencyMoves(input: {
       };
     }));
   return preparedMoves.flatMap((move) => move ? [move] : []);
+}
+
+export async function planTraceableStandaloneMoveDependencyRewrites(input: {
+  sourcePath: string;
+  destinationPath: string;
+  workspaceRoots: readonly string[];
+}): Promise<TraceablePreparedRewriteFile[]> {
+  if (!isTraceableEvidencePath(input.sourcePath) || !isTraceableEvidencePath(input.destinationPath)) {
+    return [];
+  }
+  const searchRoots = resolveTraceableSearchRoots(input.sourcePath, input.workspaceRoots);
+  const graph = await buildConnectedTraceableLineageGraph(input.sourcePath, searchRoots);
+  if (!graph) {
+    return [];
+  }
+  const sourcePathKey = normalizePathKey(input.sourcePath);
+  const directChildren = graph.childrenByParentPathKey.get(sourcePathKey) ?? [];
+  if (directChildren.length === 0) {
+    return [];
+  }
+  const pathMapping = new Map<string, string>([[sourcePathKey, input.destinationPath]]);
+  const rewritePlans = planStandaloneMoveRetainedDescendantRewrites({
+    destinationPath: input.destinationPath,
+    directChildren: directChildren.map((child) => ({
+      path: child.path,
+      lineageLabel: child.parsedFileName.lineageLabel
+    }))
+  });
+  const preparedRewrites = await Promise.all(rewritePlans.map(async (plan) => {
+    const markdown = await fs.readFile(plan.oldPath, "utf8").catch(() => undefined);
+    if (typeof markdown !== "string") {
+      return undefined;
+    }
+    const rewrittenMarkdown = rewriteParsedTraceableStateForMove({
+      markdown,
+      currentPath: plan.oldPath,
+      nextPath: plan.newPath,
+      nextLineageLabel: plan.newLineageLabel,
+      pathMapping,
+      workspaceRoots: input.workspaceRoots,
+      parentPathOverride: plan.parentPathOverride
+    });
+    if (!rewrittenMarkdown || rewrittenMarkdown === markdown) {
+      return undefined;
+    }
+    return {
+      fileUri: vscode.Uri.file(plan.oldPath),
+      nextContent: rewrittenMarkdown
+    };
+  }));
+  return preparedRewrites.flatMap((rewrite) => rewrite ? [rewrite] : []);
 }
