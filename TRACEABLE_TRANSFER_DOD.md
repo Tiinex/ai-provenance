@@ -57,6 +57,8 @@ If the fixture is not clean and valid before the first mutation, abort and repai
 - If any lineage relation is lost unexpectedly, the test fails.
 - If UX and tooling produce different persisted outcomes for the same scenario, the test fails.
 - Tooling and UX must use shared transfer logic. UX-specific transfer behavior that diverges from `#transferTrace` semantics is a defect.
+- UX copy parity may not be claimed from a host surface that exposes only created destination paths and does not expose the copied source path.
+- Do not begin or pass UX copy scenarios until a trace-aware UX copy surface exists that can prove both source and destination for the same operation.
 - Destination folders must be empty before each scenario unless the scenario explicitly tests collision handling.
 - Native VS Code prompts such as overwrite or replace prompts must not appear for valid empty-destination scenarios.
 
@@ -238,6 +240,12 @@ Use Explorer drag-and-drop or the normal VS Code rename/move UX for all cases in
 
 Repeat the same scenarios as Test Suite 1.
 
+UX copy scenarios have an additional prerequisite:
+
+- The exercised UX surface must expose enough evidence to identify both the copied source trace and the created destination trace for the same operation.
+- A host surface that exposes only destination-side create results is not sufficient evidence for TRACEABLE UX copy parity.
+- If that prerequisite is not satisfied on the current host, UX copy scenarios remain not done rather than being treated as passed, silently skipped, or approximated through tooling evidence.
+
 For each scenario, compare the UX result against the equivalent tooling result and require parity in all of the following:
 
 - Output file set
@@ -283,6 +291,7 @@ At minimum, verify:
 - Tooling `lineage move` and UX `lineage move` go through the same planning logic.
 - Tooling `alone copy` and UX `alone copy` go through the same planning logic.
 - Tooling `lineage copy` and UX `lineage copy` go through the same planning logic.
+- Any claimed UX copy path is source-aware enough to prove which original trace produced each copied output.
 - Tooling and UX do not rely on different parent-path rewrite rules.
 - Tooling and UX do not rely on different markdown re-render rules.
 
@@ -302,6 +311,7 @@ TRACEABLE transfer is done only when all of the following are true:
 - [ ] `#viewTrace` agrees with what the markdown and `Traceable State` claim.
 - [ ] No unresolved parent-path regressions remain in moved or copied outputs.
 - [ ] No UX-only drift remains relative to `#transferTrace`.
+- [ ] No UX copy scenario was marked passed on a host surface that cannot identify both source and destination for the same copy operation.
 - [ ] Every post-change validation round resumed only after a successful build and a human-run `Reload Window`.
 - [ ] Any previously passed tests affected by later logic changes were reset to not done and rerun.
 - [ ] The suite can be rerun from a clean fixture without hidden manual cleanup.
@@ -361,6 +371,7 @@ Use this section as the progress-tracking checklist while validating transfer.
   - [ ] UX Branch Move matched tooling exactly.
   - [ ] UX Leaves Move matched tooling exactly.
   - [ ] UX Alone Move matched tooling exactly.
+  - [ ] The UX copy surface under test could identify both source and destination for the same copy action.
   - [ ] UX Tree Copy matched tooling exactly.
   - [ ] UX Branch Copy matched tooling exactly.
   - [ ] UX Leaves Copy matched tooling exactly.
