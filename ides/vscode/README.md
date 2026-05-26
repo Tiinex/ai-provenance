@@ -70,7 +70,13 @@ Current status:
 Current included surface:
 
 - `Tiinex: Inspect TRACEABLE Evidence` parses the embedded `Traceable State` block from a `.trace.md` file and lets you choose a bounded surface without rerunning the child lane
-- `Open Reconstructed Traceable View` opens a provenance-owned reconstructed viewer for a `.trace.md` artifact and can reopen back into source or markdown preview
+- `Open Reconstructed Traceable View` opens a provenance-owned reconstructed viewer for a `.trace.md` artifact, can reopen back into source or markdown preview, and is now anchored with the built-in Explorer open/navigation actions rather than the custom Traceable command block
+- Explorer rename or move on a `.trace.md` file now uses a trace-aware move model with `Alone`, `Lineage`, and `Unmodified`. When `Lineage` is available, TRACEABLE only offers the meaningful scope variants for the selected file, such as `Leaves`, `Branch`, or `Tree`, and rewrites affected `parentTracePath` references for the files it carries.
+- When multiple `.trace.md` files are moved together, TRACEABLE now normalizes overlapping selections so the highest selected parent in the same branch wins over selected descendants before lineage planning runs. Multi-select lineage moves only expose `Leaves` or `Branch`, and `tiinex.aiProvenance.traceableDefaultMultiSelectLineageScope` can preselect that multi-select lineage strategy.
+- `tiinex.aiProvenance.traceableDefaultMoveAction` can now preselect the move-side `Alone`, `Lineage`, or `Unmodified` action instead of always prompting, and `tiinex.aiProvenance.traceableDefaultCopyAction` reserves the same shape for the upcoming copy flow
+- `Rewrite Move Trace...` provides an explicit trace-aware rewrite move from the Explorer so the extension can compute the final destination filename before renaming, which avoids the host collision prompt path that ordinary drag-and-drop can still hit
+- `Return to Parent Trace...` provides an explicit path back to the selected trace's current parent location, skips itself when the selected trace has no readable parent or is already in the parent folder, and reuses the same `Alone`, `Lineage`, and `Unmodified` decision model as the interactive rename flow. The Explorer menu now shows it only for `.trace.md` files whose current parsed `parentTracePath` resolves to a different folder than the selected file.
+- `Add File to Traceable Chat` is now present as an Explorer placeholder near the normal chat-attachment area; it is intentionally not implemented yet and will later target the Traceable UX chat composer
 - `list_traceable_agents` exposes the bounded workspace-supported traceable agent catalog from the provenance side
 - `list_traceable_models` exposes the bounded runtime-discoverable traceable model catalog from the provenance side
 - `run_traceable_subagent` runs the provenance-owned TRACEABLE child-lane runtime with optional evidence export support

@@ -69,9 +69,11 @@ type TraceableStopSource = "traceable-panel" | "host-cancel" | "unknown";
 
 const TRACEABLE_UNDECLARED_MAX_ITERATIONS_SETTING = "traceableUndeclaredMaxIterations";
 const TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING = "traceableUndeclaredMaxToolCalls";
+const TRACEABLE_PREVIEW_MAX_BYTES_SETTING = "traceablePreviewMaxBytes";
 const DEFAULT_UNDECLARED_MAX_ITERATIONS = 100;
 const DEFAULT_UNDECLARED_MAX_TOOL_CALLS = 100;
 const DEFAULT_OUTPUT_TEXT_CHARS = 1600;
+const DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES = 64 * 1024;
 const MAX_TOOL_DETAIL_TEXT_CHARS = 120000;
 
 const DEFAULT_BLOCKED_TOOL_NAMES = new Set([
@@ -251,7 +253,8 @@ function buildTraceableRuntimeFingerprint(): TraceableRuntimeFingerprint {
       traceablePreferredModels: config.get<string[]>("traceablePreferredModels", []).map((value) => value.trim()).filter((value) => value.length > 0),
       traceableBlockedModels: config.get<string[]>("traceableBlockedModels", []).map((value) => value.trim()).filter((value) => value.length > 0),
       traceableUndeclaredMaxIterations: config.get<number>(TRACEABLE_UNDECLARED_MAX_ITERATIONS_SETTING, DEFAULT_UNDECLARED_MAX_ITERATIONS),
-      traceableUndeclaredMaxToolCalls: config.get<number>(TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING, DEFAULT_UNDECLARED_MAX_TOOL_CALLS)
+      traceableUndeclaredMaxToolCalls: config.get<number>(TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING, DEFAULT_UNDECLARED_MAX_TOOL_CALLS),
+      traceablePreviewMaxBytes: config.get<number>(TRACEABLE_PREVIEW_MAX_BYTES_SETTING, DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES)
     }
   };
 }
@@ -532,6 +535,7 @@ export interface TraceableRuntimeFingerprint {
     traceableBlockedModels: string[];
     traceableUndeclaredMaxIterations: number;
     traceableUndeclaredMaxToolCalls: number;
+    traceablePreviewMaxBytes: number;
   };
 }
 
@@ -2751,6 +2755,42 @@ function truncate(text: string, maxChars: number): string {
   return `${text.slice(0, Math.max(0, maxChars - 16))}... [truncated]`;
 }
 
+function getConfiguredTraceablePreviewMaxBytes(): number {
+  try {
+    return parseConfiguredPositiveInteger(
+      vscode.workspace.getConfiguration("tiinex.aiProvenance").get(TRACEABLE_PREVIEW_MAX_BYTES_SETTING),
+      DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES
+    );
+  } catch {
+    return DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES;
+  }
+}
+
+type TraceableBoundedPreview = {
+  text: string;
+  truncated: boolean;
+  originalBytes: number;
+  maxBytes: number;
+};
+
+function boundTraceablePreviewBlock(text: string, maxBytes = getConfiguredTraceablePreviewMaxBytes()): TraceableBoundedPreview {
+  const originalBytes = Buffer.byteLength(text, "utf8");
+  if (originalBytes <= maxBytes) {
+    return {
+      text,
+      truncated: false,
+      originalBytes,
+      maxBytes
+    };
+  }
+  return {
+    text: `<truncated due to file size being ${originalBytes} bytes and max configured was ${maxBytes} bytes>`,
+    truncated: true,
+    originalBytes,
+    maxBytes
+  };
+}
+
 function summarizeJson(value: unknown, maxChars = 180): string {
   try {
     return truncate(JSON.stringify(value), maxChars);
@@ -2759,18 +2799,14 @@ function summarizeJson(value: unknown, maxChars = 180): string {
   }
 }
 
-function appendBoundedJsonPreview(lines: string[], title: string, value: unknown, maxChars = DEFAULT_OUTPUT_TEXT_CHARS): void {
-  const preview = truncate(JSON.stringify(value, null, 2), maxChars);
+function appendBoundedJsonPreview(lines: string[], title: string, value: unknown, maxBytes = getConfiguredTraceablePreviewMaxBytes()): void {
+  const preview = boundTraceablePreviewBlock(JSON.stringify(value, null, 2), maxBytes);
   lines.push(
     title,
     "```json",
-    preview,
+    preview.text,
     "```"
   );
-
-  if (preview.includes("[truncated]")) {
-    lines.push("- Preview bounded for chat readability.");
-  }
 }
 
 async function appendTraceableSubagentDebugEvent(logPath: string | undefined, entry: Record<string, unknown>): Promise<void> {
@@ -5874,8 +5910,25 @@ function rewriteTraceableTextPathMentions(
   let rewritten = trimmed;
   for (const candidatePath of uniqueCandidates) {
     const rendered = formatTraceablePathReference(candidatePath.replace(/\\\\/g, "\\"), options, candidatePath);
-    rewritten = rewritten.split(candidatePath).join(rendered);
+    rewritten = replaceTraceablePathOutsideMarkdownLinks(rewritten, candidatePath, rendered);
   }
+  return rewritten;
+}
+
+function replaceTraceablePathOutsideMarkdownLinks(text: string, needle: string, replacement: string): string {
+  if (!needle) {
+    return text;
+  }
+  const markdownLinkPattern = /\[[^\]]+\]\([^\s)]+\)/gu;
+  let cursor = 0;
+  let rewritten = "";
+  for (const match of text.matchAll(markdownLinkPattern)) {
+    const index = match.index ?? 0;
+    rewritten += text.slice(cursor, index).split(needle).join(replacement);
+    rewritten += match[0];
+    cursor = index + match[0].length;
+  }
+  rewritten += text.slice(cursor).split(needle).join(replacement);
   return rewritten;
 }
 
@@ -6086,7 +6139,7 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
       "",
       "### Raw Child Output",
       "```text",
-      truncate(result.rawModelText.trim(), DEFAULT_OUTPUT_TEXT_CHARS),
+      boundTraceablePreviewBlock(result.rawModelText.trim()).text,
       "```"
     );
   }

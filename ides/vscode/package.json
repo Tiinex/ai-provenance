@@ -26,11 +26,15 @@
     "onStartupFinished",
     "onCommand:tiinex.aiProvenance.newTraceableChat",
     "onCommand:tiinex.aiProvenance.resumeTraceableChat",
+    "onCommand:tiinex.aiProvenance.rewriteMoveTrace",
+    "onCommand:tiinex.aiProvenance.returnToParentTrace",
+    "onCommand:tiinex.aiProvenance.addFileToTraceableChat",
     "onCommand:tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
     "onLanguageModelTool:list_traceable_agents",
     "onLanguageModelTool:list_traceable_models",
     "onLanguageModelTool:view_traceable_subagent",
-    "onLanguageModelTool:run_traceable_subagent"
+    "onLanguageModelTool:run_traceable_subagent",
+    "onLanguageModelTool:transfer_trace"
   ],
   "categories": [
     "Other",
@@ -53,7 +57,7 @@
         "name": "list_traceable_agents",
         "displayName": "List Traceable Agents",
         "userDescription": "List workspace-supported traceable agent display names and basic metadata.",
-        "modelDescription": "List the currently supported traceable agent artifacts discoverable from workspace .github/agents folders. Use this before run_traceable_subagent when you need the exact display names the current workspace runtime can resolve without traversing repo files manually. This is read-only and returns a bounded markdown list. It reflects the current traceable runtime surface, not every host-private custom agent source that the native dropdown may know about.",
+        "modelDescription": "List the currently supported traceable agent artifacts discoverable from workspace .github/agents folders. Use this before runTrace when you need the exact display names the current workspace runtime can resolve without traversing repo files manually. This is read-only and returns a bounded markdown list. It reflects the current traceable runtime surface, not every host-private custom agent source that the native dropdown may know about.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "listTraceableAgents",
         "inputSchema": {
@@ -74,7 +78,7 @@
         "name": "list_traceable_models",
         "displayName": "List Traceable Models",
         "userDescription": "List runtime-discoverable models that traceable subagent selection can currently see.",
-        "modelDescription": "List the language models visible to the current VS Code language-model runtime using the same broad model discovery surface that traceable-subagent recovery uses. This is read-only and bounded. Use it to preflight exact model ids before calling run_traceable_subagent instead of waiting for a model-selection failure. Canonical usage: first call this with `sendableOnly: true` and an optional narrow `query`, then copy the exact returned model id into `run_traceable_subagent.modelSelector.id` only when you need explicit model control. If a returned entry is marked blocked in the catalog output, do not pass it back into run_traceable_subagent.",
+        "modelDescription": "List the language models visible to the current VS Code language-model runtime using the same broad model discovery surface that traceable-subagent recovery uses. This is read-only and bounded. Use it to preflight exact model ids before calling runTrace instead of waiting for a model-selection failure. Canonical usage: first call this with `sendableOnly: true` and an optional narrow `query`, then copy the exact returned model id into `runTrace.modelSelector.id` only when you need explicit model control. If a returned entry is marked blocked in the catalog output, do not pass it back into runTrace.",
         "canBeReferencedInPrompt": true,
         "toolReferenceName": "listTraceableModels",
         "inputSchema": {
@@ -99,9 +103,9 @@
         "name": "run_traceable_subagent",
         "displayName": "Run Traceable Subagent",
         "userDescription": "Run an experimental trace-first child lane with explicit request, budget, and tool-ledger output.",
-        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run returns a compact runtime tool ledger plus child trace, blocks self-reentry for run_traceable_subagent, and treats native runSubagent delegation as opaque rather than fully trace-supported. OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC keep userInput separate from parentTask; DIRECT uses only userInput as the fresh prompt; RESUME requires parentTracePath and resumes without fresh userInput, parentTask, or parentFrame. When parentTracePath is provided, the runtime treats the run as an artifact-backed continuation: it can carry bounded parent outcome summary and handover context forward, but DIRECT does not inherit prompt framing and RESUME stays prompt-free. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration. Canonical usage: choose the input mode deliberately, keep `budgetPolicy` small, and restrict `allowedToolNames` to only the tool families the slice actually needs. Typical flow: use `list_traceable_agents` to find an exact role or `list_traceable_models` to preflight an explicit model, run a narrow lane, then inspect the returned evidence file with `view_traceable_subagent` instead of rerunning the child immediately.",
+        "modelDescription": "Run an experimental Tiinex traceable subagent lane. This bounded child run returns a compact runtime tool ledger plus child trace, blocks self-reentry for runTrace, and treats native runSubagent delegation as opaque rather than fully trace-supported. OPERATIVE, EPISTEMIC, and NON_LEADING_EPISTEMIC keep userInput separate from parentTask; DIRECT uses only userInput as the fresh prompt; RESUME requires parentTracePath and resumes without fresh userInput, parentTask, or parentFrame. When parentTracePath is provided, the runtime treats the run as an artifact-backed continuation: it can carry bounded parent outcome summary and handover context forward, but DIRECT does not inherit prompt framing and RESUME stays prompt-free. When agentRole is provided, the runtime resolves a workspace .agent.md artifact and grounds the child from both its frontmatter and body. To avoid hidden model-cost drift, the runtime uses the agent artifact's declared model when it can translate it deterministically; otherwise it requires an exact model id in modelSelector.id and does not auto-select a fallback model. Prefer this for narrow grounded investigation slices rather than broad autonomous orchestration. Canonical usage: choose the input mode deliberately, keep `budgetPolicy` small, and restrict `allowedToolNames` to only the tool families the slice actually needs. Typical flow: use `list_traceable_agents` to find an exact role or `list_traceable_models` to preflight an explicit model, run a narrow lane, then inspect the returned evidence file with `viewTrace` instead of rerunning the child immediately.",
         "canBeReferencedInPrompt": true,
-        "toolReferenceName": "runTraceableSubagent",
+        "toolReferenceName": "runTrace",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -301,9 +305,9 @@
         "name": "view_traceable_subagent",
         "displayName": "View Traceable Subagent",
         "userDescription": "Inspect a stored TRACEABLE evidence artifact with bounded output and optional reconstructed-view reveal.",
-        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `run_traceable_subagent`; use `surface` when you want rendered output, a compact conversation brief, request summary, request contract, outcome, runtime decision, evidence basis, a replay-oriented timeline, carry handoff, lineage-scoped latest role state, lineage-scoped latest carry package, tool forensics, lineage, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by run_traceable_subagent, start with `surface: \"conversation-brief\"`, `surface: \"summary\"`, or `surface: \"outcome\"`, then inspect `request-contract`, `runtime-decision`, `evidence-basis`, `timeline`, `carry-handoff`, `latest-role-state`, `latest-carry-package`, `tool-forensics`, `lineage`, `tool-ledger`, or `state-json` only when you need deeper provenance detail. Prefer this over rerunning the same child lane when evidence already exists.",
+        "modelDescription": "Inspect one stored `.trace.md` TRACEABLE evidence artifact without rerunning the child lane. This tool is read-only: it parses the embedded Traceable State block, returns a bounded surface instead of dumping the whole artifact by default, and can reconstruct the TRACEABLE markdown output shape. Reuse `outputMode` when you want the same parent-facing output policy shape as `runTrace`; use `surface` when you want rendered output, a compact conversation brief, request summary, request contract, outcome, runtime decision, evidence basis, a replay-oriented timeline, carry handoff, lineage-scoped latest role state, lineage-scoped latest carry package, tool forensics, lineage, tool ledger, status history, aggregated tool/file summaries, or bounded state JSON. Use `maxItems` with `offset` to page through list-like surfaces safely. Canonical usage: call this with the evidenceFilePath returned by runTrace, start with `surface: \"conversation-brief\"`, `surface: \"summary\"`, or `surface: \"outcome\"`, then inspect `request-contract`, `runtime-decision`, `evidence-basis`, `timeline`, `carry-handoff`, `latest-role-state`, `latest-carry-package`, `tool-forensics`, `lineage`, `tool-ledger`, or `state-json` only when you need deeper provenance detail. Prefer this over rerunning the same child lane when evidence already exists.",
         "canBeReferencedInPrompt": true,
-        "toolReferenceName": "viewTraceableSubagent",
+        "toolReferenceName": "viewTrace",
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -374,6 +378,62 @@
             "evidenceFilePath"
           ]
         }
+      },
+      {
+        "name": "transfer_trace",
+        "displayName": "Transfer Trace",
+        "userDescription": "Move or copy one `.trace.md` artifact through the same Alone or Lineage semantics used by TRACEABLE move workflows.",
+        "modelDescription": "Transfer one `.trace.md` TRACEABLE artifact through the same bounded move planners that the TRACEABLE UX uses. This mutating tool supports `operation: \"move\" | \"copy\"` plus `action: \"alone\" | \"lineage\"`. `alone` rewrites the selected trace for the destination without carrying descendants. `lineage` preserves bounded lineage movement semantics and may require an explicit `lineageScope` when more than one meaningful scope is available. Use this when you need a controllable transfer surface for TRACEABLE artifacts instead of relying on Explorer drag-and-drop behavior. The tool fails fast on invalid state such as missing files, non-folder destinations, self-target copies, unsupported lineage scopes, or existing destination collisions.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "transferTrace",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "sourcePath",
+            "destinationFolderPath",
+            "operation",
+            "action"
+          ],
+          "properties": {
+            "sourcePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the source `.trace.md` artifact."
+            },
+            "destinationFolderPath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the destination folder."
+            },
+            "operation": {
+              "type": "string",
+              "enum": [
+                "move",
+                "copy"
+              ],
+              "description": "Whether to move the source trace or copy it while leaving the original in place."
+            },
+            "action": {
+              "type": "string",
+              "enum": [
+                "alone",
+                "lineage"
+              ],
+              "description": "`alone` rewrites only the selected trace for the destination. `lineage` preserves TRACEABLE lineage semantics."
+            },
+            "lineageScope": {
+              "type": "string",
+              "enum": [
+                "leaves",
+                "branch",
+                "tree"
+              ],
+              "description": "Optional lineage scope for `action: \"lineage\"`. Required when more than one meaningful lineage scope is available for the destination."
+            },
+            "reveal": {
+              "type": "boolean",
+              "description": "When true, open the first transferred `.trace.md` artifact after the operation completes."
+            }
+          }
+        }
       }
     ],
     "commands": [
@@ -402,6 +462,18 @@
         "title": "Set Default New Traceable Chat Export Folder"
       },
       {
+        "command": "tiinex.aiProvenance.rewriteMoveTrace",
+        "title": "Move Trace..."
+      },
+      {
+        "command": "tiinex.aiProvenance.returnToParentTrace",
+        "title": "Return to Parent Trace..."
+      },
+      {
+        "command": "tiinex.aiProvenance.addFileToTraceableChat",
+        "title": "Add File to Traceable Chat"
+      },
+      {
         "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
         "title": "Open Reconstructed Traceable View",
         "shortTitle": "Open Traceable View",
@@ -428,27 +500,42 @@
         {
           "command": "tiinex.aiProvenance.newTraceableChat",
           "when": "resourceExtname == .md && resourcePath =~ /\\.agent\\.md$/",
-          "group": "navigation"
-        },
-        {
-          "command": "tiinex.aiProvenance.resumeTraceableChat",
-          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
-          "group": "navigation@-1001"
-        },
-        {
-          "command": "tiinex.aiProvenance.newTraceableChat",
-          "when": "explorerResourceIsFolder",
-          "group": "navigation"
-        },
-        {
-          "command": "tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
-          "when": "explorerResourceIsFolder",
-          "group": "navigation@1"
+          "group": "4_traceable@1"
         },
         {
           "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
           "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
-          "group": "navigation@-1000"
+          "group": "navigation@32"
+        },
+        {
+          "command": "tiinex.aiProvenance.resumeTraceableChat",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "4_traceable@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.rewriteMoveTrace",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "4_traceable@3"
+        },
+        {
+          "command": "tiinex.aiProvenance.returnToParentTrace",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && resourcePath in tiinex.aiProvenance.returnToParentEligibleResources",
+          "group": "4_traceable@4"
+        },
+        {
+          "command": "tiinex.aiProvenance.addFileToTraceableChat",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "4_traceable@5"
+        },
+        {
+          "command": "tiinex.aiProvenance.newTraceableChat",
+          "when": "explorerResourceIsFolder",
+          "group": "4_traceable@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
+          "when": "explorerResourceIsFolder",
+          "group": "4_traceable@2"
         }
       ],
       "editor/title": [
@@ -459,7 +546,7 @@
         },
         {
           "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
-          "when": "activeWebviewPanelId == markdown.preview || activeCustomEditorId == vscode.markdown.preview.editor",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && (activeWebviewPanelId == markdown.preview || activeCustomEditorId == vscode.markdown.preview.editor)",
           "group": "navigation@-1000"
         },
         {
@@ -540,6 +627,56 @@
             ],
             "default": "traceable",
             "description": "Control what the TRACEABLE View button and parent-trace openings use for `.trace.md` artifacts. `traceable` opens the reconstructed TRACEABLE evidence view, `markdown` opens the markdown preview, and `source` opens the source file directly."
+          },
+          "tiinex.aiProvenance.traceableRenameMoveRewriteBehavior": {
+            "type": "string",
+            "enum": [
+              "ask",
+              "always",
+              "never"
+            ],
+            "default": "ask",
+            "scope": "resource",
+            "description": "Legacy compatibility setting for TRACEABLE Explorer rename or move operations on `.trace.md` files. `ask` prompts before preserving lineage and rewriting affected references, `always` applies the rewrite flow automatically, and `never` is retained only for backward compatibility. Prefer `tiinex.aiProvenance.traceableDisableMoveCopyLogic` when you intentionally want TRACEABLE to stay out of move or copy handling entirely."
+          },
+          "tiinex.aiProvenance.traceableDisableMoveCopyLogic": {
+            "type": "boolean",
+            "default": false,
+            "scope": "resource",
+            "description": "Disable TRACEABLE move and copy logic for this resource scope. When enabled, Explorer renames or moves are left to the host and TRACEABLE rewrite, lineage, and related move helpers refuse to run until the override is turned off."
+          },
+          "tiinex.aiProvenance.traceableDefaultMoveAction": {
+            "type": "string",
+            "enum": [
+              "ask",
+              "alone",
+              "lineage"
+            ],
+            "default": "ask",
+            "scope": "resource",
+            "description": "Control the default action for TRACEABLE move flows that use the Alone and Lineage decision model. `ask` keeps the chooser, `alone` applies the trace-aware selected-file move, and `lineage` prefers the broadest meaningful lineage scope for the selected file. This also upgrades Explorer rename or move from the legacy yes-or-no behavior when it is not otherwise forced by `traceableRenameMoveRewriteBehavior`."
+          },
+          "tiinex.aiProvenance.traceableDefaultCopyAction": {
+            "type": "string",
+            "enum": [
+              "ask",
+              "alone",
+              "lineage"
+            ],
+            "default": "ask",
+            "scope": "resource",
+            "description": "Reserve the default action shape for upcoming TRACEABLE copy flows so move and copy can share the same Alone and Lineage mental model. `ask` keeps future copy flows interactive, while `alone` and `lineage` preselect that action when a trace-aware copy surface is introduced."
+          },
+          "tiinex.aiProvenance.traceableDefaultMultiSelectLineageScope": {
+            "type": "string",
+            "enum": [
+              "ask",
+              "leaves",
+              "branch"
+            ],
+            "default": "ask",
+            "scope": "resource",
+            "description": "Control how TRACEABLE resolves multi-select lineage moves after overlapping selected children are normalized under the highest selected parent in the same branch. `ask` keeps the chooser, `leaves` prefers the selected nodes plus descendants, and `branch` prefers the selected branch plus descendants."
           },
           "tiinex.aiProvenance.defaultView": {
             "type": "string",
@@ -647,6 +784,12 @@
             "type": "boolean",
             "default": true,
             "description": "Include support-artifact references such as debug logs in reconstructed TRACEABLE markdown when available."
+          },
+          "tiinex.aiProvenance.traceablePreviewMaxBytes": {
+            "type": "number",
+            "default": 65536,
+            "minimum": 1,
+            "description": "Maximum serialized byte size for any TRACEABLE markdown preview block before the extension omits the block body and writes an explicit truncation marker instead. This applies to preview sections and raw child output blocks."
           },
           "tiinex.aiProvenance.maximumDepthOutsideOfWorkspaceRootForRelativePaths": {
             "type": "number",

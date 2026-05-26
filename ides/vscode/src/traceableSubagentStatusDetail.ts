@@ -34,6 +34,9 @@ export interface TraceableSubagentStatusHistoryEvent {
 export interface TraceableSubagentDetailSnapshot {
   header: Required<TraceableSubagentStatusHeader>;
   status: TraceableSubagentDetailStatusState;
+  environment?: {
+    repoRootSnapshotPath?: string;
+  };
   evidenceFile?: TraceableSubagentEvidenceFileState;
   lineageEntries?: Array<{
     filePath: string;
@@ -41,6 +44,9 @@ export interface TraceableSubagentDetailSnapshot {
     occurredAt: string;
     startedAt?: string;
     updatedAt?: string;
+    environment?: {
+      repoRootSnapshotPath?: string;
+    };
     finalSummary?: string;
     completionClaim?: string;
     status?: {

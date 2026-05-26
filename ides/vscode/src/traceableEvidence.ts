@@ -17,6 +17,13 @@ export interface ParsedTraceableEvidenceState {
   result?: TraceableSubagentRunResult;
 }
 
+function buildTraceableEvidencePathRenderOptions(
+  evidenceFilePath: string | undefined,
+  parsed: ParsedTraceableEvidenceState
+) {
+  return buildTraceableMarkdownPathRenderOptions(evidenceFilePath, parsed.snapshot.environment?.repoRootSnapshotPath);
+}
+
 export type TraceableEvidenceSurface =
   | "rendered-output"
   | "conversation-brief"
@@ -392,7 +399,7 @@ function buildTraceableEvidenceLineageLines(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string[] {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const result = getRecord(input.parsed.result) ?? {};
   const parsedFileName = parseTraceableEvidenceFileName(path.basename(input.filePath));
   const lineageLabel = getString(result.lineageLabel) ?? parsedFileName?.lineageLabel;
@@ -536,7 +543,7 @@ function renderTraceableEvidenceLatestRoleStateMarkdown(input: {
   roleName?: string;
   senderId?: string;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const querySenderId = getString(input.senderId);
   const queryRoleName = getString(input.roleName);
   const lines = [
@@ -588,7 +595,7 @@ function renderTraceableEvidenceLatestCarryPackageMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const nodes = collectTraceableCurrentAndAncestorNodes({ filePath: input.filePath, parsed: input.parsed });
   const currentDisposition = getTraceableCarryStateDisposition(input.parsed) ?? "none";
   const lines = [
@@ -829,7 +836,7 @@ function buildTraceableTimelineEntries(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): Array<{ occurredAtMs: number; line: string; order: number }> {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const entries: Array<{ occurredAtMs: number; line: string; order: number }> = [];
   const history = getStatusHistory(input.parsed)
     .map((event, index) => ({
@@ -1024,7 +1031,7 @@ export function renderTraceableEvidenceConversationBriefMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const snapshot = input.parsed.snapshot;
   const result = getRecord(input.parsed.result) ?? {};
   const header = getRecord(snapshot.header) ?? {};
@@ -1094,7 +1101,7 @@ export function renderTraceableEvidenceSummaryMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const snapshot = input.parsed.snapshot;
   const header = getRecord(snapshot.header) ?? {};
   const evidenceFile = getRecord(snapshot.evidenceFile) ?? {};
@@ -1150,7 +1157,7 @@ export function renderTraceableEvidenceRequestSummaryMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const requestSummary = getArray<Record<string, unknown>>(input.parsed.snapshot.requestSummary);
   const maxItems = clampTraceableViewItems(input.maxItems);
   const offset = clampTraceableViewOffset(input.offset);
@@ -1222,7 +1229,7 @@ export function renderTraceableEvidenceRequestContractMarkdown(input: {
   parsed: ParsedTraceableEvidenceState;
   maxItems?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const requestSummary = getArray<Record<string, unknown>>(input.parsed.snapshot.requestSummary);
   const { explicit, inherited, contextual } = classifyRequestSummaryItems(requestSummary);
   const implicitDefaults = describeImplicitRequestDefaults(input.parsed);
@@ -1271,7 +1278,7 @@ export function renderTraceableEvidenceOutcomeMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const snapshot = input.parsed.snapshot;
   const status = getRecord(snapshot.status) ?? {};
   const result = input.parsed.result;
@@ -1308,7 +1315,7 @@ export function renderTraceableEvidenceRuntimeDecisionMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const result = input.parsed.result;
   const runtimeDecision = getRecord(result?.runtimeDecisionSummary) ?? {};
   const runtimeFingerprint = getRecord(result?.runtimeFingerprint) ?? {};
@@ -1336,7 +1343,7 @@ export function renderTraceableEvidenceBasisMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const evidenceBasis = getRecord(input.parsed.result?.evidenceBasis) ?? {};
@@ -1411,7 +1418,7 @@ export function renderTraceableEvidenceTimelineMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const snapshot = input.parsed.snapshot;
   const result = getRecord(input.parsed.result) ?? {};
   const runtimeDecision = getRecord(result.runtimeDecisionSummary) ?? {};
@@ -1472,7 +1479,7 @@ export function renderTraceableEvidenceCarryHandoffMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const result = getRecord(input.parsed.result) ?? {};
   const activeCarryForward = getRecord(result.activeCarryForward);
   const recoverableCarryState = getRecord(result.recoverableCarryState);
@@ -1526,7 +1533,7 @@ export function renderTraceableEvidenceToolForensicsMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const maxItems = clampTraceableViewItems(input.maxItems, 6);
   const offset = clampTraceableViewOffset(input.offset);
   const toolCalls = getToolCalls(input.parsed);
@@ -1573,7 +1580,7 @@ export function renderTraceableEvidenceLineageMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const result = getRecord(input.parsed.result) ?? {};
   const parsedFileName = parseTraceableEvidenceFileName(path.basename(input.filePath));
   const lineageLabel = getString(result.lineageLabel) ?? parsedFileName?.lineageLabel;
@@ -1613,7 +1620,7 @@ export function renderTraceableEvidenceTraceableMarkdown(input: {
   parsed: ParsedTraceableEvidenceState;
   includeSupportArtifacts?: boolean;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const result = input.parsed.result;
   if (!result) {
     return [
@@ -1642,7 +1649,7 @@ export function renderTraceableEvidenceToolLedgerMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const toolCalls = getToolCalls(input.parsed);
@@ -1677,7 +1684,7 @@ export function renderTraceableEvidenceStatusHistoryMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const history = getStatusHistory(input.parsed);
@@ -1710,7 +1717,7 @@ export function renderTraceableEvidenceToolSummaryMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const summaries = summarizeTraceableToolCalls(getToolCalls(input.parsed));
@@ -1746,7 +1753,7 @@ export function renderTraceableEvidenceFileSummaryMarkdown(input: {
   maxItems?: number;
   offset?: number;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const maxItems = clampTraceableViewItems(input.maxItems, 10);
   const offset = clampTraceableViewOffset(input.offset);
   const summaries = summarizeTraceableReadTargets(getToolCalls(input.parsed));
@@ -1776,7 +1783,7 @@ export function renderTraceableEvidenceStateJsonMarkdown(input: {
   filePath: string;
   parsed: ParsedTraceableEvidenceState;
 }): string {
-  const pathRenderOptions = buildTraceableMarkdownPathRenderOptions(input.filePath);
+  const pathRenderOptions = buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed);
   const envelope = {
     snapshot: input.parsed.snapshot,
     result: input.parsed.result
@@ -1876,7 +1883,7 @@ export function renderViewTraceableSubagentMarkdown(input: {
         ...result,
         outputMode
       }, {
-        ...buildTraceableMarkdownPathRenderOptions(input.filePath),
+        ...buildTraceableEvidencePathRenderOptions(input.filePath, input.parsed),
         includeSupportArtifacts: input.view.includeSupportArtifacts ?? true
       });
     }

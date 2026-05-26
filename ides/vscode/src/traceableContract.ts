@@ -24,6 +24,7 @@ export interface TraceableMarkdownPathRenderOptions {
   mode?: "plain" | "relative-markdown" | "absolute-file-uri-markdown";
   baseDir?: string;
   workspaceRoot?: string;
+  repoRootSnapshotPath?: string;
   maximumDepthOutsideOfWorkspaceRootForRelativePaths?: number;
 }
 
@@ -70,7 +71,10 @@ export function getMaximumDepthOutsideOfWorkspaceRootForRelativePaths(): number 
   return Math.max(0, Math.floor(configured));
 }
 
-export function buildTraceableMarkdownPathRenderOptions(evidenceFilePath: string | undefined): TraceableMarkdownPathRenderOptions {
+export function buildTraceableMarkdownPathRenderOptions(
+  evidenceFilePath: string | undefined,
+  repoRootSnapshotPath?: string
+): TraceableMarkdownPathRenderOptions {
   const filePath = evidenceFilePath?.trim();
   if (!filePath) {
     return { mode: "plain" };
@@ -79,8 +83,54 @@ export function buildTraceableMarkdownPathRenderOptions(evidenceFilePath: string
     mode: "relative-markdown",
     baseDir: path.dirname(filePath),
     workspaceRoot: findContainingWorkspaceRoot(filePath),
+    repoRootSnapshotPath: repoRootSnapshotPath?.trim() || undefined,
     maximumDepthOutsideOfWorkspaceRootForRelativePaths: getMaximumDepthOutsideOfWorkspaceRootForRelativePaths()
   };
+}
+
+function tryRemapAbsolutePathThroughRepoRootSnapshot(
+  absolutePath: string,
+  options: TraceableMarkdownPathRenderOptions | undefined
+): string | undefined {
+  const workspaceRoot = options?.workspaceRoot?.trim();
+  const repoRootSnapshotPath = options?.repoRootSnapshotPath?.trim();
+  if (!workspaceRoot || !repoRootSnapshotPath || !path.isAbsolute(absolutePath)) {
+    return undefined;
+  }
+  const relativeToSnapshotRoot = normalizeTraceablePathForMarkdown(path.relative(repoRootSnapshotPath, absolutePath));
+  if (path.isAbsolute(relativeToSnapshotRoot)) {
+    return undefined;
+  }
+  return path.resolve(workspaceRoot, relativeToSnapshotRoot);
+}
+
+function resolveTraceablePathTargetFromAbsolutePath(
+  absolutePath: string,
+  baseDir: string,
+  options: TraceableMarkdownPathRenderOptions | undefined
+): TraceableResolvedPathTarget {
+  const relativePath = normalizeTraceablePathForMarkdown(path.relative(baseDir, absolutePath));
+  if (!relativePath) {
+    return { kind: "relative", path: path.basename(absolutePath), baseDir };
+  }
+  if (path.isAbsolute(relativePath)) {
+    return { kind: "absolute", path: absolutePath };
+  }
+  const workspaceRoot = options?.workspaceRoot?.trim();
+  if (!workspaceRoot) {
+    return { kind: "relative", path: relativePath, baseDir };
+  }
+  const baseToWorkspace = normalizeTraceablePathForMarkdown(path.relative(baseDir, workspaceRoot));
+  if (path.isAbsolute(baseToWorkspace)) {
+    return { kind: "absolute", path: absolutePath };
+  }
+  const outsideDepth = Math.max(0, countLeadingParentSegments(relativePath) - countLeadingParentSegments(baseToWorkspace));
+  const maximumDepth = Number.isFinite(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths)
+    ? Math.max(0, Math.floor(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths ?? 0))
+    : 1;
+  return outsideDepth <= maximumDepth
+    ? { kind: "relative", path: relativePath, baseDir }
+    : { kind: "absolute", path: absolutePath };
 }
 
 function renderTraceablePathValue(filePath: string, options: TraceableMarkdownPathRenderOptions | undefined): string {
@@ -106,28 +156,18 @@ export function resolveTraceablePathTarget(
   if (!baseDir) {
     return { kind: "absolute", path: trimmed };
   }
-  const relativePath = normalizeTraceablePathForMarkdown(path.relative(baseDir, trimmed));
-  if (!relativePath) {
-    return { kind: "relative", path: path.basename(trimmed), baseDir };
+  const resolvedInputPath = path.isAbsolute(trimmed)
+    ? trimmed
+    : path.resolve(baseDir, trimmed);
+  const directTarget = resolveTraceablePathTargetFromAbsolutePath(resolvedInputPath, baseDir, options);
+  if (!path.isAbsolute(trimmed) || directTarget.kind === "relative") {
+    return directTarget;
   }
-  if (path.isAbsolute(relativePath)) {
-    return { kind: "absolute", path: trimmed };
+  const remappedInputPath = tryRemapAbsolutePathThroughRepoRootSnapshot(resolvedInputPath, options);
+  if (!remappedInputPath) {
+    return directTarget;
   }
-  const workspaceRoot = options?.workspaceRoot?.trim();
-  if (!workspaceRoot) {
-    return { kind: "relative", path: relativePath, baseDir };
-  }
-  const baseToWorkspace = normalizeTraceablePathForMarkdown(path.relative(baseDir, workspaceRoot));
-  if (path.isAbsolute(baseToWorkspace)) {
-    return { kind: "absolute", path: trimmed };
-  }
-  const outsideDepth = Math.max(0, countLeadingParentSegments(relativePath) - countLeadingParentSegments(baseToWorkspace));
-  const maximumDepth = Number.isFinite(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths)
-    ? Math.max(0, Math.floor(options?.maximumDepthOutsideOfWorkspaceRootForRelativePaths ?? 0))
-    : 1;
-  return outsideDepth <= maximumDepth
-    ? { kind: "relative", path: relativePath, baseDir }
-    : { kind: "absolute", path: trimmed };
+  return resolveTraceablePathTargetFromAbsolutePath(remappedInputPath, baseDir, options);
 }
 
 export interface TraceableSubagentStatusHeader {
@@ -374,6 +414,7 @@ export interface TraceableRuntimeFingerprint {
     traceableBlockedModels: string[];
     traceableUndeclaredMaxIterations: number;
     traceableUndeclaredMaxToolCalls: number;
+    traceablePreviewMaxBytes: number;
   };
 }
 
@@ -437,9 +478,11 @@ export interface TraceableSubagentRunResult {
 
 const TRACEABLE_UNDECLARED_MAX_ITERATIONS_SETTING = "traceableUndeclaredMaxIterations";
 const TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING = "traceableUndeclaredMaxToolCalls";
+const TRACEABLE_PREVIEW_MAX_BYTES_SETTING = "traceablePreviewMaxBytes";
 const DEFAULT_UNDECLARED_MAX_ITERATIONS = 100;
 const DEFAULT_UNDECLARED_MAX_TOOL_CALLS = 100;
 const DEFAULT_OUTPUT_TEXT_CHARS = 1600;
+const DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES = 64 * 1024;
 
 export function normalizeTraceableOutputMode(mode: unknown): TraceableSubagentOutputMode | undefined {
   const normalized = typeof mode === "string" ? mode.trim().toLowerCase() : "";
@@ -526,6 +569,17 @@ function normalizeExplicitBudgetPolicy(input: TraceableSubagentInput): Traceable
 function parseConfiguredPositiveInteger(value: unknown, fallback: number): number {
   const normalized = Number.isFinite(value) ? Math.floor(Number(value)) : NaN;
   return normalized > 0 ? normalized : fallback;
+}
+
+function getConfiguredTraceablePreviewMaxBytes(): number {
+  try {
+    return parseConfiguredPositiveInteger(
+      vscode.workspace.getConfiguration("tiinex.aiProvenance").get(TRACEABLE_PREVIEW_MAX_BYTES_SETTING),
+      DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES
+    );
+  } catch {
+    return DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES;
+  }
 }
 
 function getTraceableUndeclaredBudgetPolicy(): Required<TraceableBudgetPolicy> {
@@ -1355,6 +1409,31 @@ export function truncate(text: string, maxChars: number): string {
   return `${text.slice(0, Math.max(0, maxChars - 16))}... [truncated]`;
 }
 
+type TraceableBoundedPreview = {
+  text: string;
+  truncated: boolean;
+  originalBytes: number;
+  maxBytes: number;
+};
+
+function boundTraceablePreviewBlock(text: string, maxBytes = getConfiguredTraceablePreviewMaxBytes()): TraceableBoundedPreview {
+  const originalBytes = Buffer.byteLength(text, "utf8");
+  if (originalBytes <= maxBytes) {
+    return {
+      text,
+      truncated: false,
+      originalBytes,
+      maxBytes
+    };
+  }
+  return {
+    text: `<truncated due to file size being ${originalBytes} bytes and max configured was ${maxBytes} bytes>`,
+    truncated: true,
+    originalBytes,
+    maxBytes
+  };
+}
+
 export function summarizeJson(value: unknown, maxChars = 180): string {
   try {
     return truncate(JSON.stringify(value), maxChars);
@@ -1363,18 +1442,14 @@ export function summarizeJson(value: unknown, maxChars = 180): string {
   }
 }
 
-export function appendBoundedJsonPreview(lines: string[], title: string, value: unknown, maxChars = DEFAULT_OUTPUT_TEXT_CHARS): void {
-  const preview = truncate(JSON.stringify(value, null, 2), maxChars);
+export function appendBoundedJsonPreview(lines: string[], title: string, value: unknown, maxBytes = getConfiguredTraceablePreviewMaxBytes()): void {
+  const preview = boundTraceablePreviewBlock(JSON.stringify(value, null, 2), maxBytes);
   lines.push(
     title,
     "```json",
-    preview,
+    preview.text,
     "```"
   );
-
-  if (preview.includes("[truncated]")) {
-    lines.push("- Preview bounded for chat readability.");
-  }
 }
 
 export function mapPathLikeFields(value: unknown, options: TraceableMarkdownPathRenderOptions | undefined): unknown {
@@ -1656,7 +1731,8 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
   });
 
   if (result.rawModelText?.trim()) {
-    lines.push("", "### Raw Child Output", "```text", truncate(result.rawModelText.trim(), DEFAULT_OUTPUT_TEXT_CHARS), "```");
+    const boundedRawOutput = boundTraceablePreviewBlock(result.rawModelText.trim());
+    lines.push("", "### Raw Child Output", "```text", boundedRawOutput.text, "```");
   }
 
   return `${lines.join("\n")}\n`;

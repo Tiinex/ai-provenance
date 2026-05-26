@@ -8,8 +8,6 @@ ides/*/*.vsix
 assets/demo/video/*.mp4
 .venv/
 .venv*/
-.topics/*.trace.md
-.topics/m*/*.trace.md
 TEMP-*.md
 .tmp*
 *.out

@@ -3,7 +3,7 @@ import { promises as fs } from "node:fs";
 import * as vscode from "vscode";
 import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import { allocateNextTraceableLineageLabel, buildTraceableEvidenceFileName, computeStoredParentTracePath, parseTraceableEvidenceFileName } from "./traceableLineage";
-import { buildTraceableMarkdownPathRenderOptions, formatTraceablePathReference } from "./traceableContract";
+import { buildTraceableMarkdownPathRenderOptions, formatTraceablePathReference, normalizeModelSelector } from "./traceableContract";
 import type {
   TraceableMarkdownPathRenderOptions,
   TraceableSubagentEvidenceFileState,
@@ -15,6 +15,17 @@ import { normalizeTraceableOutputMode, renderTraceableSubagentMarkdown } from ".
 import type { TraceableSubagentDetailSnapshot } from "./traceableSubagentStatusDetail";
 
 export const TRACEABLE_EVIDENCE_STATE_SCHEMA = "tiinex.traceable-state.v1";
+
+function hasRequestedModelSelector(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return typeof record.id === "string" && record.id.trim().length > 0
+    || typeof record.vendor === "string" && record.vendor.trim().length > 0
+    || typeof record.family === "string" && record.family.trim().length > 0
+    || typeof record.version === "string" && record.version.trim().length > 0;
+}
 
 export interface ParsedTraceableEvidenceState {
   snapshot: TraceableSubagentDetailSnapshot;
@@ -124,11 +135,53 @@ function summarizeRequestSummary(snapshot: TraceableSubagentDetailSnapshot, path
   }
   return snapshot.requestSummary.map((item) => {
     const rawText = item.title ?? item.value;
-    const rewritten = rawText.replace(/(^|\n)Export folder:\s+(.+)$/u, (_match, prefix, folderPath) => {
-      return `${prefix}Export folder: ${formatTraceablePathReference(folderPath.trim(), pathRenderOptions)}`;
-    });
+    const rewritten = rewriteTraceableRequestSummaryPathLines(rawText, pathRenderOptions);
     return `- ${item.label}: ${rewritten}`;
   });
+}
+
+const TRACEABLE_REQUEST_SUMMARY_PATH_PREFIXES = [
+  "Export folder:",
+  "Inherited from parent trace:",
+  "Continuation parent:",
+  "Parent Trace:",
+  "Role:"
+] as const;
+
+function isTraceableMarkdownLink(value: string): boolean {
+  return /^\[[^\]]+\]\([^)]*\)$/u.test(value.trim());
+}
+
+function looksLikeTraceablePathText(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (isTraceableMarkdownLink(trimmed)) {
+    return true;
+  }
+  return /[\\/]/u.test(trimmed)
+    || /\.(?:trace\.md|agent\.md|md)$/iu.test(trimmed)
+    || /^(?:\.{1,2}|[A-Za-z]:)$/u.test(trimmed);
+}
+
+function rewriteTraceableRequestSummaryPathLines(
+  text: string,
+  pathRenderOptions: TraceableMarkdownPathRenderOptions
+): string {
+  return text.split("\n").map((line) => {
+    for (const prefix of TRACEABLE_REQUEST_SUMMARY_PATH_PREFIXES) {
+      if (!line.startsWith(prefix)) {
+        continue;
+      }
+      const rawValue = line.slice(prefix.length).trim();
+      if (!looksLikeTraceablePathText(rawValue)) {
+        return line;
+      }
+      return `${prefix} ${isTraceableMarkdownLink(rawValue) ? rawValue : formatTraceablePathReference(rawValue, pathRenderOptions, rawValue)}`;
+    }
+    return line;
+  }).join("\n");
 }
 
 function isGenericTraceLaneHeader(snapshot: TraceableSubagentDetailSnapshot): boolean {
@@ -415,10 +468,29 @@ function rewriteEvidenceTextPathMentions(
     .sort((left, right) => right.length - left.length);
   let rewritten = trimmed;
   for (const candidatePath of candidatePaths) {
-    rewritten = rewritten.split(candidatePath).join(
+    rewritten = replaceTraceablePathOutsideMarkdownLinks(
+      rewritten,
+      candidatePath,
       formatTraceablePathReference(candidatePath.replace(/\\\\/g, "\\"), pathRenderOptions, candidatePath)
     );
   }
+  return rewritten;
+}
+
+function replaceTraceablePathOutsideMarkdownLinks(text: string, needle: string, replacement: string): string {
+  if (!needle) {
+    return text;
+  }
+  const markdownLinkPattern = /\[[^\]]+\]\([^\s)]+\)/gu;
+  let cursor = 0;
+  let rewritten = "";
+  for (const match of text.matchAll(markdownLinkPattern)) {
+    const index = match.index ?? 0;
+    rewritten += text.slice(cursor, index).split(needle).join(replacement);
+    rewritten += match[0];
+    cursor = index + match[0].length;
+  }
+  rewritten += text.slice(cursor).split(needle).join(replacement);
   return rewritten;
 }
 
@@ -486,18 +558,29 @@ function summarizeActivityTimeline(
     .map((entry) => entry.line);
 }
 
-function buildPathRenderOptions(evidenceFilePath: string | undefined): TraceableMarkdownPathRenderOptions {
-  return buildTraceableMarkdownPathRenderOptions(evidenceFilePath);
+function buildPathRenderOptions(
+  evidenceFilePath: string | undefined,
+  repoRootSnapshotPath?: string
+): TraceableMarkdownPathRenderOptions {
+  return buildTraceableMarkdownPathRenderOptions(evidenceFilePath, repoRootSnapshotPath);
 }
 
-function renderEvidenceMarkdown(
+function resolveTraceableRepoRootSnapshotPath(candidatePath: string | undefined): string | undefined {
+  const trimmed = candidatePath?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return vscode.workspace.getWorkspaceFolder(vscode.Uri.file(trimmed))?.uri.fsPath;
+}
+
+export function renderEvidenceMarkdown(
   snapshot: TraceableSubagentDetailSnapshot,
   exportState: TraceableSubagentEvidenceFileState,
   outputMode: TraceableSubagentOutputMode,
   finalOutputMarkdown?: string,
   result?: TraceableSubagentRunResult
 ): string {
-  const pathRenderOptions = buildPathRenderOptions(exportState.filePath);
+  const pathRenderOptions = buildPathRenderOptions(exportState.filePath, snapshot.environment?.repoRootSnapshotPath);
   const evidenceState = buildTraceableEvidenceState(snapshot, exportState, result);
   const effectiveModelLabel = getEffectiveEvidenceModelLabel(snapshot, result);
   const lines = [
@@ -571,7 +654,10 @@ export class TraceableSubagentEvidenceController {
       this.lastResult = undefined;
       this.activeRunId = undefined;
     }
-    this.snapshot = snapshot;
+    this.snapshot = {
+      ...snapshot,
+      environment: snapshot.environment ?? this.snapshot.environment
+    };
     if (this.activeRunId === snapshot.startedAt
       && this.exportState.filePath
       && (this.exportState.status === "writing" || this.exportState.status === "ready")) {
@@ -629,23 +715,35 @@ export class TraceableSubagentEvidenceController {
       throw new Error("TRACEABLE evidence export lost its file path before finalizing the evidence file.");
     }
     const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    const persistedRuntimeModelSelector = result.model ? normalizeModelSelector(result.model) : normalizeModelSelector(undefined);
     const exportAwareResult = result.continuedFromParent && result.parentTracePath
       ? {
         ...result,
         parentTracePath: computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots),
         request: {
           ...result.request,
-          parentTracePath: computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots)
+          parentTracePath: computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots),
+          ...(!hasRequestedModelSelector(result.request?.modelSelector) && persistedRuntimeModelSelector.id
+            ? { modelSelector: persistedRuntimeModelSelector }
+            : {})
         }
       }
-      : result;
+      : {
+        ...result,
+        request: {
+          ...result.request,
+          ...(!hasRequestedModelSelector(result.request?.modelSelector) && persistedRuntimeModelSelector.id
+            ? { modelSelector: persistedRuntimeModelSelector }
+            : {})
+        }
+      };
     const finalizedResult: TraceableSubagentRunResult = {
       ...exportAwareResult,
       outputMode,
       evidenceFile: { ...readyState }
     };
     const linkedSummaryMarkdown = renderTraceableSubagentMarkdown(finalizedResult, {
-      ...buildPathRenderOptions(readyFilePath),
+      ...buildPathRenderOptions(readyFilePath, this.snapshot.environment?.repoRootSnapshotPath),
       includeSupportArtifacts: false
     });
     const evidenceMarkdown = renderEvidenceMarkdown(this.snapshot, readyState, outputMode, linkedSummaryMarkdown, finalizedResult);
@@ -699,7 +797,7 @@ export class TraceableSubagentEvidenceController {
         outputMode: state.outputMode ?? this.lastResult.outputMode,
         evidenceFile: { ...readyState }
       }, {
-        ...buildPathRenderOptions(readyFilePath),
+        ...buildPathRenderOptions(readyFilePath, this.snapshot.environment?.repoRootSnapshotPath),
         includeSupportArtifacts: false
       })
       : this.lastResultMarkdown;
@@ -739,6 +837,18 @@ export class TraceableSubagentEvidenceController {
       throw new Error("Traceable evidence export was cancelled before a destination folder was selected.");
     }
     await fs.mkdir(folderPath, { recursive: true });
+    const repoRootSnapshotPath = resolveTraceableRepoRootSnapshotPath(folderPath)
+      ?? resolveTraceableRepoRootSnapshotPath(parentTracePath)
+      ?? this.snapshot.environment?.repoRootSnapshotPath;
+    if (repoRootSnapshotPath) {
+      this.snapshot = {
+        ...this.snapshot,
+        environment: {
+          ...this.snapshot.environment,
+          repoRootSnapshotPath
+        }
+      };
+    }
     const allocation = parentTracePath?.trim()
       ? await allocateContinuationEvidenceFilePath(folderPath, parentTracePath.trim(), getEvidenceRoleSlug(this.snapshot))
       : await allocateEvidenceFilePath(folderPath, getEvidenceRoleSlug(this.snapshot));

@@ -75,6 +75,7 @@ type PanelActivityEntry =
     filePath: string;
     startedAt?: string;
     updatedAt?: string;
+    environment?: TraceableSubagentDetailSnapshot["environment"];
     finalSummary?: string;
     completionClaim?: string;
     status?: TraceableSubagentDetailSnapshot["status"];
@@ -914,6 +915,7 @@ function normalizeInputBoolean(value: unknown): boolean | undefined {
 function buildPanelOpenFilePayload(
   targetPath: string,
   evidenceFilePath: string | undefined,
+  evidenceRepoRootSnapshotPath: string | undefined,
   startLine?: number,
   endLine?: number
 ): PanelOpenFilePayload {
@@ -922,11 +924,17 @@ function buildPanelOpenFilePayload(
     return { type: "openFile", filePath: trimmedTargetPath, startLine, endLine };
   }
   if (!path.isAbsolute(trimmedTargetPath) && !/^file:\/\//iu.test(trimmedTargetPath)) {
-    return { type: "openFile", filePath: trimmedTargetPath, startLine, endLine };
+    return {
+      type: "openFile",
+      filePath: trimmedTargetPath,
+      baseDir: evidenceFilePath ? path.dirname(evidenceFilePath) : undefined,
+      startLine,
+      endLine
+    };
   }
   return {
     type: "openFile",
-    target: resolveTraceablePathTarget(trimmedTargetPath, buildTraceableMarkdownPathRenderOptions(evidenceFilePath)),
+    target: resolveTraceablePathTarget(trimmedTargetPath, buildTraceableMarkdownPathRenderOptions(evidenceFilePath, evidenceRepoRootSnapshotPath)),
     startLine,
     endLine
   };
@@ -1010,7 +1018,7 @@ function renderParameterChip(
   ].join("");
 }
 
-function buildEventParameterChips(event: PanelDisplayEvent, evidenceFilePath?: string): string[] {
+function buildEventParameterChips(event: PanelDisplayEvent, evidenceFilePath?: string, evidenceRepoRootSnapshotPath?: string): string[] {
   const chips: string[] = [];
   const input = event.event.input ?? {};
   const normalizedToolName = normalizeToolBadgeKey(event.event.toolName);
@@ -1018,7 +1026,7 @@ function buildEventParameterChips(event: PanelDisplayEvent, evidenceFilePath?: s
     if (!rawPath) {
       return;
     }
-    const payload = buildObservedOpenFilePayload(rawPath);
+    const payload = buildPanelOpenFilePayload(rawPath, evidenceFilePath, evidenceRepoRootSnapshotPath);
     chips.push(renderParameterChip(
       label,
       summarizeChipPath(rawPath),
@@ -1173,6 +1181,7 @@ function buildEventChips(
   options?: {
     durationPosition?: "before-file" | "after-file";
     evidenceFilePath?: string;
+    evidenceRepoRootSnapshotPath?: string;
     includeDurationChip?: boolean;
   }
 ): string[] {
@@ -1193,7 +1202,7 @@ function buildEventChips(
   if (event.count > 1) {
     chips.push(`<span class="chip" title="Merged ${escapeHtml(String(event.count))} tool calls">${escapeHtml(eventCountChipLabel(event.count))}</span>`);
   }
-  chips.push(...buildEventParameterChips(event, options?.evidenceFilePath));
+  chips.push(...buildEventParameterChips(event, options?.evidenceFilePath, options?.evidenceRepoRootSnapshotPath));
   for (const [index, range] of event.ranges.entries()) {
     if (index > 0) {
       chips.push(`<span class="chip-separator" aria-hidden="true">|</span>`);
@@ -1221,7 +1230,7 @@ function buildEventChips(
     const hasSingleRange = event.ranges.length === 1;
     const startLine = hasSingleRange ? event.ranges[0]?.startLine : undefined;
     const endLine = hasSingleRange ? event.ranges[0]?.endLine : undefined;
-    const payload = escapeHtml(JSON.stringify(buildPanelOpenFilePayload(filePath, options?.evidenceFilePath, startLine, endLine)));
+    const payload = escapeHtml(JSON.stringify(buildPanelOpenFilePayload(filePath, options?.evidenceFilePath, options?.evidenceRepoRootSnapshotPath, startLine, endLine)));
     chips.push(`<button class="chip chip-button" data-message="${payload}" title="${escapeHtml(describePathChipAction(filePath))}">${escapeHtml(fileName)}</button>`);
   }
   if (includeDurationChip && durationPosition === "after-file") {
@@ -1360,7 +1369,11 @@ function renderRequestSummaryBadge(item: PanelRequestSummaryItem, snapshot?: Tra
   if (normalizedLabel === "parent trace") {
     const parentTracePath = item.title?.trim() || item.value.trim();
     const openPayload = parentTracePath && /[\\/]|\.trace\.md$/i.test(parentTracePath)
-      ? { type: "openFile", filePath: parentTracePath }
+      ? buildPanelOpenFilePayload(
+        parentTracePath,
+        snapshot?.evidenceFile?.filePath,
+        snapshot?.environment?.repoRootSnapshotPath
+      )
       : undefined;
     return renderHeaderBadge(
       compactLabel,
@@ -1542,12 +1555,12 @@ function extractOutputEvidencePaths(text: string): string[] {
     .filter(Boolean))];
 }
 
-function renderPathChipRow(paths: string[], evidenceFilePath: string | undefined, label: string): string {
+function renderPathChipRow(paths: string[], evidenceFilePath: string | undefined, evidenceRepoRootSnapshotPath: string | undefined, label: string): string {
   return `<div class="event-detail-chip-row">${paths.map((rawPath) => renderParameterChip(
     label,
     summarizeChipPath(rawPath),
     `${label}: ${rawPath}\n${describePathChipAction(rawPath)}`,
-    buildObservedOpenFilePayload(rawPath)
+    buildPanelOpenFilePayload(rawPath, evidenceFilePath, evidenceRepoRootSnapshotPath)
   )).join("")}</div>`;
 }
 
@@ -1738,6 +1751,7 @@ function renderAncestorActivity(entry: Extract<PanelActivityEntry, { kind: "ance
       message: entry.completionClaim?.trim() || "completed",
       detail: summaryText
     },
+    environment: entry.environment,
     evidenceFile: entry.evidenceFile,
     requestSummary: entry.requestSummary ?? [],
     statusHistory: entry.statusHistory ?? [],
@@ -1749,7 +1763,7 @@ function renderAncestorActivity(entry: Extract<PanelActivityEntry, { kind: "ance
   };
   const lineageHandoff = buildCarryHandoffActivity(lineageSnapshot);
   const childRows = groupActivityEntries(buildActivityEntries(lineageSnapshot).filter((activity) => activity.kind !== "ancestor"))
-    .map((activity) => renderActivityRow(activity, entry.filePath));
+    .map((activity) => renderActivityRow(activity, entry.filePath, entry.environment?.repoRootSnapshotPath));
   const latestAncestorSignal = lineageHandoff
     ? {
       kind: "handoff" as const,
@@ -2067,7 +2081,7 @@ function renderStatusActivity(entry: Extract<PanelActivityEntry, { kind: "status
   ].join("");
 }
 
-function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "status-group" }>, evidenceFilePath?: string): string {
+function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "status-group" }>, evidenceFilePath?: string, evidenceRepoRootSnapshotPath?: string): string {
   const firstEntry = entry.entries[0];
   const summaryEvent = deriveStatusGroupSummaryEvent(entry);
   const severityClass = summaryEvent.severityClass;
@@ -2091,11 +2105,11 @@ function renderStatusGroupActivity(entry: Extract<PanelRenderedEntry, { kind: "s
   }
   chips.push(...durationChips);
   if (entry.latestToolEvent) {
-    chips.push(...buildEventChips(entry.latestToolEvent, { durationPosition: "after-file", evidenceFilePath }));
+    chips.push(...buildEventChips(entry.latestToolEvent, { durationPosition: "after-file", evidenceFilePath, evidenceRepoRootSnapshotPath }));
   }
   const childRows = [
     ...entry.entries.map((child) => renderStatusActivity(child)),
-    entry.groupedToolEntry ? renderToolActivity(entry.groupedToolEntry, evidenceFilePath) : ""
+    entry.groupedToolEntry ? renderToolActivity(entry.groupedToolEntry, evidenceFilePath, evidenceRepoRootSnapshotPath) : ""
   ].filter(Boolean).join("");
   return [
     `<li class="status-group-item">`,
@@ -2148,7 +2162,7 @@ function renderRequestActivity(entry: Extract<PanelActivityEntry, { kind: "reque
   ].join("");
 }
 
-function renderOutputActivity(entry: Extract<PanelActivityEntry, { kind: "output" }>, evidenceFilePath?: string): string {
+function renderOutputActivity(entry: Extract<PanelActivityEntry, { kind: "output" }>, evidenceFilePath?: string, evidenceRepoRootSnapshotPath?: string): string {
   const noteText = entry.text.trim();
   const evidencePaths = extractOutputEvidencePaths(noteText);
   const expandable = noteText.length > 0;
@@ -2158,7 +2172,7 @@ function renderOutputActivity(entry: Extract<PanelActivityEntry, { kind: "output
     : expandable ? `<span class="event-expand-indicator" aria-hidden="true">▸</span>` : "";
   const detailSections = [
     noteText ? renderRequestDetailSection("Summary", noteText) : "",
-    evidencePaths.length > 0 ? renderDetailSectionMarkup("Evidence Paths", renderPathChipRow(evidencePaths, evidenceFilePath, "path")) : ""
+    evidencePaths.length > 0 ? renderDetailSectionMarkup("Evidence Paths", renderPathChipRow(evidencePaths, evidenceFilePath, evidenceRepoRootSnapshotPath, "path")) : ""
   ].filter(Boolean).join("");
   return [
     `<li class="event-row event-output" title="Final output returned to the parent lane"${expandableAttributes}>`,
@@ -2168,7 +2182,7 @@ function renderOutputActivity(entry: Extract<PanelActivityEntry, { kind: "output
   ].join("");
 }
 
-function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "handoff" }>, evidenceFilePath?: string): string {
+function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "handoff" }>, evidenceFilePath?: string, evidenceRepoRootSnapshotPath?: string): string {
   const detailText = [entry.note.trim(), entry.detail?.trim() || ""].filter(Boolean).join("\n\n");
   const expandable = detailText.length > 0;
   const expandableAttributes = expandable ? ` data-handoff-expandable="true" data-handoff-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
@@ -2187,8 +2201,8 @@ function renderHandoffActivity(entry: Extract<PanelActivityEntry, { kind: "hando
     entry.remainingGoals && entry.remainingGoals.length > 0 ? renderRequestDetailSection("Remaining Goals", entry.remainingGoals.join("\n")) : "",
     entry.openQuestions && entry.openQuestions.length > 0 ? renderRequestDetailSection("Open Questions", entry.openQuestions.join("\n")) : "",
     entry.constraints && entry.constraints.length > 0 ? renderRequestDetailSection("Constraints", entry.constraints.join("\n")) : "",
-    entry.relevantFileAnchors && entry.relevantFileAnchors.length > 0 ? renderDetailSectionMarkup("File Anchors", renderPathChipRow(entry.relevantFileAnchors, evidenceFilePath, "file")) : "",
-    entry.relevantArtifactAnchors && entry.relevantArtifactAnchors.length > 0 ? renderDetailSectionMarkup("Artifact Anchors", renderPathChipRow(entry.relevantArtifactAnchors, evidenceFilePath, "artifact")) : "",
+    entry.relevantFileAnchors && entry.relevantFileAnchors.length > 0 ? renderDetailSectionMarkup("File Anchors", renderPathChipRow(entry.relevantFileAnchors, evidenceFilePath, evidenceRepoRootSnapshotPath, "file")) : "",
+    entry.relevantArtifactAnchors && entry.relevantArtifactAnchors.length > 0 ? renderDetailSectionMarkup("Artifact Anchors", renderPathChipRow(entry.relevantArtifactAnchors, evidenceFilePath, evidenceRepoRootSnapshotPath, "artifact")) : "",
     entry.detail?.trim() ? renderRequestDetailSection("Notes", entry.detail.trim()) : ""
   ].filter(Boolean).join("");
   const detailMarkup = detailSections
@@ -2403,6 +2417,7 @@ function renderToolOutputDetail(
 function renderToolDetailSections(
   event: PanelDisplayEvent,
   evidenceFilePath?: string,
+  evidenceRepoRootSnapshotPath?: string,
   detail?: PanelLoadedToolDetail
 ): string {
   const detailSections: string[] = [];
@@ -2414,7 +2429,7 @@ function renderToolDetailSections(
   if (event.filePath) {
     detailSections.push(renderDetailSectionMarkup(
       "Target",
-      renderPathChipRow([event.filePath], evidenceFilePath, "path")
+      renderPathChipRow([event.filePath], evidenceFilePath, evidenceRepoRootSnapshotPath, "path")
     ));
   }
   if (event.ranges.length > 0) {
@@ -2447,12 +2462,13 @@ function renderToolDetailSections(
 function renderToolActivity(
   entry: Extract<PanelActivityEntry, { kind: "tool" }>,
   evidenceFilePath?: string,
+  evidenceRepoRootSnapshotPath?: string,
   loadedDetailByCallId: ReadonlyMap<string, PanelLoadedToolDetail> = new Map()
 ): string {
   const event = entry.displayEvent;
   const title = (event.note ?? "") || event.event.toolName;
   const noteRow = event.note ? `<div class="event-note">${escapeHtml(event.note)}</div>` : "";
-  const detailSections = renderToolDetailSections(event, evidenceFilePath, loadedDetailByCallId.get(event.event.callId));
+  const detailSections = renderToolDetailSections(event, evidenceFilePath, evidenceRepoRootSnapshotPath, loadedDetailByCallId.get(event.event.callId));
   const expandable = detailSections.length > 0;
   const expandableAttributes = expandable ? ` data-tool-expandable="true" data-tool-id="${escapeHtml(entry.id)}" tabindex="0" role="button" aria-expanded="false"` : "";
   const durationMarkup = renderActivityDuration(
@@ -2467,15 +2483,16 @@ function renderToolActivity(
     `<div class="event-body"><button class="event-main event-tool-main-toggle" type="button" data-tool-toggle-id="${escapeHtml(entry.id)}"><span class="event-icon">${escapeHtml(eventIcon(event))}</span><span class="event-label">${escapeHtml(eventLabel(event))}</span>${expandable ? `<span class="event-summary-inline"><span class="event-expand-indicator" aria-hidden="true">▸</span></span>` : ""}</button>${noteRow}${expandable ? `<div class="event-tool-detail">${detailSections}</div>` : ""}</div>`,
     renderActivityMeta(event.occurredAt, durationMarkup, buildEventChips(event, {
       evidenceFilePath,
+      evidenceRepoRootSnapshotPath,
       includeDurationChip: event.count > 1
     })),
     "</li>"
   ].join("");
 }
 
-function renderActivityRow(entry: PanelRenderedEntry, evidenceFilePath?: string): string {
+function renderActivityRow(entry: PanelRenderedEntry, evidenceFilePath?: string, evidenceRepoRootSnapshotPath?: string): string {
   if (entry.kind === "status-group") {
-    return renderStatusGroupActivity(entry, evidenceFilePath);
+    return renderStatusGroupActivity(entry, evidenceFilePath, evidenceRepoRootSnapshotPath);
   }
   if (entry.kind === "ancestor") {
     return renderAncestorActivity(entry);
@@ -2487,15 +2504,15 @@ function renderActivityRow(entry: PanelRenderedEntry, evidenceFilePath?: string)
     return renderStatusActivity(entry);
   }
   if (entry.kind === "output") {
-    return renderOutputActivity(entry, evidenceFilePath);
+    return renderOutputActivity(entry, evidenceFilePath, evidenceRepoRootSnapshotPath);
   }
   if (entry.kind === "sender-adaptation") {
     return renderSenderAdaptationActivity(entry);
   }
   if (entry.kind === "handoff") {
-    return renderHandoffActivity(entry, evidenceFilePath);
+    return renderHandoffActivity(entry, evidenceFilePath, evidenceRepoRootSnapshotPath);
   }
-  return renderToolActivity(entry, evidenceFilePath);
+  return renderToolActivity(entry, evidenceFilePath, evidenceRepoRootSnapshotPath);
 }
 
 function normalizeHeaderToolsetNames(toolsetNames: readonly string[]): string[] {
@@ -3275,8 +3292,8 @@ export function renderTraceableSubagentPanelHtml(
   const evidenceState = evidenceViewState(snapshot);
   const eventRows = hasActivityFeed
     ? renderedEntries.map((event) => event.kind === "tool"
-      ? renderToolActivity(event, snapshot.evidenceFile?.filePath, loadedToolDetailsByCallId)
-      : renderActivityRow(event, snapshot.evidenceFile?.filePath)).join("")
+      ? renderToolActivity(event, snapshot.evidenceFile?.filePath, snapshot.environment?.repoRootSnapshotPath, loadedToolDetailsByCallId)
+      : renderActivityRow(event, snapshot.evidenceFile?.filePath, snapshot.environment?.repoRootSnapshotPath)).join("")
     : renderPanelEmptyState(snapshot);
   const updatedLabel = formatPanelUpdatedAt(snapshot.updatedAt);
   const runningState = snapshot.status.phase === "running" ? "true" : "false";
