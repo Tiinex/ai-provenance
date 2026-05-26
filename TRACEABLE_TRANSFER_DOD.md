@@ -11,10 +11,12 @@ The goal is not only that transfer helpers pass source tests. The goal is that b
 - Clear `.topics/transfer` completely before constructing a new fixture.
 - Create these empty destination folders under `.topics/transfer`:
   - `move-tree-proof`
+  - `move-tree-plus-seeds-proof`
   - `move-branch-proof`
   - `move-leaves-proof`
   - `move-alone-proof`
   - `copy-tree-proof`
+  - `copy-tree-plus-seeds-proof`
   - `copy-branch-proof`
   - `copy-leaves-proof`
   - `copy-alone-proof`
@@ -48,7 +50,8 @@ If the fixture is not clean and valid before the first mutation, abort and repai
 - Diagnose the failure before continuing to later cases.
 - Do not let a broken earlier test contaminate later tests.
 - If any tooling defect is discovered during this work, fix it immediately even when it is not the original defect under investigation.
-- If code or logic-bearing files are changed, every previously passed test that depends on that logic must be marked not completed and rerun before the suite can continue.
+- Any code or logic-bearing file change invalidates the entire current validation status, not only the obviously affected checks.
+- After any code or logic-bearing file change, the full transfer validation must be rerun from a clean fixture before prior status may be trusted again.
 - After any code change, tests may continue only after a successful build and a human operator has performed `Reload Window`.
 - `Reload Window` is a human-operator-only step and must not be treated as optional when validating post-change behavior.
 - After each mutation, verify lineage with `#viewTrace` before treating the step as passed.
@@ -74,14 +77,34 @@ If the fixture is not clean and valid before the first mutation, abort and repai
 - The embedded `## Traceable State` block for `parentTracePath`, `continuedFromParent`, and lineage label consistency.
 - The source tree, to confirm that move removed the correct files and copy preserved the correct files.
 
+## Scope Boundary Decision
+
+The maintained transfer target semantics now draw a hard directory boundary for the broader lineage-style scopes.
+
+- `roots` means parent traces.
+- `tree` must not pull in or mutate parent traces, sibling traces, or other lineage files from outside the source file's current directory.
+- `tree + seeds` must not pull in or mutate roots from other directories. It may broaden inclusion beyond the source file's current directory only through the descendants of same-directory seed traces.
+- When a moved or copied trace still depends on a parent trace outside the moved set, that external parent trace must remain in place.
+- In that case, the transferred file content may still need reference rewrites so `parentTracePath` and visible markdown continue to resolve correctly from the new destination.
+- Directory-local scope selection outranks workspace-wide connected-lineage closure for `tree` and future `tree + seeds`.
+
+## Planned Scope Semantics
+
+- `leaves` preserves the selected node and its descendant slice according to the maintained leaves semantics.
+- `branch` preserves the selected node and the intended branch scope only.
+- `tree` preserves the selected node plus descendants that live in the same directory as the selected source trace. It must not pull in external roots or other traces from different directories.
+- `tree + seeds` preserves the maintained `tree` slice plus descendant closure from same-directory seed context. It must not pull in external roots from different directories.
+- `alone` moves or copies only the selected file as the primary file mutation, but related metadata rewrites may still be required to preserve valid lineage continuity.
+
 ## Acceptance Invariants
 
 These invariants must hold for both tooling and UX:
 
 - Golden transfer rule: no transfer operation may leave the persisted `.trace.md` files with broken markdown path references or broken lineage references after the operation completes.
-- `tree` preserves the selected node plus all connected ancestors and descendants required by the current transfer semantics.
+- `tree` preserves the selected node plus the maintained same-directory tree slice only.
 - `branch` preserves the selected node and the intended branch scope only.
 - `leaves` preserves the selected node and the minimum lineage-preserving descendant slice only.
+- `tree + seeds` may broaden `tree` through descendant closure from same-directory seed context, but it must not pull in external roots.
 - `alone` moves or copies only the selected file as the primary file mutation, but related metadata rewrites may still be required to preserve valid lineage continuity.
 - `move` removes the transferred files from the source location.
 - `copy` leaves the source location unchanged.
@@ -90,6 +113,7 @@ These invariants must hold for both tooling and UX:
 - `copy alone` semantics must be stated explicitly and tested independently; they must not be assumed to be identical to `move alone`.
 - `copy alone` must leave the original parent and original descendants untouched.
 - `copy alone` must still preserve a valid, resolvable `parentTracePath` inside the copied node when the original parent still exists.
+- If a transferred file keeps an external parent outside the moved set, that parent must remain unmodified and the transferred file must rewrite its reference so the parent still resolves correctly.
 - Persisted file content outranks panel rendering; panel output may not be treated as proof when it disagrees with markdown or `Traceable State`.
 
 ## Test Suite 1: Tooling Semantics
@@ -118,6 +142,26 @@ Use `#transferTrace` for all cases in this suite.
   - No unrelated source files are mutated.
   - Embedded `Traceable State` matches the visible markdown for all moved files.
   - `#viewTrace` reports the moved outputs with the expected tree relationships.
+
+This canonical same-directory fixture does not distinguish `tree` from `tree + seeds` by itself. It only proves that `tree` still behaves correctly when every relevant trace co-resides in the same directory.
+
+### Supplemental Boundary Proof For `tree` And `tree + seeds`
+
+Before semantic completion may be claimed for either scope, run an additional boundary fixture that places:
+
+- the selected trace in one source directory,
+- one or more same-directory seeds or roots beside it,
+- at least one descendant of those same-directory seeds in a different directory,
+- and at least one external root or parent trace in a different directory that must remain untouched.
+
+The boundary proof must establish all of the following:
+
+- `tree` includes only the maintained same-directory tree slice.
+- `tree` does not pull in roots or other traces from different directories.
+- `tree + seeds` may broaden beyond the source directory through descendants of same-directory seeds.
+- `tree + seeds` still does not pull in external roots from different directories.
+- Any transferred file that keeps an external parent outside the moved set rewrites its reference correctly without mutating that external parent.
+- The boundary proof is checked through both persisted markdown and `Traceable State`, not by panel output alone.
 
 ### Test 2: Branch Move
 
@@ -191,6 +235,8 @@ Use `#transferTrace` for all cases in this suite.
 - Must prove no source file is rewritten as a side effect of the copy.
 - Must prove relative references inside all copied files are correct from the new folder.
 - Must prove `#viewTrace` reports the copied outputs with the expected lineage relationships.
+
+As with Tree Move, this canonical same-directory fixture does not distinguish `tree` from `tree + seeds` by itself. Boundary-proof coverage is still required before semantic completion may be claimed.
 
 ### Test 6: Branch Copy
 
@@ -303,6 +349,7 @@ TRACEABLE transfer is done only when all of the following are true:
 
 - [ ] The canonical fixture can be built cleanly and verified cleanly.
 - [ ] Every scenario in Test Suite 1 passes.
+- [ ] Supplemental boundary proof for `tree` and `tree + seeds` passes.
 - [ ] Every corresponding scenario in Test Suite 2 passes.
 - [ ] Test Suite 3 fails safely for each covered error case.
 - [ ] Shared-helper proof in Test Suite 4 is satisfied.
@@ -313,7 +360,7 @@ TRACEABLE transfer is done only when all of the following are true:
 - [ ] No UX-only drift remains relative to `#transferTrace`.
 - [ ] No UX copy scenario was marked passed on a host surface that cannot identify both source and destination for the same copy operation.
 - [ ] Every post-change validation round resumed only after a successful build and a human-run `Reload Window`.
-- [ ] Any previously passed tests affected by later logic changes were reset to not done and rerun.
+- [ ] Any code or logic-bearing change invalidated the full prior validation status and triggered a full rerun from a clean fixture.
 - [ ] The suite can be rerun from a clean fixture without hidden manual cleanup.
 
 If any one of those conditions fails, TRACEABLE transfer is not done.
@@ -324,7 +371,7 @@ Use this section as the progress-tracking checklist while validating transfer.
 
 - [ ] Fixture And Baseline Complete
   - [ ] `.topics/transfer` was cleared fully before the run.
-  - [ ] All eight destination proof folders were recreated empty.
+  - [ ] All destination proof folders, including `tree + seeds` proof folders, were recreated empty.
   - [ ] Canonical fixture nodes were rebuilt with the expected filenames.
   - [ ] Baseline `#viewTrace` lineage was verified for all fixture nodes.
   - [ ] Baseline markdown path references were checked before the first mutation.
@@ -332,12 +379,16 @@ Use this section as the progress-tracking checklist while validating transfer.
   - [ ] Any tooling defect discovered during validation was fixed immediately even when outside the originally targeted defect.
   - [ ] After every code change, a successful build completed before validation resumed.
   - [ ] After every code change, a human operator performed `Reload Window` before validation resumed.
-  - [ ] Any previously passed tests touched by changed logic were marked not completed and rerun.
+  - [ ] Any code or logic-bearing change invalidated the full prior validation status.
+  - [ ] After any code or logic-bearing change, the full transfer validation was rerun from a clean fixture.
 - [ ] Tooling Suite Complete
   - [ ] Test 1 Tree Move passed.
   - [ ] Test 1 destination file set matched exactly.
   - [ ] Test 1 source cleanup matched exactly.
   - [ ] Test 1 markdown and `Traceable State` stayed aligned.
+  - [ ] Supplemental boundary proof for `tree` passed.
+  - [ ] Supplemental boundary proof for `tree + seeds` passed.
+  - [ ] Boundary proof confirmed that external roots were not moved or mutated.
   - [ ] Test 2 Branch Move passed.
   - [ ] Test 2 destination file set matched exactly.
   - [ ] Test 2 source cleanup matched exactly.
@@ -368,6 +419,8 @@ Use this section as the progress-tracking checklist while validating transfer.
   - [ ] Test 8 copied node still resolved its parent correctly.
 - [ ] UX Parity Complete
   - [ ] UX Tree Move matched tooling exactly.
+  - [ ] UX boundary proof for `tree` matched tooling exactly.
+  - [ ] UX boundary proof for `tree + seeds` matched tooling exactly.
   - [ ] UX Branch Move matched tooling exactly.
   - [ ] UX Leaves Move matched tooling exactly.
   - [ ] UX Alone Move matched tooling exactly.
