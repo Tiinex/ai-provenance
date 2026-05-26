@@ -465,6 +465,13 @@ async function buildConnectedTraceableLineageGraph(oldPath: string, searchRoots:
     pendingNodes.push(...children);
   }
 
+  const seedDirectoryKey = normalizeDirectoryPathKey(seedNode.path);
+  for (const node of nodes) {
+    if (normalizeDirectoryPathKey(node.path) === seedDirectoryKey) {
+      connectedNodesByPathKey.set(node.pathKey, node);
+    }
+  }
+
   const connectedChildrenByParentPathKey = new Map<string, ConnectedTraceableLineageNode[]>();
   const canonicalNodesByLineageLabel = new Map<string, ConnectedTraceableLineageNode>();
   for (const node of connectedNodesByPathKey.values()) {

@@ -4,6 +4,14 @@ This file defines the minimum transfer behavior that must be proven before TRACE
 
 The goal is not only that transfer helpers pass source tests. The goal is that both public tooling and VS Code UX produce the same persisted outcome on disk, with intact lineage and valid relative references inside the `.trace.md` files.
 
+## Current Validation Status
+
+- Status: invalidated
+- Effective date: May 26, 2026
+- Reason: transfer logic and transfer-facing UX behavior have changed since the last trusted end-to-end round, including lineage-scope prompting and connected-graph construction.
+- Consequence: no earlier PASS signal, manual pass note, or partial scenario result may be treated as current proof until the full transfer validation is rerun from a clean fixture and resumed only after a successful build plus a human-run `Reload Window`.
+- Immediate posture: treat the suite as not yet passed and use the next fresh rerun to determine whether the current build still reproduces the same deep-lineage problem observed in manual testing.
+
 ## Canonical Fixture
 
 ### Setup Before Running Any Transfer Suite
