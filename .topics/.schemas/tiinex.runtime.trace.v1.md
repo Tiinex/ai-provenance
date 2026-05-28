@@ -1,10 +1,14 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.continuation.v1.md)
+- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/d26b73c3f83a618cc04338c49ca10b62bc91e876/.topics/.schemas/tiinex.continuation.v1.md)
 - Parent
-  - Parent Schema: [tiinex.schema.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.schema.v1.md)
-  - Created At: 2026-05-28 18:11:47
-  - Trace: [tiinex.schema.v1.md](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.schema.v1.md)
+  - Parent Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/d26b73c3f83a618cc04338c49ca10b62bc91e876/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-28 16:54:32
+  - Trace: [001.trace.md](../trace-format/001.trace.md)
+  - Origin:
+    - [relative](../trace-format/001.trace.md)
+    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/001.trace.md)
+    - [browse + git](https://github.com/Tiinex/ai-provenance/blob/cc5f281e287a999a2beff4a3a6f01e93fb54a2f3/.topics/trace-format/001.trace.md)
 - Current
   - Current Schema: [tiinex.runtime.trace.v1](tiinex.runtime.trace.v1.md)
   - Created At: 2026-05-28 19:01:45
@@ -14,7 +18,7 @@
 
 # tiinex.runtime.trace.v1
 - Status: provisional runtime schema note
-- Schema Definition: [tiinex.schema.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.schema.v1.md)
+- Schema Definition: [tiinex.schema.v1](https://github.com/Tiinex/docs/blob/d26b73c3f83a618cc04338c49ca10b62bc91e876/.topics/.schemas/tiinex.schema.v1.md)
 - Origin:
   - [relative](../trace-format/001.trace.md)
   - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/001.trace.md)
@@ -152,5 +156,5 @@ It is not primarily for:
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [tiinex.schema.v1.md](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.schema.v1.md)
-  - Value: PFqnBlsXp5OwzKFfUPVbSoCsDPPIlzqL7qCrtXMzBNA
+  - Towards: [001.trace.md](../trace-format/001.trace.md)
+  - Value: wlND8W915E4wwB7ZN1TW7JRphR-6YU1wVHtVnqUDzFM
