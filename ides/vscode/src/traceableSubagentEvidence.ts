@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import * as vscode from "vscode";
 import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import { allocateNextTraceableLineageLabel, buildTraceableEvidenceFileName, computeStoredParentTracePath, parseTraceableEvidenceFileName } from "./traceableLineage";
+import { computeTraceableParentChecksumSha256ForFile, isTraceableLineageChecksumEnabled } from "./traceableLineageIntegrity";
 import { buildTraceableMarkdownPathRenderOptions, formatTraceablePathReference, normalizeModelSelector } from "./traceableContract";
 import type {
   TraceableMarkdownPathRenderOptions,
@@ -288,6 +289,7 @@ function buildTraceableEvidenceState(
       expectedButMissing: result.expectedButMissing,
       continuedFromParent: result.continuedFromParent,
       parentTracePath: result.parentTracePath,
+      parentTraceChecksumSha256: result.parentTraceChecksumSha256,
       lineageDepth: result.lineageDepth,
       lineageLabel: result.lineageLabel,
       senderAdaptationState: result.senderAdaptationState,
@@ -715,14 +717,22 @@ export class TraceableSubagentEvidenceController {
       throw new Error("TRACEABLE evidence export lost its file path before finalizing the evidence file.");
     }
     const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+    const checksumEnabled = isTraceableLineageChecksumEnabled(vscode.Uri.file(readyFilePath));
     const persistedRuntimeModelSelector = result.model ? normalizeModelSelector(result.model) : normalizeModelSelector(undefined);
-    const exportAwareResult = result.continuedFromParent && result.parentTracePath
+    const nextStoredParentTracePath = result.continuedFromParent && result.parentTracePath
+      ? computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots)
+      : undefined;
+    const nextParentTraceChecksumSha256 = result.continuedFromParent && result.parentTracePath && checksumEnabled
+      ? await computeTraceableParentChecksumSha256ForFile(result.parentTracePath)
+      : undefined;
+    const exportAwareResult = nextStoredParentTracePath
       ? {
         ...result,
-        parentTracePath: computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots),
+        parentTracePath: nextStoredParentTracePath,
+        parentTraceChecksumSha256: nextParentTraceChecksumSha256,
         request: {
           ...result.request,
-          parentTracePath: computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots),
+          parentTracePath: nextStoredParentTracePath,
           ...(!hasRequestedModelSelector(result.request?.modelSelector) && persistedRuntimeModelSelector.id
             ? { modelSelector: persistedRuntimeModelSelector }
             : {})
@@ -730,6 +740,7 @@ export class TraceableSubagentEvidenceController {
       }
       : {
         ...result,
+        parentTraceChecksumSha256: undefined,
         request: {
           ...result.request,
           ...(!hasRequestedModelSelector(result.request?.modelSelector) && persistedRuntimeModelSelector.id

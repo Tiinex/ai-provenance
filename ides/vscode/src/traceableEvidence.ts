@@ -1,3 +1,4 @@
+import * as vscode from "vscode";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import {
@@ -8,6 +9,11 @@ import {
   type TraceableSubagentRunResult
 } from "./traceableContract";
 import { parseTraceableEvidenceFileName } from "./traceableLineage";
+import {
+  evaluateTraceableDirectParentIntegritySync,
+  isTraceableLineageChecksumEnabled,
+  type TraceableDirectParentIntegrityResult
+} from "./traceableLineageIntegrity";
 import type { TraceableSubagentDetailSnapshot } from "./traceableSubagentStatusDetail";
 
 export const TRACEABLE_EVIDENCE_STATE_SCHEMA = "tiinex.traceable-state.v1";
@@ -152,10 +158,11 @@ function extractLegacyRawChildOutputFields(rawText: string): {
   const fromJson = (() => {
     try {
       const parsed = JSON.parse(rawText) as Record<string, unknown>;
+      const payload = getRecord(parsed.result) ?? parsed;
       return {
-        stopReason: getString(parsed.stopReason),
-        completionClaim: getString(parsed.completionClaim),
-        finalSummary: getString(parsed.finalSummary)
+        stopReason: getString(payload.stopReason),
+        completionClaim: getString(payload.completionClaim),
+        finalSummary: getString(payload.finalSummary)
       };
     } catch {
       return undefined;
@@ -371,6 +378,43 @@ function resolveTraceableEvidenceReference(currentFilePath: string, reference: s
     : path.resolve(path.dirname(currentFilePath), normalized);
 }
 
+function formatTraceableLineageIntegrityStatus(integrity: TraceableDirectParentIntegrityResult | undefined): string | undefined {
+  switch (integrity?.status) {
+    case "ok":
+      return "verified";
+    case "legacy-no-checksum":
+      return "legacy-unverified";
+    case "missing-parent":
+      return "missing parent";
+    case "unreadable-parent":
+      return "unreadable parent";
+    case "checksum-mismatch":
+      return "checksum mismatch";
+    case "cycle-detected":
+      return "cycle detected";
+    case "disabled":
+      return "disabled";
+    default:
+      return undefined;
+  }
+}
+
+export function evaluateParsedTraceableEvidenceLineageIntegrity(
+  filePath: string,
+  parsed: ParsedTraceableEvidenceState
+): TraceableDirectParentIntegrityResult | undefined {
+  const result = getRecord(parsed.result);
+  if (!result) {
+    return undefined;
+  }
+  return evaluateTraceableDirectParentIntegritySync({
+    childFilePath: filePath,
+    resolvedParentTracePath: resolveTraceableEvidenceReference(filePath, getString(result.parentTracePath)),
+    storedParentTraceChecksumSha256: getString(result.parentTraceChecksumSha256),
+    checksumEnabled: isTraceableLineageChecksumEnabled(vscode.Uri.file(filePath))
+  });
+}
+
 function listDirectChildTraceableEvidencePaths(currentFilePath: string, lineageLabel: string): string[] {
   const parentSegments = lineageLabel.split("-").filter((segment) => segment.length > 0);
   if (parentSegments.length === 0) {
@@ -405,6 +449,7 @@ function buildTraceableEvidenceLineageLines(input: {
   const lineageLabel = getString(result.lineageLabel) ?? parsedFileName?.lineageLabel;
   const lineageDepth = getPositiveInteger(result.lineageDepth) ?? parsedFileName?.lineageDepth;
   const parentTracePath = resolveTraceableEvidenceReference(input.filePath, getString(result.parentTracePath));
+  const lineageIntegrity = evaluateParsedTraceableEvidenceLineageIntegrity(input.filePath, input.parsed);
   const directChildren = lineageLabel ? listDirectChildTraceableEvidencePaths(input.filePath, lineageLabel) : [];
   const continuedFromParent = getString(result.continuedFromParent) ?? (result.continuedFromParent === true ? "yes" : result.continuedFromParent === false ? "no" : undefined);
   if (!lineageLabel && !parentTracePath && directChildren.length === 0) {
@@ -416,10 +461,15 @@ function buildTraceableEvidenceLineageLines(input: {
     `- Current Trace: ${formatTraceablePathReference(input.filePath, pathRenderOptions)}`,
     `- Continued From Parent: ${continuedFromParent ?? (parentTracePath ? "yes" : "no")}`,
     `- Parent Trace: ${formatTraceablePathReference(parentTracePath, pathRenderOptions)}`,
+    `- Parent Integrity: ${formatTraceableLineageIntegrityStatus(lineageIntegrity) ?? "-"}`,
     `- Lineage Label: ${lineageLabel ?? "-"}`,
     `- Lineage Depth: ${lineageDepth ?? "-"}`,
     `- Direct Children: ${directChildren.length}`
   ];
+  if (lineageIntegrity?.status === "checksum-mismatch") {
+    lines.push(`- Stored Parent Checksum: ${lineageIntegrity.storedParentTraceChecksumSha256 ?? "-"}`);
+    lines.push(`- Actual Parent Checksum: ${lineageIntegrity.actualParentTraceChecksumSha256 ?? "-"}`);
+  }
   if (directChildren.length > 0) {
     lines.push("", "### Direct Children", "");
     for (const childPath of directChildren) {

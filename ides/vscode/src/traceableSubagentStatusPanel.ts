@@ -68,6 +68,14 @@ type PanelLoadedToolDetail = TraceableSubagentToolDetail;
 
 type PanelActivityEntry =
   | {
+    kind: "lineage-warning";
+    id: string;
+    occurredAt: string;
+    title: string;
+    note: string;
+    detail?: string;
+  }
+  | {
     kind: "ancestor";
     id: string;
     occurredAt: string;
@@ -1626,8 +1634,44 @@ function buildRequestActivityId(snapshot: TraceableSubagentDetailSnapshot): stri
   return `request-summary:${snapshot.startedAt}:${snapshot.updatedAt}`;
 }
 
+function getBrokenLineageWarning(snapshot: TraceableSubagentDetailSnapshot): {
+  note: string;
+  detail?: string;
+} | undefined {
+  if (!snapshot.lineageIntegrity || (
+    snapshot.lineageIntegrity.status !== "missing-parent"
+    && snapshot.lineageIntegrity.status !== "unreadable-parent"
+    && snapshot.lineageIntegrity.status !== "checksum-mismatch"
+    && snapshot.lineageIntegrity.status !== "cycle-detected"
+  )) {
+    return undefined;
+  }
+  const note = snapshot.lineageIntegrity.status === "missing-parent"
+    ? "Stored parent trace could not be resolved."
+    : snapshot.lineageIntegrity.status === "unreadable-parent"
+      ? "Stored parent trace exists but could not be read."
+      : snapshot.lineageIntegrity.status === "checksum-mismatch"
+        ? "Stored parent checksum no longer matches the resolved parent artifact."
+        : "The stored parent trace edge would create a lineage cycle.";
+  return {
+    note,
+    detail: snapshot.lineageIntegrity.resolvedParentTracePath
+  };
+}
+
 function buildActivityEntries(snapshot: TraceableSubagentDetailSnapshot): PanelActivityEntry[] {
   const activities: PanelActivityEntry[] = [];
+  const lineageWarning = getBrokenLineageWarning(snapshot);
+  if (lineageWarning) {
+    activities.push({
+      kind: "lineage-warning",
+      id: `lineage-warning:${snapshot.updatedAt}`,
+      occurredAt: snapshot.updatedAt,
+      title: "Broken Lineage",
+      note: lineageWarning.note,
+      detail: lineageWarning.detail
+    });
+  }
   for (const lineageEntry of snapshot.lineageEntries ?? []) {
     activities.push({
       kind: "ancestor",
@@ -1724,7 +1768,7 @@ function buildActivityEntries(snapshot: TraceableSubagentDetailSnapshot): PanelA
     if (leftOccurredAtMs !== rightOccurredAtMs) {
       return leftOccurredAtMs - rightOccurredAtMs;
     }
-    const order = { ancestor: 0, request: 1, status: 2, tool: 3, output: 4, "sender-adaptation": 5, handoff: 6 } as const;
+    const order = { ancestor: 0, "lineage-warning": 1, request: 2, status: 3, tool: 4, output: 5, "sender-adaptation": 6, handoff: 7 } as const;
     return order[left.kind] - order[right.kind];
   });
 }
@@ -2077,6 +2121,17 @@ function renderStatusActivity(entry: Extract<PanelActivityEntry, { kind: "status
     `<li class="${rowClasses}" title="${escapeHtml(entry.message)}">`,
     `<div class="event-body"><div class="event-main"><span class="event-icon">${escapeHtml(panelStatusRowIcon(entry.phase, entry.running))}</span><span class="event-label">${escapeHtml(entry.message)}</span></div>${noteRow}</div>`,
     renderActivityMeta(entry.occurredAt, durationMarkup, phaseChips),
+    `</li>`
+  ].join("");
+}
+
+function renderLineageWarningActivity(entry: Extract<PanelActivityEntry, { kind: "lineage-warning" }>): string {
+  const titleText = entry.detail?.trim()
+    ? `${entry.title}\n${entry.note}\n${entry.detail}`
+    : `${entry.title}\n${entry.note}`;
+  return [
+    `<li class="event-row event-lineage-warning" title="${escapeHtml(titleText)}">`,
+    `<div class="event-body"><div class="event-main"><span class="event-icon" style="color: var(--vscode-editorWarning-foreground);">${renderCodicon("warning")}</span><span class="event-label">${escapeHtml(entry.title)}</span></div><div class="event-note">${escapeHtml(entry.note)}</div></div>`,
     `</li>`
   ].join("");
 }
@@ -2496,6 +2551,9 @@ function renderActivityRow(entry: PanelRenderedEntry, evidenceFilePath?: string,
   }
   if (entry.kind === "ancestor") {
     return renderAncestorActivity(entry);
+  }
+  if (entry.kind === "lineage-warning") {
+    return renderLineageWarningActivity(entry);
   }
   if (entry.kind === "request") {
     return renderRequestActivity(entry);
@@ -2973,20 +3031,44 @@ function formatChatProjectionOutputLabel(header: TraceableSubagentDetailSnapshot
   return displayRole && displayRole.toLowerCase() !== "trace lane" ? displayRole : "Output";
 }
 
-function renderChatTraceSeparator(title: string, filePath?: string): string {
+function renderChatTraceSeparator(title: string, filePath?: string, clickable = true): string {
   const trimmed = title.trim();
   if (!trimmed) {
     return "";
   }
-  const messagePayload = filePath?.trim()
+  const messagePayload = clickable && filePath?.trim()
     ? ` data-message='${escapeHtml(JSON.stringify({ type: "openFile", filePath: filePath.trim() }))}'`
     : "";
+  const titleMarkup = messagePayload
+    ? `<button class="chat-trace-separator-title" type="button"${messagePayload} title="${escapeHtml(filePath?.trim() ? `Open ${trimmed}` : trimmed)}">${escapeHtml(trimmed)}</button>`
+    : `<span class="chat-trace-separator-title chat-trace-separator-title-static" title="${escapeHtml(trimmed)}">${escapeHtml(trimmed)}</span>`;
   return [
     `<div class="chat-trace-separator" role="presentation">`,
     `<span class="chat-trace-separator-title-wrap">`,
-    `<button class="chat-trace-separator-title" type="button"${messagePayload} title="${escapeHtml(filePath?.trim() ? `Open ${trimmed}` : trimmed)}">${escapeHtml(trimmed)}</button>`,
+    titleMarkup,
     `</span>`,
     `</div>`
+  ].join("");
+}
+
+function renderChatLineageBanner(snapshot: TraceableSubagentDetailSnapshot): string {
+  const warning = getBrokenLineageWarning(snapshot);
+  const evidenceFilePath = snapshot.evidenceFile?.filePath?.trim();
+  if (!warning) {
+    return "";
+  }
+  const repairPayload = evidenceFilePath
+    ? ` data-message='${escapeHtml(JSON.stringify({ type: "repairTraceLineage", filePath: evidenceFilePath }))}'`
+    : "";
+  return [
+    `<section class="chat-lineage-banner">`,
+    `<div class="chat-lineage-banner-copy">`,
+    `<div class="chat-lineage-banner-title">Broken Lineage</div>`,
+    `<div class="chat-lineage-banner-note">${escapeHtml(warning.note)}</div>`,
+    warning.detail ? `<div class="chat-lineage-banner-detail">${escapeHtml(warning.detail)}</div>` : "",
+    `</div>`,
+    repairPayload ? `<button class="toolbar-button toolbar-button-warning" type="button"${repairPayload} title="Repair the current trace lineage">Repair</button>` : "",
+    `</section>`
   ].join("");
 }
 
@@ -2999,7 +3081,7 @@ function renderChatProjectionAncestorMessage(entry: NonNullable<TraceableSubagen
   const occurredAt = entry.startedAt ?? entry.occurredAt;
   const updatedAt = entry.updatedAt ?? entry.occurredAt;
   return [
-    renderChatTraceSeparator(entry.title, entry.filePath),
+    renderChatTraceSeparator(entry.title, entry.filePath, true),
     taskInput
       ? renderChatProjectionMessage({
         label: "Task",
@@ -3043,6 +3125,10 @@ function renderChatProjectionAncestorMessage(entry: NonNullable<TraceableSubagen
 
 function renderChatProjection(snapshot: TraceableSubagentDetailSnapshot): string {
   const sections: string[] = [];
+  const lineageBanner = renderChatLineageBanner(snapshot);
+  if (lineageBanner) {
+    sections.push(lineageBanner);
+  }
   for (const lineageEntry of snapshot.lineageEntries ?? []) {
     sections.push(renderChatProjectionAncestorMessage(lineageEntry));
   }
@@ -3051,7 +3137,7 @@ function renderChatProjection(snapshot: TraceableSubagentDetailSnapshot): string
   const outputLabel = formatChatProjectionOutputLabel(snapshot.header);
   const outputText = extractChatProjectionOutputText(snapshot);
   if (snapshot.evidenceFile?.fileName?.trim()) {
-    sections.push(renderChatTraceSeparator(snapshot.evidenceFile.fileName.trim(), snapshot.evidenceFile.filePath));
+    sections.push(renderChatTraceSeparator(snapshot.evidenceFile.fileName.trim(), snapshot.evidenceFile.filePath, false));
   }
   if (taskInput) {
     sections.push(renderChatProjectionMessage({
@@ -3290,6 +3376,11 @@ export function renderTraceableSubagentPanelHtml(
   );
   const loadedToolDetailsByCallId = options.loadedToolDetailsByCallId ?? new Map<string, PanelLoadedToolDetail>();
   const evidenceState = evidenceViewState(snapshot);
+  const brokenLineageWarning = getBrokenLineageWarning(snapshot);
+  const repairableEvidencePath = snapshot.evidenceFile?.filePath?.trim();
+  const repairButtonMarkup = repairableEvidencePath
+    ? `<button class="toolbar-button${brokenLineageWarning ? " toolbar-button-warning" : ""}" data-message='${escapeHtml(JSON.stringify({ type: "repairTraceLineage", filePath: repairableEvidencePath }))}' title="${escapeHtml(brokenLineageWarning ? "Repair broken lineage for this trace" : "Check or repair lineage for this trace")}">Repair</button>`
+    : "";
   const eventRows = hasActivityFeed
     ? renderedEntries.map((event) => event.kind === "tool"
       ? renderToolActivity(event, snapshot.evidenceFile?.filePath, snapshot.environment?.repoRootSnapshotPath, loadedToolDetailsByCallId)
@@ -3613,6 +3704,13 @@ export function renderTraceableSubagentPanelHtml(
     }
     .toolbar-button-export-failed {
       border-color: color-mix(in srgb, var(--vscode-errorForeground) 40%, var(--chip-border));
+    }
+    .toolbar-button-warning {
+      border-color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 72%, var(--chip-border));
+      background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 10%, transparent);
+    }
+    .toolbar-button-warning:hover {
+      background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 16%, var(--chip-bg));
     }
     .toolbar-live-indicator {
       width: 7px;
@@ -4116,10 +4214,47 @@ export function renderTraceableSubagentPanelHtml(
     .chat-trace-separator-title:hover {
       color: color-mix(in srgb, var(--accent) 70%, var(--fg));
     }
+    .chat-trace-separator-title-static {
+      cursor: default;
+    }
+    .chat-trace-separator-title-static:hover {
+      color: color-mix(in srgb, var(--fg) 78%, var(--muted));
+    }
     .chat-trace-separator-title:focus-visible {
       outline: 1px solid color-mix(in srgb, var(--accent) 70%, transparent);
       outline-offset: 2px;
       border-radius: 4px;
+    }
+    .chat-lineage-banner {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: start;
+      padding: 10px 12px;
+      border: 1px solid color-mix(in srgb, var(--vscode-editorWarning-foreground) 56%, var(--chip-border));
+      border-radius: 12px;
+      background: color-mix(in srgb, var(--vscode-editorWarning-foreground) 10%, var(--chip-bg));
+    }
+    .chat-lineage-banner-copy {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+    .chat-lineage-banner-title {
+      color: color-mix(in srgb, var(--vscode-editorWarning-foreground) 86%, var(--fg));
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .chat-lineage-banner-note {
+      color: color-mix(in srgb, var(--fg) 92%, var(--muted));
+      white-space: normal;
+    }
+    .chat-lineage-banner-detail {
+      color: color-mix(in srgb, var(--muted) 90%, transparent);
+      font-size: 11px;
+      word-break: break-all;
     }
     .chat-message-label {
       color: color-mix(in srgb, var(--muted) 90%, transparent);
@@ -5185,6 +5320,7 @@ export function renderTraceableSubagentPanelHtml(
           ${evidenceState.showView && evidenceState.filePath
             ? `<button class="${evidenceState.buttonClass}" data-message='${escapeHtml(JSON.stringify({ type: "openFile", filePath: evidenceState.filePath }))}' title="${escapeHtml(evidenceState.buttonTitle)}">View</button>`
             : ""}
+          ${repairButtonMarkup}
           ${pinnedOpen
             ? `<button class="toolbar-button" data-message='{"type":"closePanel"}' title="Hide the traceable panel until it is reopened from the status bar">Close</button>`
             : `<button class="toolbar-button" data-message='{"type":"stayOpen"}' title="Keep TRACEABLE open and suppress auto-hide until you close it manually">Stay</button>`}`}

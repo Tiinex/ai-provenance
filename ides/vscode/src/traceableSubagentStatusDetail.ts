@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import path from "node:path";
+import type { TraceableDirectParentIntegrityResult } from "./traceableLineageIntegrity";
 import type {
   TraceableCarryForwardState,
   TraceableCarryStateDisposition,
@@ -37,6 +38,7 @@ export interface TraceableSubagentDetailSnapshot {
   environment?: {
     repoRootSnapshotPath?: string;
   };
+  lineageIntegrity?: TraceableDirectParentIntegrityResult;
   evidenceFile?: TraceableSubagentEvidenceFileState;
   lineageEntries?: Array<{
     filePath: string;

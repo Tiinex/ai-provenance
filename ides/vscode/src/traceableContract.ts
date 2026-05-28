@@ -449,6 +449,7 @@ export interface TraceableSubagentRunResult {
   expectedButMissing: TraceableSubagentMissingItem[];
   continuedFromParent?: boolean;
   parentTracePath?: string;
+  parentTraceChecksumSha256?: string;
   lineageDepth?: number;
   lineageLabel?: string;
   senderAdaptationState?: TraceableSenderAdaptationState;
@@ -1031,26 +1032,27 @@ export function normalizeParsedPayload(value: unknown): TraceableSubagentChildPa
   if (!isRecord(value)) {
     return undefined;
   }
-  const normalizedStopReason = normalizeStopReasonValue(value.stopReason);
-  const stopReason = normalizedStopReason ?? (normalizeCompletionClaimValue(value.completionClaim, normalizedStopReason) === "complete"
+  const payload = isRecord(value.result) ? value.result : value;
+  const normalizedStopReason = normalizeStopReasonValue(payload.stopReason);
+  const stopReason = normalizedStopReason ?? (normalizeCompletionClaimValue(payload.completionClaim, normalizedStopReason) === "complete"
     ? "completed"
     : undefined);
-  const steps = normalizeSteps(value.steps);
+  const steps = normalizeSteps(payload.steps);
   const completionClaim = reconcileCompletionClaimWithSteps(
-    normalizeCompletionClaimValue(value.completionClaim, stopReason),
+    normalizeCompletionClaimValue(payload.completionClaim, stopReason),
     steps
   );
-  const finalSummary = normalizeFinalSummaryValue(value.finalSummary);
+  const finalSummary = normalizeFinalSummaryValue(payload.finalSummary);
   if (!stopReason || !completionClaim || !finalSummary) {
     return undefined;
   }
   return {
     steps,
-    expectedButMissing: normalizeMissingItems(value.expectedButMissing),
+    expectedButMissing: normalizeMissingItems(payload.expectedButMissing),
     stopReason,
     completionClaim,
     finalSummary,
-    opaqueDelegations: normalizeOpaqueDelegations(value.opaqueDelegations)
+    opaqueDelegations: normalizeOpaqueDelegations(payload.opaqueDelegations)
   };
 }
 

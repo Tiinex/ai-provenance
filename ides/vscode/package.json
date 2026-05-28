@@ -10,7 +10,7 @@
   },
   "homepage": "https://github.com/Tiinex/ai-provenance",
   "bugs": {
-    "url": "https://github.com/Tiinex/ai-provenance/issues"
+      "url": "https://github.com/Tiinex/ai-provenance/issues"
   },
   "icon": "assets/logo-transparent.png",
   "publisher": "tiinex",
@@ -29,6 +29,7 @@
     "onCommand:tiinex.aiProvenance.rewriteMoveTrace",
     "onCommand:tiinex.aiProvenance.rewriteCopyTrace",
     "onCommand:tiinex.aiProvenance.returnToParentTrace",
+    "onCommand:tiinex.aiProvenance.repairTraceLineage",
     "onCommand:tiinex.aiProvenance.addFileToTraceableChat",
     "onCommand:tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
     "onLanguageModelTool:list_traceable_agents",
@@ -476,6 +477,10 @@
         "title": "Return to Parent Trace..."
       },
       {
+        "command": "tiinex.aiProvenance.repairTraceLineage",
+        "title": "Repair Trace Lineage..."
+      },
+      {
         "command": "tiinex.aiProvenance.addFileToTraceableChat",
         "title": "Add File to Traceable Chat"
       },
@@ -532,6 +537,11 @@
           "command": "tiinex.aiProvenance.returnToParentTrace",
           "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && resourcePath in tiinex.aiProvenance.returnToParentEligibleResources",
           "group": "4_traceable@5"
+        },
+        {
+          "command": "tiinex.aiProvenance.repairTraceLineage",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "4_traceable@5.5"
         },
         {
           "command": "tiinex.aiProvenance.addFileToTraceableChat",
@@ -655,6 +665,12 @@
             "default": false,
             "scope": "resource",
             "description": "Disable TRACEABLE move and copy logic for this resource scope. When enabled, Explorer renames or moves are left to the host and TRACEABLE rewrite, lineage, and related move helpers refuse to run until the override is turned off."
+          },
+          "tiinex.aiProvenance.traceableLineageChecksumEnabled": {
+            "type": "boolean",
+            "default": true,
+            "scope": "resource",
+            "description": "Enable direct-parent TRACEABLE lineage checksum support. When disabled, checksum validation, prompts, and checksum write maintenance stay off so bulk file operations can run without lineage checksum intervention."
           },
           "tiinex.aiProvenance.traceableDefaultMoveAction": {
             "type": "string",

@@ -570,6 +570,7 @@ export interface TraceableSubagentRunResult {
   expectedButMissing: TraceableSubagentMissingItem[];
   continuedFromParent?: boolean;
   parentTracePath?: string;
+  parentTraceChecksumSha256?: string;
   lineageDepth?: number;
   lineageLabel?: string;
   senderAdaptationState?: TraceableSenderAdaptationState;
@@ -3444,26 +3445,27 @@ function buildSalvagedChildPayload(
   expectedButMissing: TraceableSubagentMissingItem[],
   opaqueDelegations: TraceableOpaqueDelegation[]
 ): TraceableSubagentChildPayload | undefined {
+  const payload = isRecord(value.result) ? value.result : value;
   if (steps.length === 0) {
     return undefined;
   }
 
   const missingPayloadFields: TraceableSubagentMissingItem[] = [];
-  if (!normalizeStopReasonValue(value.stopReason)) {
+  if (!normalizeStopReasonValue(payload.stopReason)) {
     missingPayloadFields.push({
       kind: "step",
       label: "stopReason",
       reason: "Child payload omitted the required stopReason field, so TRACEABLE salvaged the grounded observations as insufficient_grounding."
     });
   }
-  if (!normalizeCompletionClaimValue(value.completionClaim, undefined)) {
+  if (!normalizeCompletionClaimValue(payload.completionClaim, undefined)) {
     missingPayloadFields.push({
       kind: "step",
       label: "completionClaim",
       reason: "Child payload omitted the required completionClaim field, so TRACEABLE treated the result as unresolved."
     });
   }
-  if (!normalizeFinalSummaryValue(value.finalSummary)) {
+  if (!normalizeFinalSummaryValue(payload.finalSummary)) {
     missingPayloadFields.push({
       kind: "step",
       label: "finalSummary",
@@ -3476,8 +3478,11 @@ function buildSalvagedChildPayload(
   }
 
   const senderAdaptationObservations = normalizeTraceableSenderAdaptationObservations(value.senderAdaptationObservations);
-  const activeCarryForward = normalizeTraceableCarryForwardState(value.activeCarryForward);
-  const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState);
+  const nestedSenderAdaptationObservations = normalizeTraceableSenderAdaptationObservations(payload.senderAdaptationObservations);
+  const activeCarryForward = normalizeTraceableCarryForwardState(value.activeCarryForward)
+    ?? normalizeTraceableCarryForwardState(payload.activeCarryForward);
+  const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState)
+    ?? normalizeTraceableCarryForwardState(payload.recoverableCarryState);
   const derivedRecoverableCarryState = !activeCarryForward
     && !explicitRecoverableCarryState
     && expectedButMissing.length > 0
@@ -3491,6 +3496,7 @@ function buildSalvagedChildPayload(
     : undefined;
   const recoverableCarryState = explicitRecoverableCarryState ?? derivedRecoverableCarryState;
   const carryStateDisposition = normalizeTraceableCarryStateDisposition(value.carryStateDisposition)
+    ?? normalizeTraceableCarryStateDisposition(payload.carryStateDisposition)
     ?? (activeCarryForward ? "active" : recoverableCarryState ? "recoverable" : undefined);
 
   return {
@@ -3499,7 +3505,7 @@ function buildSalvagedChildPayload(
     stopReason: "insufficient_grounding",
     completionClaim: "unresolved",
     finalSummary: "Child lane returned grounded observations in JSON form but omitted one or more required TRACEABLE top-level fields, so the runtime salvaged the observed evidence as an unresolved result.",
-    senderAdaptationObservations,
+    senderAdaptationObservations: senderAdaptationObservations ?? nestedSenderAdaptationObservations,
     activeCarryForward,
     recoverableCarryState,
     carryStateDisposition,
@@ -3548,30 +3554,31 @@ function normalizeParsedPayload(value: unknown, toolCalls: TraceableSubagentTool
   if (!isRecord(value)) {
     return undefined;
   }
-  const steps = normalizeSteps(value.steps);
+  const payload = isRecord(value.result) ? value.result : value;
+  const steps = normalizeSteps(payload.steps);
   const expectedButMissing = uniqueMissingItems([
-    ...normalizeMissingItems(value.expectedButMissing),
-    ...collectUnsupportedObservedStepClaims(value.steps, toolCalls)
+    ...normalizeMissingItems(payload.expectedButMissing),
+    ...collectUnsupportedObservedStepClaims(payload.steps, toolCalls)
   ]);
-  const opaqueDelegations = normalizeOpaqueDelegations(value.opaqueDelegations);
-  const normalizedStopReason = normalizeStopReasonValue(value.stopReason);
-  const rawCompletionClaim = normalizeCompletionClaimValue(value.completionClaim, normalizedStopReason);
+  const opaqueDelegations = normalizeOpaqueDelegations(payload.opaqueDelegations);
+  const normalizedStopReason = normalizeStopReasonValue(payload.stopReason);
+  const rawCompletionClaim = normalizeCompletionClaimValue(payload.completionClaim, normalizedStopReason);
   const provisionalStopReason = normalizedStopReason ?? (rawCompletionClaim === "complete"
     ? "completed"
     : undefined);
   const completionClaim = reconcileCompletionClaimWithSteps(
-    normalizeCompletionClaimValue(value.completionClaim, provisionalStopReason),
+    normalizeCompletionClaimValue(payload.completionClaim, provisionalStopReason),
     steps
   );
-  const finalSummary = normalizeFinalSummaryValue(value.finalSummary);
+  const finalSummary = normalizeFinalSummaryValue(payload.finalSummary);
   const stopReason = provisionalStopReason ?? inferMissingStopReasonFromPayload({
     completionClaim,
     expectedButMissing,
     finalSummary
   });
-  const senderAdaptationObservations = normalizeTraceableSenderAdaptationObservations(value.senderAdaptationObservations);
-  const activeCarryForward = normalizeTraceableCarryForwardState(value.activeCarryForward);
-  const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(value.recoverableCarryState);
+  const senderAdaptationObservations = normalizeTraceableSenderAdaptationObservations(payload.senderAdaptationObservations);
+  const activeCarryForward = normalizeTraceableCarryForwardState(payload.activeCarryForward);
+  const explicitRecoverableCarryState = normalizeTraceableCarryForwardState(payload.recoverableCarryState);
   const derivedRecoverableCarryState = !activeCarryForward
     && !explicitRecoverableCarryState
     && expectedButMissing.length > 0
@@ -3584,7 +3591,7 @@ function normalizeParsedPayload(value: unknown, toolCalls: TraceableSubagentTool
     })
     : undefined;
   const recoverableCarryState = explicitRecoverableCarryState ?? derivedRecoverableCarryState;
-  const carryStateDisposition = normalizeTraceableCarryStateDisposition(value.carryStateDisposition)
+  const carryStateDisposition = normalizeTraceableCarryStateDisposition(payload.carryStateDisposition)
     ?? (activeCarryForward ? "active" : recoverableCarryState ? "recoverable" : undefined);
   if (!stopReason || !completionClaim || !finalSummary) {
     return buildSalvagedChildPayload(value, steps, expectedButMissing, opaqueDelegations);

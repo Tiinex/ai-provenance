@@ -14,6 +14,7 @@ import {
   parseTraceableEvidenceFileName,
   type TraceableEvidenceFileNameFormatOptions
 } from "./traceableLineage";
+import { computeTraceableParentChecksumSha256ForFileSync, isTraceableLineageChecksumEnabled } from "./traceableLineageIntegrity";
 import { renderEvidenceMarkdown } from "./traceableSubagentEvidence";
 import type { TraceableSubagentEvidenceFileState, TraceableSubagentRequestSummaryItem } from "./traceableSubagent";
 import { planStandaloneMoveRetainedDescendantRewrites } from "./traceableStandaloneMoveRetainedDescendants.js";
@@ -880,8 +881,12 @@ function rewriteParsedTraceableStateForMove(input: {
       ?? (resolvedParentPath
         ? input.pathMapping.get(normalizePathKey(resolvedParentPath)) ?? resolvedParentPath
         : undefined);
+  const checksumEnabled = isTraceableLineageChecksumEnabled(vscode.Uri.file(input.nextPath));
   const nextStoredParentTracePath = remappedParentPath
     ? computeStoredParentTracePath(remappedParentPath, input.nextPath, [...input.workspaceRoots])
+    : undefined;
+  const nextParentTraceChecksumSha256 = remappedParentPath && checksumEnabled
+    ? computeTraceableParentChecksumSha256ForFileSync(remappedParentPath)
     : undefined;
   const priorRequest = typeof parsed.result.request === "object" && parsed.result.request
     ? parsed.result.request as Record<string, unknown>
@@ -902,6 +907,7 @@ function rewriteParsedTraceableStateForMove(input: {
     lineageLabel: input.nextLineageLabel,
     lineageDepth: input.nextLineageLabel.split("-").filter(Boolean).length,
     parentTracePath: nextStoredParentTracePath,
+    parentTraceChecksumSha256: nextParentTraceChecksumSha256,
     continuedFromParent: Boolean(nextStoredParentTracePath),
     request: {
       ...remainingRequest,
@@ -927,6 +933,34 @@ function rewriteParsedTraceableStateForMove(input: {
     includeSupportArtifacts: false
   });
   return renderEvidenceMarkdown(nextSnapshot, { ...nextEvidenceFile, outputMode }, outputMode, finalOutputMarkdown, finalizedResult);
+}
+
+export async function rewriteTraceableEvidenceParentConnection(input: {
+  filePath: string;
+  workspaceRoots: readonly string[];
+  parentPathOverride?: string | null;
+}): Promise<string | undefined> {
+  const markdown = await fs.readFile(input.filePath, "utf8");
+  const parsedState = parseTraceableEvidenceStateMarkdown(markdown);
+  if (!parsedState?.result) {
+    return undefined;
+  }
+  const parsedFileName = parseTraceableEvidenceFileName(path.basename(input.filePath));
+  const nextLineageLabel = typeof parsedState.result.lineageLabel === "string" && parsedState.result.lineageLabel.trim()
+    ? parsedState.result.lineageLabel.trim()
+    : parsedFileName?.lineageLabel;
+  if (!nextLineageLabel) {
+    return undefined;
+  }
+  return rewriteParsedTraceableStateForMove({
+    markdown,
+    currentPath: input.filePath,
+    nextPath: input.filePath,
+    nextLineageLabel,
+    pathMapping: new Map(),
+    workspaceRoots: input.workspaceRoots,
+    parentPathOverride: input.parentPathOverride
+  });
 }
 
 export async function buildTraceableRenameMoveWorkspaceEdit(input: {

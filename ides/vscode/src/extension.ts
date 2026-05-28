@@ -2,6 +2,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import * as vscode from "vscode";
 import {
+  evaluateParsedTraceableEvidenceLineageIntegrity,
   parseTraceableEvidenceStateMarkdown,
   renderViewTraceableSubagentMarkdown,
   renderTraceableEvidenceSurfaceMarkdown,
@@ -56,11 +57,13 @@ import {
   planTraceableRewriteMove,
   planTraceableRewriteRequestedRename,
   planTraceableRenameMoveOperation,
+  rewriteTraceableEvidenceParentConnection,
   type TraceablePreparedRenameMove,
   type TraceablePreparedRewriteFile,
   type TraceableLineageMoveScope,
   type TraceableRenameMoveRewriteBehavior
 } from "./traceableFileOperations";
+import { isTraceableLineageChecksumEnabled } from "./traceableLineageIntegrity";
 import {
   createTraceableCopyMutation,
   createTraceableMoveMutation,
@@ -80,6 +83,7 @@ const REOPEN_TRACEABLE_EVIDENCE_PREVIEW_COMMAND = "tiinex.aiProvenance.reopenTra
 const REWRITE_MOVE_TRACE_COMMAND = "tiinex.aiProvenance.rewriteMoveTrace";
 const REWRITE_COPY_TRACE_COMMAND = "tiinex.aiProvenance.rewriteCopyTrace";
 const RETURN_TO_PARENT_TRACE_COMMAND = "tiinex.aiProvenance.returnToParentTrace";
+const REPAIR_TRACE_LINEAGE_COMMAND = "tiinex.aiProvenance.repairTraceLineage";
 const ADD_FILE_TO_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.addFileToTraceableChat";
 const NEW_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.newTraceableChat";
 const RESUME_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.resumeTraceableChat";
@@ -95,7 +99,7 @@ const TRACEABLE_PANEL_FALLBACK_COMMAND = "workbench.action.terminal.focus";
 const TOGGLE_MAXIMIZED_PANEL_COMMAND = "workbench.action.toggleMaximizedPanel";
 const TRACEABLE_BUSY_MESSAGE = "Another TRACEABLE run is already starting or running. Wait for it to settle before sending another turn.";
 const TRACEABLE_NATIVE_COPY_PASTE_UNSUPPORTED_MESSAGE = "Native Explorer copy/paste for .trace.md is not supported because VS Code does not expose the source trace or replace intent on file-create hooks. TRACEABLE removed the created copy. Use Copy Trace... instead.";
-const TRACEABLE_NATIVE_FOLDER_MOVE_UNSUPPORTED_MESSAGE = "Native Explorer drag/drop or cut/paste moves for .trace.md across folders are not supported on the current VS Code hook surface. Use Move Trace... instead.";
+const TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE = "TRACEABLE move/copy destinations must stay inside the same workspace folder as the source evidence file. Choose a destination inside the same repo root.";
 
 function isTraceableResolvedPathTarget(value: unknown): value is TraceableResolvedPathTarget {
   if (!value || typeof value !== "object") {
@@ -296,6 +300,80 @@ function normalizeTraceableEvidenceTabLabel(label: string | undefined): string |
   }
   const withoutPreviewPrefix = trimmed.replace(/^preview\s+/iu, "").trim();
   return withoutPreviewPrefix.toLowerCase().endsWith(".trace.md") ? withoutPreviewPrefix : undefined;
+}
+
+function hasDirtyOpenTraceableDocument(resolvedUri: vscode.Uri): boolean {
+  if (!isTraceableEvidenceFileUri(resolvedUri)) {
+    return false;
+  }
+  const resolvedKey = getTraceableEvidenceResourceKey(resolvedUri);
+  return vscode.workspace.textDocuments.some((document) => (
+    document.uri.scheme === resolvedUri.scheme
+    && getTraceableEvidenceResourceKey(document.uri) === resolvedKey
+    && document.isDirty
+  ));
+}
+
+function collectOpenTraceableDocuments(resolvedUri: vscode.Uri): vscode.TextDocument[] {
+  if (!isTraceableEvidenceFileUri(resolvedUri)) {
+    return [];
+  }
+  const resolvedKey = getTraceableEvidenceResourceKey(resolvedUri);
+  return vscode.workspace.textDocuments.filter((document) => (
+    document.uri.scheme === resolvedUri.scheme
+    && getTraceableEvidenceResourceKey(document.uri) === resolvedKey
+  ));
+}
+
+function collectRelatedTraceableTabs(resolvedUri: vscode.Uri): vscode.Tab[] {
+  if (!isTraceableEvidenceFileUri(resolvedUri)) {
+    return [];
+  }
+  return (vscode.window.tabGroups.all ?? [])
+    .flatMap((group) => group.tabs)
+    .filter((tab) => isRelatedTraceableEvidenceTab(tab, resolvedUri));
+}
+
+async function closeNonDirtyRelatedTraceableTabs(resources: readonly vscode.Uri[]): Promise<void> {
+  const uniqueResources = [...new Map(
+    resources
+      .filter((resource) => isTraceableEvidenceFileUri(resource))
+      .map((resource) => [getTraceableEvidenceResourceKey(resource), resource])
+  ).values()];
+  const tabsToClose = new Set<vscode.Tab>();
+  for (const resource of uniqueResources) {
+    if (hasDirtyOpenTraceableDocument(resource)) {
+      continue;
+    }
+    for (const tab of collectRelatedTraceableTabs(resource)) {
+      tabsToClose.add(tab);
+    }
+  }
+  for (const tab of tabsToClose) {
+    await closeTabIfStillOpen(tab);
+  }
+}
+
+async function saveAndCloseMatchingGeneratedDirtyTraceableDocuments(contentByResourceKey: ReadonlyMap<string, { resource: vscode.Uri; expectedContent: string }>): Promise<void> {
+  for (const { resource, expectedContent } of contentByResourceKey.values()) {
+    const documents = collectOpenTraceableDocuments(resource);
+    let settled = false;
+    for (const document of documents) {
+      if (!document.isDirty || document.getText() !== expectedContent) {
+        continue;
+      }
+      try {
+        settled = await document.save() || settled;
+      } catch {
+        // Best-effort; leave unmatched or unsaveable documents alone.
+      }
+    }
+    if (settled && !hasDirtyOpenTraceableDocument(resource)) {
+      for (const tab of collectRelatedTraceableTabs(resource)) {
+        await closeTabIfStillOpen(tab);
+      }
+    }
+  }
 }
 
 async function resolveActiveTraceableEvidenceUri(target?: vscode.Uri | string): Promise<vscode.Uri | undefined> {
@@ -1417,10 +1495,6 @@ function areSameTraceableMovePath(leftPath: string, rightPath: string): boolean 
   return normalizeTraceableMovePathKey(leftPath) === normalizeTraceableMovePathKey(rightPath);
 }
 
-function isTraceableFolderChange(oldUri: vscode.Uri, newUri: vscode.Uri): boolean {
-  return path.resolve(path.dirname(oldUri.fsPath)).toLowerCase() !== path.resolve(path.dirname(newUri.fsPath)).toLowerCase();
-}
-
 async function filterMeaningfulTraceableLineageScopes(
   files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[],
   availableScopes: readonly TraceableLineageMoveScope[],
@@ -1656,9 +1730,26 @@ async function ApplyTraceableMutationPlan(plan: TraceableMutationPlan): Promise<
   const moveMutations = plan.mutations.filter((mutation) => mutation.kind === "move-file");
   const copyMutations = plan.mutations.filter((mutation) => mutation.kind === "copy-file");
   const rewriteMutations = plan.mutations.filter((mutation) => mutation.kind === "rewrite-file");
+  const generatedTraceableContentEntries: Array<readonly [string, { resource: vscode.Uri; expectedContent: string }]> = [
+    ...moveMutations.flatMap((mutation) => typeof mutation.rewrittenMarkdown === "string" && isTraceableEvidenceFileUri(mutation.newUri)
+      ? [[getTraceableEvidenceResourceKey(mutation.newUri), { resource: mutation.newUri, expectedContent: mutation.rewrittenMarkdown }] as const]
+      : []),
+    ...copyMutations.flatMap((mutation) => typeof mutation.rewrittenMarkdown === "string" && isTraceableEvidenceFileUri(mutation.newUri)
+      ? [[getTraceableEvidenceResourceKey(mutation.newUri), { resource: mutation.newUri, expectedContent: mutation.rewrittenMarkdown }] as const]
+      : []),
+    ...rewriteMutations.flatMap((mutation) => isTraceableEvidenceFileUri(mutation.fileUri)
+      ? [[getTraceableEvidenceResourceKey(mutation.fileUri), { resource: mutation.fileUri, expectedContent: mutation.nextContent }] as const]
+      : [])
+  ];
+  const generatedTraceableContentByResourceKey = new Map<string, { resource: vscode.Uri; expectedContent: string }>(generatedTraceableContentEntries);
   if (moveMutations.length > 0 && copyMutations.length > 0) {
     throw new Error("TRACEABLE mutation plan cannot mix move-file and copy-file mutations in the current apply surface.");
   }
+  await saveAndCloseMatchingGeneratedDirtyTraceableDocuments(generatedTraceableContentByResourceKey);
+  await closeNonDirtyRelatedTraceableTabs([
+    ...moveMutations.flatMap((mutation) => [mutation.oldUri, mutation.newUri]),
+    ...rewriteMutations.map((mutation) => mutation.fileUri)
+  ]);
   if (moveMutations.length > 0) {
     await performTraceableStagedFileMoveOperation(moveMutations);
   } else if (copyMutations.length > 0) {
@@ -1667,6 +1758,7 @@ async function ApplyTraceableMutationPlan(plan: TraceableMutationPlan): Promise<
   for (const mutation of rewriteMutations) {
     await vscode.workspace.fs.writeFile(mutation.fileUri, Buffer.from(mutation.nextContent, "utf8"));
   }
+  await saveAndCloseMatchingGeneratedDirtyTraceableDocuments(generatedTraceableContentByResourceKey);
 }
 
 function enqueueTraceableOwnedMoveOperation(operation: () => Promise<void>): void {
@@ -1841,6 +1933,27 @@ function getTraceableOpenWorkspaceFolders(): Array<{ name: string; fsPath: strin
     name: folder.name,
     fsPath: folder.uri.fsPath
   }));
+}
+
+function normalizeTraceableWorkspaceFolderKey(folderPath: string): string {
+  return path.resolve(folderPath).replace(/\\+/g, "/").replace(/\/+$/u, "").toLowerCase();
+}
+
+function assertTraceableDestinationWithinSourceWorkspace(sourceUri: vscode.Uri, destinationUri: vscode.Uri): void {
+  const sourceWorkspaceFolder = vscode.workspace.getWorkspaceFolder(sourceUri);
+  if (!sourceWorkspaceFolder) {
+    return;
+  }
+  const destinationWorkspaceFolder = vscode.workspace.getWorkspaceFolder(destinationUri);
+  if (!destinationWorkspaceFolder) {
+    throw new Error(TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE);
+  }
+  if (
+    normalizeTraceableWorkspaceFolderKey(sourceWorkspaceFolder.uri.fsPath)
+    !== normalizeTraceableWorkspaceFolderKey(destinationWorkspaceFolder.uri.fsPath)
+  ) {
+    throw new Error(TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE);
+  }
 }
 
 async function resolveTraceableOpenPath(targetPath: string | TraceableResolvedPathTarget, baseDir?: string): Promise<string> {
@@ -2176,10 +2289,23 @@ function formatNewTraceableChatExportFolderSettingValue(folderPath: string): str
 
 function buildTraceableExplorerResourceContextKeys(resource: vscode.Uri): string[] {
   const keys = new Set<string>();
+  const resolvedFsPath = path.resolve(resource.fsPath);
+  const uriPath = resource.path;
+  const decodedUriPath = decodeURIComponent(uriPath);
+  const normalizedUriPath = uriPath.replace(/\\/g, "/");
+  const normalizedDecodedUriPath = decodedUriPath.replace(/\\/g, "/");
   keys.add(resource.fsPath);
-  keys.add(path.resolve(resource.fsPath));
+  keys.add(resolvedFsPath);
   keys.add(resource.fsPath.toLowerCase());
-  keys.add(path.resolve(resource.fsPath).toLowerCase());
+  keys.add(resolvedFsPath.toLowerCase());
+  keys.add(uriPath);
+  keys.add(decodedUriPath);
+  keys.add(normalizedUriPath);
+  keys.add(normalizedDecodedUriPath);
+  keys.add(uriPath.toLowerCase());
+  keys.add(decodedUriPath.toLowerCase());
+  keys.add(normalizedUriPath.toLowerCase());
+  keys.add(normalizedDecodedUriPath.toLowerCase());
   return [...keys];
 }
 
@@ -2395,6 +2521,10 @@ export function activate(context: vscode.ExtensionContext): void {
       : (await readParsedTraceableEvidenceFromFileWithRetry(resolvedUri.fsPath)).parsed;
     if (parsedState) {
       parsedState.snapshot = await enrichSnapshotWithLineage(parsedState.snapshot, resolvedUri.fsPath);
+      parsedState.snapshot = {
+        ...parsedState.snapshot,
+        lineageIntegrity: evaluateParsedTraceableEvidenceLineageIntegrity(resolvedUri.fsPath, parsedState)
+      };
     }
     return { sourceDocument, parsedState };
   };
@@ -2952,6 +3082,10 @@ export function activate(context: vscode.ExtensionContext): void {
         loadedDetails.set(callId, detail);
         traceableEvidenceLoadedToolDetails.set(panelKey, loadedDetails);
         await renderTraceableEvidencePanel(panel, resolvedUri, initialSnapshot, loadedDetails);
+        return;
+      }
+      if (message.type === "repairTraceLineage") {
+        await repairTraceableLineage(resolvedUri);
       }
     });
     const initialState = await readTraceableEvidenceViewState(resolvedUri);
@@ -3660,20 +3794,191 @@ export function activate(context: vscode.ExtensionContext): void {
       : path.resolve(path.dirname(currentFilePath), trimmed);
   };
 
+  const resolveReturnToParentTraceDestinationFolder = async (candidate: vscode.Uri): Promise<string | undefined> => {
+    const visitedPaths = new Set<string>();
+    let currentFilePath = candidate.fsPath;
+    const startingFolderPath = path.resolve(path.dirname(candidate.fsPath)).toLowerCase();
+    while (currentFilePath && !visitedPaths.has(path.resolve(currentFilePath).toLowerCase())) {
+      visitedPaths.add(path.resolve(currentFilePath).toLowerCase());
+      const markdown = await fs.readFile(currentFilePath, "utf8").catch(() => undefined);
+      const parsed = typeof markdown === "string" ? parseTraceableEvidenceStateMarkdown(markdown) : undefined;
+      const parentReference = typeof parsed?.result?.parentTracePath === "string"
+        ? parsed.result.parentTracePath
+        : undefined;
+      const resolvedParentPath = resolveTraceableReferenceForCommand(currentFilePath, parentReference);
+      if (!resolvedParentPath?.trim()) {
+        return undefined;
+      }
+      const destinationFolderPath = path.resolve(path.dirname(resolvedParentPath));
+      if (destinationFolderPath.toLowerCase() !== startingFolderPath) {
+        return destinationFolderPath;
+      }
+      currentFilePath = resolvedParentPath;
+    }
+    return undefined;
+  };
+
+  const resolveStoredParentTracePathFromParsedState = (filePath: string, parsedState: ParsedTraceableEvidenceState | undefined): string | undefined => {
+    const parentReference = typeof parsedState?.result?.parentTracePath === "string"
+      ? parsedState.result.parentTracePath.trim()
+      : "";
+    if (!parentReference) {
+      return undefined;
+    }
+    return path.isAbsolute(parentReference)
+      ? path.resolve(parentReference)
+      : path.resolve(path.dirname(filePath), parentReference);
+  };
+
+  const collectTraceableAncestorPathKeys = async (startPath: string): Promise<Set<string>> => {
+    const visited = new Set<string>();
+    let currentPath: string | undefined = startPath;
+    while (currentPath) {
+      const normalizedCurrentPath = path.resolve(currentPath).toLowerCase();
+      if (visited.has(normalizedCurrentPath)) {
+        break;
+      }
+      visited.add(normalizedCurrentPath);
+      const parsed = (await readParsedTraceableEvidenceFromFileWithRetry(currentPath)).parsed;
+      currentPath = resolveStoredParentTracePathFromParsedState(currentPath, parsed);
+    }
+    return visited;
+  };
+
+  const repairTraceableParentConnection = async (
+    candidate: vscode.Uri,
+    parentPathOverride: string | null
+  ): Promise<boolean> => {
+    const rewrittenMarkdown = await rewriteTraceableEvidenceParentConnection({
+      filePath: candidate.fsPath,
+      workspaceRoots: getTraceableWorkspaceRoots(),
+      parentPathOverride
+    });
+    if (!rewrittenMarkdown) {
+      void vscode.window.showWarningMessage("TRACEABLE could not rewrite the selected file's parent connection.");
+      return false;
+    }
+    await ApplyTraceableMutationPlan({
+      blocked: false,
+      mutations: [createTraceableRewriteMutation(candidate, rewrittenMarkdown)]
+    });
+    return true;
+  };
+
+  const getBrokenTraceableLineageIntegrity = async (
+    candidate: vscode.Uri
+  ): Promise<ReturnType<typeof evaluateParsedTraceableEvidenceLineageIntegrity> | undefined> => {
+    if (!isTraceableLineageChecksumEnabled(candidate)) {
+      return undefined;
+    }
+    const { parsedState } = await readTraceableEvidenceViewState(candidate);
+    if (!parsedState) {
+      return undefined;
+    }
+    const integrity = evaluateParsedTraceableEvidenceLineageIntegrity(candidate.fsPath, parsedState);
+    if (!integrity || integrity.status === "ok" || integrity.status === "legacy-no-checksum" || integrity.status === "disabled") {
+      return undefined;
+    }
+    return integrity;
+  };
+
+  const describeTraceableLineageRepairDetail = (
+    integrity: NonNullable<Awaited<ReturnType<typeof getBrokenTraceableLineageIntegrity>>>
+  ): string => {
+    return integrity.status === "checksum-mismatch"
+      ? "Stored parent checksum no longer matches the resolved parent artifact."
+      : integrity.status === "missing-parent"
+        ? "Stored parent trace could not be resolved."
+        : integrity.status === "unreadable-parent"
+          ? "Stored parent trace exists but could not be read."
+          : "The stored parent trace edge would create a lineage cycle.";
+  };
+
+  const promptTraceableLineageRepair = async (
+    candidate: vscode.Uri,
+    commandLabel: string,
+    integrity: NonNullable<Awaited<ReturnType<typeof getBrokenTraceableLineageIntegrity>>>
+  ): Promise<boolean> => {
+    const reconnectTarget = integrity.resolvedParentTracePath?.trim();
+    const actions = ["Detach", ...(reconnectTarget && integrity.status !== "missing-parent" && integrity.status !== "unreadable-parent" && integrity.status !== "cycle-detected" ? ["Re-connect"] : []), "Manually connect"] as const;
+    const selection = await vscode.window.showWarningMessage(
+      `${commandLabel} found broken lineage for ${path.basename(candidate.fsPath)}. Repair the parent edge before continuing.`,
+      { modal: true, detail: describeTraceableLineageRepairDetail(integrity) },
+      ...actions
+    );
+    if (selection === "Detach") {
+      return repairTraceableParentConnection(candidate, null);
+    }
+    if (selection === "Re-connect" && reconnectTarget) {
+      return repairTraceableParentConnection(candidate, reconnectTarget);
+    }
+    if (selection === "Manually connect") {
+      const pickedFiles = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        defaultUri: vscode.Uri.file(path.dirname(candidate.fsPath)),
+        openLabel: "Connect Parent Trace",
+        filters: { "Traceable Evidence": ["trace.md"] },
+        title: "Choose a parent .trace.md artifact"
+      });
+      const selectedParent = pickedFiles?.[0];
+      if (!selectedParent || selectedParent.scheme !== "file") {
+        return false;
+      }
+      if (!selectedParent.fsPath.toLowerCase().endsWith(".trace.md")) {
+        void vscode.window.showWarningMessage("Manual connect requires a .trace.md parent artifact.");
+        return false;
+      }
+      if (path.resolve(selectedParent.fsPath).toLowerCase() === path.resolve(candidate.fsPath).toLowerCase()) {
+        void vscode.window.showWarningMessage("Manual connect cannot use the selected trace as its own parent.");
+        return false;
+      }
+      const selectedParentParsed = (await readParsedTraceableEvidenceFromFileWithRetry(selectedParent.fsPath)).parsed;
+      if (!selectedParentParsed?.result) {
+        void vscode.window.showWarningMessage("Manual connect requires a readable .trace.md artifact with a supported Traceable State block.");
+        return false;
+      }
+      const ancestorPathKeys = await collectTraceableAncestorPathKeys(selectedParent.fsPath);
+      if (ancestorPathKeys.has(path.resolve(candidate.fsPath).toLowerCase())) {
+        void vscode.window.showWarningMessage("Manual connect was rejected because it would create a lineage cycle.");
+        return false;
+      }
+      return repairTraceableParentConnection(candidate, selectedParent.fsPath);
+    }
+    return false;
+  };
+
+  const repairTraceableLineage = async (target?: vscode.Uri): Promise<void> => {
+    const candidate = resolveTraceableEvidenceUri(target);
+    if (!candidate) {
+      void vscode.window.showWarningMessage("Choose a .trace.md file first to repair TRACEABLE lineage.");
+      return;
+    }
+    const integrity = await getBrokenTraceableLineageIntegrity(candidate);
+    if (!integrity) {
+      void vscode.window.showInformationMessage(`TRACEABLE did not find broken lineage for ${path.basename(candidate.fsPath)}.`);
+      return;
+    }
+    await promptTraceableLineageRepair(candidate, "Repair Trace Lineage", integrity);
+  };
+
+  const ensureTraceableLineageReadyForCommand = async (
+    candidate: vscode.Uri,
+    commandLabel: string
+  ): Promise<boolean> => {
+    const integrity = await getBrokenTraceableLineageIntegrity(candidate);
+    if (!integrity) {
+      return true;
+    }
+    return promptTraceableLineageRepair(candidate, commandLabel, integrity);
+  };
+
   const isReturnToParentTraceEligible = async (candidate: vscode.Uri): Promise<boolean> => {
     if (candidate.scheme !== "file" || !candidate.fsPath.toLowerCase().endsWith(".trace.md")) {
       return false;
     }
-    const markdown = await fs.readFile(candidate.fsPath, "utf8").catch(() => undefined);
-    const parsed = typeof markdown === "string" ? parseTraceableEvidenceStateMarkdown(markdown) : undefined;
-    const parentReference = typeof parsed?.result?.parentTracePath === "string"
-      ? parsed.result.parentTracePath
-      : undefined;
-    const resolvedParentPath = resolveTraceableReferenceForCommand(candidate.fsPath, parentReference);
-    if (!resolvedParentPath?.trim()) {
-      return false;
-    }
-    return path.resolve(path.dirname(candidate.fsPath)).toLowerCase() !== path.resolve(path.dirname(resolvedParentPath)).toLowerCase();
+    return Boolean(await resolveReturnToParentTraceDestinationFolder(candidate));
   };
 
   const refreshReturnToParentTraceEligibleContext = async (): Promise<void> => {
@@ -3915,6 +4220,7 @@ export function activate(context: vscode.ExtensionContext): void {
     destinationFolder: vscode.Uri,
     selection: TraceableTransferSelection
   ): Promise<string[]> => {
+    assertTraceableDestinationWithinSourceWorkspace(candidate, destinationFolder);
     if (selection.action === "alone") {
       return selection.operation === "move"
         ? performTraceableRewriteMoveToFolder(candidate, destinationFolder)
@@ -3963,6 +4269,9 @@ export function activate(context: vscode.ExtensionContext): void {
     const destinationFolderUri = await resolveTraceableTransferDestinationFolderUri(input.destinationFolderPath);
     if (sourceUris.some((sourceUri) => getConfiguredTraceableDisableMoveCopyLogic(sourceUri))) {
       throw new Error("TRACEABLE move/copy logic is disabled for this resource. Re-enable `tiinex.aiProvenance.traceableDisableMoveCopyLogic` to use transferTrace.");
+    }
+    for (const sourceUri of sourceUris) {
+      assertTraceableDestinationWithinSourceWorkspace(sourceUri, destinationFolderUri);
     }
     const workspaceRoots = getTraceableWorkspaceRoots();
     const requestedFiles = sourceUris.map((sourceUri) => ({
@@ -4037,6 +4346,9 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage("TRACEABLE move/copy logic is disabled for this resource. Re-enable `tiinex.aiProvenance.traceableDisableMoveCopyLogic` to use rewrite or lineage move flows again.");
       return;
     }
+    if (!(await ensureTraceableLineageReadyForCommand(candidate, "Move Trace"))) {
+      return;
+    }
     const pickedFolders = await vscode.window.showOpenDialog({
       canSelectFiles: false,
       canSelectFolders: true,
@@ -4078,6 +4390,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     if (getConfiguredTraceableDisableMoveCopyLogic(candidate)) {
       void vscode.window.showInformationMessage("TRACEABLE move/copy logic is disabled for this resource. Re-enable `tiinex.aiProvenance.traceableDisableMoveCopyLogic` to use rewrite or lineage copy flows again.");
+      return;
+    }
+    if (!(await ensureTraceableLineageReadyForCommand(candidate, "Copy Trace"))) {
       return;
     }
     const pickedFolders = await vscode.window.showOpenDialog({
@@ -4123,21 +4438,15 @@ export function activate(context: vscode.ExtensionContext): void {
       void vscode.window.showInformationMessage("TRACEABLE move/copy logic is disabled for this resource. Re-enable `tiinex.aiProvenance.traceableDisableMoveCopyLogic` to use rewrite or lineage move flows again.");
       return;
     }
-    const markdown = await fs.readFile(candidate.fsPath, "utf8").catch(() => undefined);
-    const parsed = typeof markdown === "string" ? parseTraceableEvidenceStateMarkdown(markdown) : undefined;
-    const parentReference = typeof parsed?.result?.parentTracePath === "string"
-      ? parsed.result.parentTracePath
-      : undefined;
-    const resolvedParentPath = resolveTraceableReferenceForCommand(candidate.fsPath, parentReference);
-    if (!resolvedParentPath?.trim()) {
-      void vscode.window.showErrorMessage("Return to Parent Trace requires a readable parentTracePath in the selected Traceable State block.");
+    if (!(await ensureTraceableLineageReadyForCommand(candidate, "Return to Parent Trace"))) {
       return;
     }
-    const destinationFolder = vscode.Uri.file(path.dirname(resolvedParentPath));
-    if (path.resolve(path.dirname(candidate.fsPath)).toLowerCase() === path.resolve(destinationFolder.fsPath).toLowerCase()) {
-      void vscode.window.showInformationMessage("Return to Parent Trace skipped because the file is already in the parent trace folder.");
+    const destinationFolderPath = await resolveReturnToParentTraceDestinationFolder(candidate);
+    if (!destinationFolderPath?.trim()) {
+      void vscode.window.showInformationMessage("Return to Parent Trace skipped because no ancestor parent trace leaves the current folder.");
       return;
     }
+    const destinationFolder = vscode.Uri.file(destinationFolderPath);
     const requestedFiles = [{ oldUri: candidate, newUri: vscode.Uri.file(path.join(destinationFolder.fsPath, path.basename(candidate.fsPath))) }];
     const workspaceRoots = getTraceableWorkspaceRoots();
     const promptOutcome = await resolveTraceableTransferPromptOutcome({
@@ -4242,9 +4551,16 @@ export function activate(context: vscode.ExtensionContext): void {
       if (relevantFiles.some((file) => getConfiguredTraceableDisableMoveCopyLogic(file.newUri) || getConfiguredTraceableDisableMoveCopyLogic(file.oldUri))) {
         return;
       }
-      if (relevantFiles.some((file) => isTraceableFolderChange(file.oldUri, file.newUri))) {
-        void vscode.window.showErrorMessage(TRACEABLE_NATIVE_FOLDER_MOVE_UNSUPPORTED_MESSAGE);
-        event.waitUntil(Promise.reject(new Error(TRACEABLE_NATIVE_FOLDER_MOVE_UNSUPPORTED_MESSAGE)));
+      if (relevantFiles.some((file) => {
+        try {
+          assertTraceableDestinationWithinSourceWorkspace(file.oldUri, file.newUri);
+          return false;
+        } catch {
+          return true;
+        }
+      })) {
+        void vscode.window.showErrorMessage(TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE);
+        event.waitUntil(Promise.reject(new Error(TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE)));
         return;
       }
       event.waitUntil((async () => {
@@ -4396,6 +4712,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand(RETURN_TO_PARENT_TRACE_COMMAND, async (target?: vscode.Uri) => {
       await returnToParentTrace(target);
+    }),
+    vscode.commands.registerCommand(REPAIR_TRACE_LINEAGE_COMMAND, async (target?: vscode.Uri) => {
+      await repairTraceableLineage(target);
     }),
     vscode.commands.registerCommand(ADD_FILE_TO_TRACEABLE_CHAT_COMMAND, async (target?: vscode.Uri) => {
       await addFileToTraceableChat(target);
