@@ -4,7 +4,7 @@
 - Parent
   - Parent Schema: [tiinex.schema.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.schema.v1.md)
   - Created At: 2026-05-28 18:11:47
-  - Trace: [tiinex.schema.v1.md](../../../docs/.topics/.schemas/tiinex.schema.v1.md)
+  - Trace: [tiinex.schema.v1.md](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.schema.v1.md)
 - Current
   - Current Schema: [tiinex.runtime.trace.v1](tiinex.runtime.trace.v1.md)
   - Created At: 2026-05-28 19:01:45
@@ -13,7 +13,6 @@
 ---
 
 # tiinex.runtime.trace.v1
-
 - Status: provisional runtime schema note
 - Schema Definition: [tiinex.schema.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.schema.v1.md)
 - Origin:
@@ -152,4 +151,6 @@ It is not primarily for:
 
 # Continuity Integrity
 
-- Parent-Integrity: vF9zj0ShDAmh2mFYW3aMFwywQI4EYimCeMnI-O_MdC0
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.schema.v1.md](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.schema.v1.md)
+  - Value: PFqnBlsXp5OwzKFfUPVbSoCsDPPIlzqL7qCrtXMzBNA
