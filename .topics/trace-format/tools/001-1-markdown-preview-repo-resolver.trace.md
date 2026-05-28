@@ -1,35 +1,40 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/d26b73c3f83a618cc04338c49ca10b62bc91e876/.topics/.schemas/tiinex.continuation.v1.md)
+- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.continuation.v1.md)
 - Parent
-  - Parent Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/d26b73c3f83a618cc04338c49ca10b62bc91e876/.topics/.schemas/tiinex.topic.v1.md)
+  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.task.v1.md)
   - Created At: 2026-05-28 21:23:20
   - Trace: [001.trace.md](001.trace.md)
   - Origin:
     - [relative](001.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/tools/001.trace.md)
 - Current
-  - Current Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/d26b73c3f83a618cc04338c49ca10b62bc91e876/.topics/.schemas/tiinex.topic.v1.md)
+  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.task.v1.md)
   - Created At: 2026-05-28 21:31:52
-  - Why: Captures the initial plan for a tooling slice that rewrites GitHub repo links toward already-open workspace repos during markdown preview, so the idea can be refined as part of the tools lineage instead of floating in chat.
-  - Summary: Plan for resolving commit-pinned GitHub links to local workspace targets in VS Code markdown preview when the same repo is already open.
+  - Why: Carries the bounded task of resolving commit-pinned GitHub blob links to local workspace files in markdown preview when the same repo is already open.
+  - Summary: Task for a markdown preview resolver that maps matching GitHub blob links to local workspace targets.
 
 ---
 
-# Markdown Preview Repo Resolver Plan
+# Markdown Preview Repo Resolver
 
-This note captures the first grounded plan for the markdown-preview link
-resolution idea.
+This artifact now acts as a concrete task rather than only a planning note.
 
-The aim is not to teach the markdown preview every possible remote driver at
-once. The aim is to make commit-pinned GitHub links less disruptive when the
-same repo is already open in the current multi-root workspace.
+The aim is still narrow: make commit-pinned GitHub links less disruptive when
+the same repo is already open in the current multi-root workspace.
 
-## Current Read
+## Objective
 
-The useful intervention point appears to be just before markdown preview
-render, where GitHub links can be rewritten rather than always opened in an
-external browser.
+Provide one bounded resolver task for rewriting matching GitHub blob links to
+local workspace targets during markdown preview.
+
+## Done Criteria
+
+- the resolver task has a stable repo-identity matching contract
+- the task keeps preview rewrite behavior narrow to matching GitHub blob links
+- the same matching core can later be inspected outside the preview hook
+
+## Requested Behavior
 
 The intended behavior is narrow:
 
@@ -41,9 +46,9 @@ This is primarily a continuity convenience and operator-focus improvement. It
 reduces context switches without pretending that every GitHub URL should become
 local.
 
-## Working Plan
+## Scope And Constraints
 
-The current plan is to separate the problem into one shared core and two
+The current task should separate the problem into one shared core and two
 possible operator surfaces.
 
 Shared core responsibilities:
@@ -103,7 +108,7 @@ What V1 does not guarantee:
 - preview rewrite logic could become hard to trust if there is no matching
   audit surface for the same decisions
 
-## Next Steps
+## Subtasks
 
 - decide the smallest structured repo-identity shape the shared core should use
 - confirm whether V1 should only rewrite `github.com/.../blob/...` URLs or also
@@ -117,4 +122,4 @@ What V1 does not guarantee:
 
 - sha256-base64url-c14n-v1
   - Towards: [001.trace.md](001.trace.md)
-  - Value: KctA6GImmmSoOsQRsXBhkWHFwN2EVIKYHgdeWKhiY8w
+  - Value: dpqhgSJQ6t8os3BZFzJ-VS7_MIGaGJsB5Tn2tEFaYSw
