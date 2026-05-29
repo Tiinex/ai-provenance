@@ -2,17 +2,17 @@
 
 - Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/d26b73c3f83a618cc04338c49ca10b62bc91e876/.topics/.schemas/tiinex.continuation.v1.md)
 - Parent
-  - Parent Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/d26b73c3f83a618cc04338c49ca10b62bc91e876/.topics/.schemas/tiinex.topic.v1.md)
-  - Created At: 2026-05-28 16:54:32
-  - Trace: [001.trace.md](../trace-format/001.trace.md)
+  - Parent Schema: [tiinex.ai.runtime.v1](https://github.com/Tiinex/docs/blob/c147ecd83fb1ae21fff1a68fc4c5a434fe730a38/.topics/.schemas/tiinex.ai.runtime.v1.md)
+  - Created At: 2026-05-29 23:21:06
+  - Trace: [tiinex.ai.runtime.v1.md](https://github.com/Tiinex/docs/blob/c147ecd83fb1ae21fff1a68fc4c5a434fe730a38/.topics/.schemas/tiinex.ai.runtime.v1.md)
   - Origin:
-    - [relative](../trace-format/001.trace.md)
-    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/001.trace.md)
-    - [browse + git](https://github.com/Tiinex/ai-provenance/blob/cc5f281e287a999a2beff4a3a6f01e93fb54a2f3/.topics/trace-format/001.trace.md)
+    - [relative](../../../docs/.topics/.schemas/tiinex.ai.runtime.v1.md)
+    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.ai.runtime.v1.md)
+    - [browse + git](https://github.com/Tiinex/docs/blob/c147ecd83fb1ae21fff1a68fc4c5a434fe730a38/.topics/.schemas/tiinex.ai.runtime.v1.md)
 - Current
   - Current Schema: [tiinex.runtime.trace.v1](tiinex.runtime.trace.v1.md)
   - Created At: 2026-05-28 19:01:45
-  - Summary: Shared schema for Tiinex runtime-generated trace and evidence exports, with primary home in ai-provenance.
+  - Summary: Shared schema for current Tiinex runtime-generated AI trace and evidence exports, layered on top of the broader AI runtime contract.
 
 ---
 
@@ -29,9 +29,9 @@
 This schema id names runtime-generated trace or evidence artifacts produced by
 the current Tiinex runtime surfaces.
 
-It is intended for artifacts whose main body is a bounded runtime export,
-observed execution result, or evidence package rather than a hand-written topic
-document.
+It is intended for artifacts whose main body is a bounded Tiinex-specific AI
+runtime export, observed execution result, or evidence package rather than a
+hand-written topic document.
 
 ## Required Body Expectations
 
@@ -42,6 +42,8 @@ The body should include, at minimum:
 
 - a leading title identifying the export or evidence artifact
 - runtime-grounded metadata for the run or export being shown
+- some Tiinex-runtime-specific signal such as lane, role, carry state, or tool
+  ledger when that signal exists
 - at least one outcome surface that tells the reader what happened
 
 ## Recommended Body Sections
@@ -53,6 +55,7 @@ provide some combination of:
 - request contract summary
 - final output or outcome
 - recent steps
+- tool ledger or carry state
 - technical details
 
 ## Envelope Expectations
@@ -68,6 +71,13 @@ Recommended envelope-side companions are:
 
 - `Current -> Summary`
 - parent signal when the runtime export continues another trace
+
+## Schema Layer
+
+This schema is a narrower child of [tiinex.ai.runtime.v1](https://github.com/Tiinex/docs/blob/c147ecd83fb1ae21fff1a68fc4c5a434fe730a38/.topics/.schemas/tiinex.ai.runtime.v1.md).
+
+It should only add current Tiinex-runtime-specific semantics above the broader
+AI runtime layer rather than re-owning the whole generic runtime export space.
 
 ## File Naming Conventions
 
@@ -101,6 +111,8 @@ Use `tiinex.runtime.trace.v1` when the artifact is primarily trying to:
 
 - preserve runtime-observed evidence
 - capture an agent-lane export or execution result
+- capture current Tiinex-runtime-specific AI surfaces such as TRACEABLE child
+  lanes, carry packages, or detailed tool ledgers
 - carry machine-shaped output in a human-readable markdown container
 - keep technical runtime details attached to a specific trace artifact
 
@@ -116,14 +128,18 @@ It is not primarily for:
 - shared schema notes
 - polished RFC or narrative topic documents
 
+It also should not be treated as the generic runtime base when the broader
+`tiinex.runtime.v1`, `tiinex.machine.runtime.v1`, or
+`tiinex.ai.runtime.v1` contracts are the truer fit.
+
 ## Interpretation Notes
 
 - runtime trace bodies may be long and semi-structured
 - code fences, JSON blocks, and detailed runtime ledgers are acceptable here
 - the body should preserve observed runtime signal rather than being rewritten
   into polished topic prose
-- this schema describes the exported artifact shape, not the entire abstract
-  agent runtime architecture
+- this schema describes the current Tiinex runtime export shape, not the entire
+  abstract agent runtime architecture
 
 ## Minimal Example
 
@@ -156,5 +172,5 @@ It is not primarily for:
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [001.trace.md](../trace-format/001.trace.md)
-  - Value: wlND8W915E4wwB7ZN1TW7JRphR-6YU1wVHtVnqUDzFM
+  - Towards: [tiinex.ai.runtime.v1.md](https://github.com/Tiinex/docs/blob/c147ecd83fb1ae21fff1a68fc4c5a434fe730a38/.topics/.schemas/tiinex.ai.runtime.v1.md)
+  - Value: ZL9hRmchUPHttqkVNUpB1Iyv3wxQNk4GE_8LqZtW2pc
