@@ -34,6 +34,9 @@ real broken edge.
 - the repair task distinguishes audit from mutation clearly
 - the task defines a narrow staged rewrite contract
 - the task states what kinds of repair remain out of scope for now
+- the task names a small failure taxonomy instead of treating every broken edge
+  as one generic repair case
+- the task makes explicit which findings must stop rather than auto-repair
 
 ## Scope And Constraints
 
@@ -52,6 +55,27 @@ What this track should avoid for now:
 - silent mutation without a visible proposed before/after plan
 - pretending a weak guessed match is the same as a grounded repair
 
+## Failure Taxonomy
+
+The first repair surface should classify findings before it proposes mutation.
+
+Current minimum vocabulary:
+
+- `stale-target`: the carried target exists, but it is no longer the preferred
+  published target for the intended relation
+- `missing-origin-backed-target`: a stronger committed or browseable target is
+  expected, but no valid published target has been established yet
+- `wrong-published-parent`: the artifact points at the wrong already-published
+  parent target
+- `digest-stale`: the continuity footer no longer matches the artifact text
+  after a known rewrite
+- `ambiguous-candidate`: more than one plausible replacement target exists or
+  the available evidence is too weak to choose one safely
+
+This vocabulary should stay small enough that operators can reason about it
+quickly, but explicit enough that the tool does not flatten high-confidence and
+low-confidence repairs into one bucket.
+
 ## Repair Contract
 
 The likely repair shape should stay narrow and staged:
@@ -65,6 +89,33 @@ The likely repair shape should stay narrow and staged:
 
 This keeps repair as a bounded rewrite tool rather than as a freeform content
 editor.
+
+Digest refresh should only happen after the replacement target is already
+grounded well enough to survive inspection.
+
+The repair surface should also separate three output modes clearly:
+
+- `audit finding`: names the classification and the evidence behind it without
+  proposing mutation yet
+- `repair proposal`: names one concrete rewrite candidate and shows the exact
+  before/after fields
+- `applied repair`: records that the rewrite was actually carried out and that
+  any dependent digest values were refreshed afterward
+
+## Stop Conditions
+
+The repair surface should stop rather than auto-repair when:
+
+- the finding is `ambiguous-candidate`
+- the finding is `missing-origin-backed-target`
+- the replacement parent cannot be tied to a clearly published target
+- the proposed rewrite would cross too many files or repo boundaries for the
+  current bounded pass
+
+The first useful automation target is not “fix everything automatically.”
+
+It is “make safe cases obvious and make unsafe cases stop early with a clear
+reason.”
 
 ## Risks
 
