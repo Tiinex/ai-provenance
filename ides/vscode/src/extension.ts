@@ -1,5 +1,5 @@
 import path from "node:path";
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import * as vscode from "vscode";
 import {
   evaluateParsedTraceableEvidenceLineageIntegrity,
@@ -45,6 +45,10 @@ import {
   resolveDriveLessAbsolutePathOnWindows,
   resolveRelativeOpenPathInWorkspace
 } from "./traceableOpenPath.js";
+import {
+  renderTraceableContinuityValidationMarkdown,
+  validateTraceableContinuityArtifactChainSync
+} from "./traceableContinuityValidation.js";
 import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import {
   buildTraceableRenameMoveWorkspaceEdit,
@@ -84,6 +88,7 @@ const REWRITE_MOVE_TRACE_COMMAND = "tiinex.aiProvenance.rewriteMoveTrace";
 const REWRITE_COPY_TRACE_COMMAND = "tiinex.aiProvenance.rewriteCopyTrace";
 const RETURN_TO_PARENT_TRACE_COMMAND = "tiinex.aiProvenance.returnToParentTrace";
 const REPAIR_TRACE_LINEAGE_COMMAND = "tiinex.aiProvenance.repairTraceLineage";
+const VALIDATE_TRACEABLE_CONTINUITY_COMMAND = "tiinex.aiProvenance.validateTraceableContinuity";
 const ADD_FILE_TO_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.addFileToTraceableChat";
 const NEW_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.newTraceableChat";
 const RESUME_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.resumeTraceableChat";
@@ -91,6 +96,7 @@ const SET_DEFAULT_NEW_TRACEABLE_CHAT_EXPORT_FOLDER_COMMAND = "tiinex.aiProvenanc
 const RUN_TRACEABLE_SUBAGENT_TOOL = "run_traceable_subagent";
 const VIEW_TRACEABLE_SUBAGENT_TOOL = "view_traceable_subagent";
 const TRANSFER_TRACE_TOOL = "transfer_trace";
+const VALIDATE_TRACEABLE_CONTINUITY_TOOL = "validate_traceable_continuity";
 const TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE = "tiinexTraceableEvidenceEditor";
 const TRACEABLE_EVIDENCE_REFRESH_DEBOUNCE_MS = 250;
 const TRACEABLE_PANEL_VISIBLE_CONTEXT = "tiinex.aiProvenance.traceablePanelVisible";
@@ -149,6 +155,11 @@ interface TransferTraceInput {
   reveal?: boolean;
 }
 
+interface ValidateTraceableContinuityInput {
+  filePath: string;
+  maxDepth?: number;
+}
+
 type TraceableTransferSelection =
   | { action: "alone"; operation: TransferTraceOperation }
   | { action: "lineage"; operation: TransferTraceOperation; scope: TraceableLineageMoveScope };
@@ -192,6 +203,17 @@ function resolveTraceableEvidenceUri(target?: vscode.Uri): vscode.Uri | undefine
   }
   const active = vscode.window.activeTextEditor?.document.uri;
   if (active && active.scheme === "file" && /\.trace\.md$/iu.test(active.fsPath)) {
+    return active;
+  }
+  return undefined;
+}
+
+function resolveMarkdownArtifactUri(target?: vscode.Uri): vscode.Uri | undefined {
+  if (target && target.scheme === "file" && /\.md$/iu.test(target.fsPath)) {
+    return target;
+  }
+  const active = vscode.window.activeTextEditor?.document.uri;
+  if (active && active.scheme === "file" && /\.md$/iu.test(active.fsPath)) {
     return active;
   }
   return undefined;
@@ -1928,6 +1950,31 @@ async function resolveTraceableEvidenceFilePath(evidenceFilePath: string): Promi
   throw new Error(`Could not resolve evidenceFilePath ${JSON.stringify(normalized)} under any open workspace folder. Provide an absolute path instead.`);
 }
 
+async function resolveMarkdownArtifactFilePath(filePath: string): Promise<string> {
+  const normalized = filePath.trim();
+  if (!normalized) {
+    throw new Error("validateTrace requires a non-empty filePath.");
+  }
+  if (path.isAbsolute(normalized)) {
+    return path.resolve(normalized);
+  }
+  const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+  const candidates: string[] = [];
+  for (const folder of workspaceFolders) {
+    const candidate = path.resolve(folder.uri.fsPath, normalized);
+    if (await pathExists(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+  if (candidates.length > 1) {
+    throw new Error(`Relative filePath ${JSON.stringify(normalized)} matched multiple workspace files. Provide an absolute path instead.`);
+  }
+  throw new Error(`Could not resolve filePath ${JSON.stringify(normalized)} under any open workspace folder. Provide an absolute path instead.`);
+}
+
 function getTraceableOpenWorkspaceFolders(): Array<{ name: string; fsPath: string }> {
   return (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
     name: folder.name,
@@ -2369,6 +2416,60 @@ async function renderTraceableEvidenceSurfaceFromFile(input: {
     offset: input.offset,
     includeSupportArtifacts: input.includeSupportArtifacts
   });
+}
+
+function isTraceableContinuityEligibleFsPath(fsPath: string): boolean {
+  const normalized = path.resolve(fsPath);
+  return normalized.toLowerCase().endsWith(".trace.md")
+    || /(?:^|[\\/])\.topics[\\/]\.schemas[\\/].+\.md$/iu.test(normalized);
+}
+
+function isTraceableContinuityEligibleDocument(document: vscode.TextDocument): boolean {
+  return document.uri.scheme === "file"
+    && document.languageId === "markdown"
+    && isTraceableContinuityEligibleFsPath(document.uri.fsPath);
+}
+
+function createTopOfDocumentRange(document: vscode.TextDocument): vscode.Range {
+  if (document.lineCount < 1) {
+    return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0));
+  }
+  return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, Math.max(document.lineAt(0).text.length, 1)));
+}
+
+function buildTraceableContinuityDiagnostics(
+  document: vscode.TextDocument,
+  result: ReturnType<typeof validateTraceableContinuityArtifactChainSync>
+): vscode.Diagnostic[] {
+  const diagnostics: vscode.Diagnostic[] = [];
+  const topRange = createTopOfDocumentRange(document);
+  const currentFilePath = document.uri.fsPath;
+  const addDiagnostic = (message: string, severity: vscode.DiagnosticSeverity): void => {
+    diagnostics.push(new vscode.Diagnostic(topRange, message, severity));
+  };
+
+  if (!result.nodes[0]) {
+    addDiagnostic("Continuity validation did not produce a readable root node for this artifact.", vscode.DiagnosticSeverity.Error);
+    return diagnostics;
+  }
+
+  for (const finding of result.findings) {
+    if (!finding.surfaces.includes("problems")) {
+      continue;
+    }
+    if (finding.filePath && path.normalize(finding.filePath) !== path.normalize(currentFilePath)) {
+      continue;
+    }
+
+    const severity = finding.severity === "error"
+      ? vscode.DiagnosticSeverity.Error
+      : finding.severity === "warning"
+        ? vscode.DiagnosticSeverity.Warning
+        : vscode.DiagnosticSeverity.Information;
+    addDiagnostic(finding.message, severity);
+  }
+
+  return diagnostics;
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -4025,6 +4126,71 @@ export function activate(context: vscode.ExtensionContext): void {
   };
   void flushReturnToParentTraceContextRefresh();
 
+  const traceableContinuityDiagnostics = vscode.languages.createDiagnosticCollection("tiinexTraceableContinuity");
+  const traceableContinuityValidationTimers = new Map<string, NodeJS.Timeout>();
+  const clearTraceableContinuityValidationTimer = (filePath: string): void => {
+    const key = path.resolve(filePath).toLowerCase();
+    const timer = traceableContinuityValidationTimers.get(key);
+    if (!timer) {
+      return;
+    }
+    clearTimeout(timer);
+    traceableContinuityValidationTimers.delete(key);
+  };
+  const refreshTraceableContinuityDiagnosticsForDocument = async (document: vscode.TextDocument): Promise<void> => {
+    clearTraceableContinuityValidationTimer(document.uri.fsPath);
+    if (!isTraceableContinuityEligibleDocument(document)) {
+      traceableContinuityDiagnostics.delete(document.uri);
+      return;
+    }
+    try {
+      const normalizedDocumentPath = path.resolve(document.uri.fsPath).toLowerCase();
+      const result = validateTraceableContinuityArtifactChainSync({
+        filePath: document.uri.fsPath,
+        readTextFileSync: (filePath) => path.resolve(filePath).toLowerCase() === normalizedDocumentPath
+          ? document.getText()
+          : readFileSync(filePath, "utf8")
+      });
+      traceableContinuityDiagnostics.set(document.uri, buildTraceableContinuityDiagnostics(document, result));
+    } catch (error) {
+      traceableContinuityDiagnostics.set(document.uri, [new vscode.Diagnostic(
+        createTopOfDocumentRange(document),
+        `Continuity validation failed: ${error instanceof Error ? error.message : String(error)}`,
+        vscode.DiagnosticSeverity.Error
+      )]);
+    }
+  };
+  const scheduleTraceableContinuityDiagnosticsRefresh = (document: vscode.TextDocument | undefined, delayMs = 180): void => {
+    if (!document || document.uri.scheme !== "file") {
+      return;
+    }
+    clearTraceableContinuityValidationTimer(document.uri.fsPath);
+    if (!isTraceableContinuityEligibleDocument(document)) {
+      traceableContinuityDiagnostics.delete(document.uri);
+      return;
+    }
+    const key = path.resolve(document.uri.fsPath).toLowerCase();
+    traceableContinuityValidationTimers.set(key, setTimeout(() => {
+      traceableContinuityValidationTimers.delete(key);
+      void refreshTraceableContinuityDiagnosticsForDocument(document);
+    }, delayMs));
+  };
+  const refreshTraceableContinuityDiagnosticsForOpenDocuments = (): void => {
+    for (const document of vscode.workspace.textDocuments) {
+      scheduleTraceableContinuityDiagnosticsRefresh(document, 0);
+    }
+  };
+  context.subscriptions.push(traceableContinuityDiagnostics);
+  context.subscriptions.push({
+    dispose: () => {
+      for (const timer of traceableContinuityValidationTimers.values()) {
+        clearTimeout(timer);
+      }
+      traceableContinuityValidationTimers.clear();
+    }
+  });
+  refreshTraceableContinuityDiagnosticsForOpenDocuments();
+
   const returnToParentTraceWatcher = vscode.workspace.createFileSystemWatcher("**/*.trace.md");
   context.subscriptions.push(returnToParentTraceWatcher);
   context.subscriptions.push(returnToParentTraceWatcher.onDidChange(() => {
@@ -4043,9 +4209,24 @@ export function activate(context: vscode.ExtensionContext): void {
     if (document.uri.scheme === "file" && document.uri.fsPath.toLowerCase().endsWith(".trace.md")) {
       scheduleReturnToParentTraceContextRefresh();
     }
+    scheduleTraceableContinuityDiagnosticsRefresh(document, 0);
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
     scheduleReturnToParentTraceContextRefresh();
+    refreshTraceableContinuityDiagnosticsForOpenDocuments();
+  }));
+  context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((document) => {
+    scheduleTraceableContinuityDiagnosticsRefresh(document, 40);
+  }));
+  context.subscriptions.push(vscode.workspace.onDidCloseTextDocument((document) => {
+    clearTraceableContinuityValidationTimer(document.uri.fsPath);
+    traceableContinuityDiagnostics.delete(document.uri);
+  }));
+  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument((event) => {
+    scheduleTraceableContinuityDiagnosticsRefresh(event.document, 220);
+  }));
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
+    scheduleTraceableContinuityDiagnosticsRefresh(editor?.document, 0);
   }));
 
   const prepareTraceableRewriteRequestedMove = async (
@@ -4716,6 +4897,22 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(REPAIR_TRACE_LINEAGE_COMMAND, async (target?: vscode.Uri) => {
       await repairTraceableLineage(target);
     }),
+    vscode.commands.registerCommand(VALIDATE_TRACEABLE_CONTINUITY_COMMAND, async (target?: vscode.Uri) => {
+      const artifactUri = resolveMarkdownArtifactUri(target);
+      if (!artifactUri) {
+        void vscode.window.showErrorMessage("Open a markdown continuity artifact first, or invoke the command from a markdown file.");
+        return;
+      }
+      const summary = renderTraceableContinuityValidationMarkdown(validateTraceableContinuityArtifactChainSync({
+        filePath: artifactUri.fsPath
+      }));
+      const document = await vscode.workspace.openTextDocument({
+        language: "markdown",
+        content: summary
+      });
+      await vscode.window.showTextDocument(document, { preview: false });
+      output.appendLine(`Validated continuity artifact: ${artifactUri.fsPath}`);
+    }),
     vscode.commands.registerCommand(ADD_FILE_TO_TRACEABLE_CHAT_COMMAND, async (target?: vscode.Uri) => {
       await addFileToTraceableChat(target);
     })
@@ -4875,6 +5072,23 @@ export function activate(context: vscode.ExtensionContext): void {
           outputPaths: result.outputPaths,
           droppedSourcePaths: result.droppedSourcePaths
         }));
+      }
+    }),
+    vscode.lm.registerTool(VALIDATE_TRACEABLE_CONTINUITY_TOOL, {
+      prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<ValidateTraceableContinuityInput>): vscode.PreparedToolInvocation {
+        return {
+          invocationMessage: `Validate continuity backward from ${JSON.stringify(options.input.filePath)}`
+        };
+      },
+      async invoke(options: vscode.LanguageModelToolInvocationOptions<ValidateTraceableContinuityInput>): Promise<vscode.LanguageModelToolResult> {
+        const resolvedArtifactPath = await resolveMarkdownArtifactFilePath(options.input.filePath);
+        if (!resolvedArtifactPath.toLowerCase().endsWith(".md")) {
+          throw new Error(`Continuity validation requires a markdown artifact. Got ${JSON.stringify(resolvedArtifactPath)}.`);
+        }
+        return textResult(renderTraceableContinuityValidationMarkdown(validateTraceableContinuityArtifactChainSync({
+          filePath: resolvedArtifactPath,
+          maxDepth: options.input.maxDepth
+        })));
       }
     }),
     vscode.lm.registerTool(

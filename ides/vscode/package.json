@@ -24,19 +24,12 @@
   },
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:tiinex.aiProvenance.newTraceableChat",
-    "onCommand:tiinex.aiProvenance.resumeTraceableChat",
-    "onCommand:tiinex.aiProvenance.rewriteMoveTrace",
-    "onCommand:tiinex.aiProvenance.rewriteCopyTrace",
-    "onCommand:tiinex.aiProvenance.returnToParentTrace",
-    "onCommand:tiinex.aiProvenance.repairTraceLineage",
-    "onCommand:tiinex.aiProvenance.addFileToTraceableChat",
-    "onCommand:tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder",
     "onLanguageModelTool:list_traceable_agents",
     "onLanguageModelTool:list_traceable_models",
     "onLanguageModelTool:view_traceable_subagent",
     "onLanguageModelTool:run_traceable_subagent",
-    "onLanguageModelTool:transfer_trace"
+    "onLanguageModelTool:transfer_trace",
+    "onLanguageModelTool:validate_traceable_continuity"
   ],
   "categories": [
     "Other",
@@ -382,6 +375,30 @@
         }
       },
       {
+        "name": "validate_traceable_continuity",
+        "displayName": "Validate Traceable Continuity",
+        "userDescription": "Validate one markdown continuity artifact backward through parent links, checksums, and current runtime-shape findings.",
+        "modelDescription": "Validate one markdown continuity artifact backward through parent links using the shared continuity parser and checksum rules. This tool is read-only and returns a bounded markdown report with backward-link source, continuity-footer status, direct-parent integrity status when present, and current ai-provenance runtime-structure findings. Use this first when you need high-confidence proof that a trace or schema artifact still validates backward before considering audit or repair. Prefer this over improvising manual parent chasing when the goal is a repeatable proof-of-concept validation read.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "validateTrace",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "filePath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to a markdown continuity artifact such as a `.trace.md` file or schema markdown file."
+            },
+            "maxDepth": {
+              "type": "number",
+              "description": "Optional maximum number of backward parent hops to validate before stopping."
+            }
+          },
+          "required": [
+            "filePath"
+          ]
+        }
+      },
+      {
         "name": "transfer_trace",
         "displayName": "Transfer Trace",
         "userDescription": "Move or copy one `.trace.md` artifact through the same Alone or Lineage semantics used by TRACEABLE move workflows.",
@@ -481,6 +498,10 @@
         "title": "Repair Trace Lineage..."
       },
       {
+        "command": "tiinex.aiProvenance.validateTraceableContinuity",
+        "title": "Validate Traceable Continuity"
+      },
+      {
         "command": "tiinex.aiProvenance.addFileToTraceableChat",
         "title": "Add File to Traceable Chat"
       },
@@ -544,6 +565,21 @@
           "group": "4_traceable@5.5"
         },
         {
+          "command": "tiinex.aiProvenance.validateTraceableContinuity",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "4_traceable@5.6"
+        },
+        {
+          "command": "tiinex.aiProvenance.validateTraceableContinuity",
+          "when": "resourceExtname == .md && resourcePath =~ /\\/\\.topics\\/\\.schemas\\/.*\\.md$/",
+          "group": "4_traceable@5.7"
+        },
+        {
+          "command": "tiinex.aiProvenance.inspectTraceableEvidence",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "4_traceable@5.8"
+        },
+        {
           "command": "tiinex.aiProvenance.addFileToTraceableChat",
           "when": "resourceScheme == file && !explorerResourceIsFolder",
           "group": "4_traceable@6"
@@ -579,6 +615,33 @@
           "command": "tiinex.aiProvenance.reopenTraceableEvidenceSource",
           "when": "activeWebviewPanelId == tiinexTraceableEvidenceEditor || activeCustomEditorId == tiinexTraceableEvidenceEditor",
           "group": "navigation@-950"
+        },
+        {
+          "command": "tiinex.aiProvenance.validateTraceableContinuity",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "navigation@-925"
+        },
+        {
+          "command": "tiinex.aiProvenance.validateTraceableContinuity",
+          "when": "resourceExtname == .md && resourcePath =~ /\\/\\.topics\\/\\.schemas\\/.*\\.md$/",
+          "group": "navigation@-924"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "tiinex.aiProvenance.validateTraceableContinuity",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "4_traceable@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.inspectTraceableEvidence",
+          "when": "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/",
+          "group": "4_traceable@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.validateTraceableContinuity",
+          "when": "resourceExtname == .md && resourcePath =~ /\\/\\.topics\\/\\.schemas\\/.*\\.md$/",
+          "group": "4_traceable@3"
         }
       ]
     },
@@ -855,7 +918,7 @@
   "scripts": {
     "build": "npm run typecheck && node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node tests/test.mjs",
+    "test": "npm run build && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON tests/test.mjs",
     "test:sender-adaptation-probes": "node scripts/check-sender-adaptation-probes.mjs",
     "package:vsix": "npx --yes @vscode/vsce package",
     "publish:vsce": "npx --yes @vscode/vsce publish",

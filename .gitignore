@@ -11,3 +11,4 @@ assets/demo/video/*.mp4
 TEMP-*.md
 .tmp*
 *.out
+*.log

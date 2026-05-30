@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,12 @@ import {
   resolveRelativeOpenPathInWorkspace
 } from "../src/traceableOpenPath.js";
 import { planStandaloneMoveRetainedDescendantRewrites } from "../src/traceableStandaloneMoveRetainedDescendants.js";
+import {
+  computeTraceableContinuityChecksumSha256,
+  parseTraceableContinuityMarkdown,
+  renderTraceableContinuityValidationMarkdown,
+  validateTraceableContinuityArtifactChainSync
+} from "../src/traceableContinuityValidation.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,8 +50,169 @@ function testStandaloneMoveRetainedDescendantRewrites() {
   }], "Standalone move descendants should stay in place and only rewrite their parent reference to the moved node.");
 }
 
+function finalizeContinuityIntegrity(markdown) {
+  const digest = computeTraceableContinuityChecksumSha256(markdown);
+  return markdown.replace(/(- Value:\s+)([^\r\n]+)/u, `$1${digest}`);
+}
+
+function testContinuityValidationCoreWithLocalFixtureChain() {
+  const tempRoot = path.join(packageRoot, ".test-temp", "continuity-validation");
+  const parentPath = path.join(tempRoot, "001-parent.trace.md");
+  const childPath = path.join(tempRoot, "001-1-child.trace.md");
+  const fileMap = new Map();
+
+  const parentMarkdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-30 00:00:00
+  - Summary: Parent fixture.
+
+---
+
+# Parent Fixture
+
+## Summary
+
+- Fixture: parent
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1.md](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Value: PLACEHOLDER`);
+
+  fileMap.set(path.resolve(parentPath), parentMarkdown);
+
+  const childMarkdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Parent
+  - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-30 00:00:00
+  - Trace: [001-parent.trace.md](001-parent.trace.md)
+  - Origin:
+    - [relative](001-parent.trace.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-30 00:00:01
+  - Summary: Child fixture.
+
+---
+
+# Child Fixture
+
+## Summary
+
+- Fixture: child
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1.md](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Value: PLACEHOLDER`);
+
+  fileMap.set(path.resolve(childPath), childMarkdown);
+
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: childPath,
+    readTextFileSync: (filePath) => {
+      const markdown = fileMap.get(path.resolve(filePath));
+      if (!markdown) {
+        throw new Error(`Missing test fixture ${filePath}`);
+      }
+      return markdown;
+    }
+  });
+
+  assert.equal(result.nodes.length, 2, "Continuity validator should follow a local parent trace chain backwards.");
+  assert.equal(result.nodes[0].backwardLink.source, "parent-trace", "Continuity validator should prefer a local Parent Trace link when available.");
+  assert.equal(result.nodes[0].continuityIntegrity.status, "verified", "Child continuity footer should verify against the shared checksum rule.");
+  assert.equal(result.nodes[1].continuityIntegrity.status, "verified", "Parent continuity footer should also verify against the shared checksum rule.");
+  assert.equal(result.stoppedBecause, "complete", "Continuity validator should stop cleanly at the root when no earlier local parent exists.");
+}
+
+function testRuntimeTraceStructureValidationAgainstTransferFixture() {
+  const transferFixturePath = path.join(packageRoot, "..", "..", ".topics", ".templates", "transfer-test", "001-2-1-leo.trace.md");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: transferFixturePath,
+    maxDepth: 1
+  });
+  const rootNode = result.nodes[0];
+  assert.ok(rootNode, "Continuity validator should return the current transfer fixture node.");
+  assert.deepEqual(rootNode.runtimeTraceStructure?.requiredTopLevelSectionsMissing ?? [], [], "Current ai-provenance runtime traces should expose the required top-level sections described by the owned schema.");
+  assert.deepEqual(rootNode.runtimeTraceStructure?.recommendedTopLevelSectionsMissing ?? [], [], "Current transfer fixtures should expose the repeated runtime top-level sections that the owned schema now describes explicitly.");
+  assert.ok((rootNode.runtimeTraceStructure?.optionalStateSectionsPresent ?? []).includes("sender adaptation state"), "Current transfer fixtures should surface sender adaptation state when present.");
+  assert.ok((rootNode.runtimeTraceStructure?.optionalStateSectionsPresent ?? []).includes("traceable state"), "Current transfer fixtures should surface the embedded Traceable State block when present.");
+  assert.ok((rootNode.runtimeTraceStructure?.optionalStateSectionsPresent ?? []).includes("activity timeline"), "Current transfer fixtures should surface the activity timeline when present.");
+}
+
+function testParseCurrentRuntimeSchemaContinuity() {
+  const schemaPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", "tiinex.runtime.trace.v1.md");
+  const parsed = parseTraceableContinuityMarkdown(readFileSync(schemaPath, "utf8"));
+  assert.equal(parsed.currentSchema?.label, "tiinex.runtime.trace.v1", "Continuity parser should recover the current schema id from the owned ai-provenance runtime schema.");
+  assert.equal(parsed.parentSchema?.label, "tiinex.ai.runtime.v1", "Continuity parser should recover the parent schema id from the owned ai-provenance runtime schema.");
+  assert.equal(parsed.footerIntegrity?.method, "sha256-base64url-c14n-v1", "Continuity parser should recover the current footer checksum method.");
+}
+
+function testRenderContinuityValidationMarkdown() {
+  const schemaPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", "tiinex.runtime.trace.v1.md");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: schemaPath,
+    maxDepth: 2
+  });
+  const rendered = renderTraceableContinuityValidationMarkdown(result);
+  assert.ok(rendered.includes("# Traceable Continuity Validation"), "Continuity validation report should include the validation heading.");
+  assert.ok(rendered.includes("- Continuity Integrity: verified"), "Continuity validation report should surface verified footer status.");
+  assert.ok(rendered.includes("- Current Schema: tiinex.runtime.trace.v1"), "Continuity validation report should show the current schema label.");
+}
+
+function testContinuityValidationProducesNormalizedFindings() {
+  const tempRoot = path.join(packageRoot, ".test-temp", "continuity-findings");
+  const artifactPath = path.join(tempRoot, "001-mismatch.trace.md");
+  const markdown = `# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-30 00:00:00
+  - Summary: Mismatch fixture.
+
+---
+
+# Mismatch Fixture
+
+This body intentionally does not match the stored footer checksum.
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1.md](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Value: definitely-not-the-real-checksum`;
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: () => markdown,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"), "Continuity validator should expose a normalized mismatch finding from the core validator surface.");
+  assert.ok(result.findings.some((finding) => finding.surfaces.includes("problems")), "Normalized continuity findings should declare whether they belong on Problems surfaces.");
+}
+
 async function main() {
   testStandaloneMoveRetainedDescendantRewrites();
+  testContinuityValidationCoreWithLocalFixtureChain();
+  testRuntimeTraceStructureValidationAgainstTransferFixture();
+  testParseCurrentRuntimeSchemaContinuity();
+  testRenderContinuityValidationMarkdown();
+  testContinuityValidationProducesNormalizedFindings();
 
   const workspaceFolders = [
     { name: "ai-provenance", fsPath: path.win32.normalize("C:/Users/micro/Documents/Repos/Tiinex/ai-provenance") },
@@ -97,24 +265,19 @@ async function main() {
   assert.equal(packageJson.name, "ai-provenance", "Unexpected extension package name.");
   assert.equal(packageJson.publisher, "tiinex", "Unexpected publisher.");
   assert.equal(packageJson.icon, "assets/logo-transparent.png", "Provenance extension icon path is missing or stale.");
-  assert.ok(packageJson.activationEvents?.includes("onCommand:tiinex.aiProvenance.newTraceableChat"), "New Traceable Chat command activation is missing.");
-  assert.ok(packageJson.activationEvents?.includes("onCommand:tiinex.aiProvenance.resumeTraceableChat"), "Resume Traceable Chat command activation is missing.");
-  assert.ok(packageJson.activationEvents?.includes("onCommand:tiinex.aiProvenance.rewriteMoveTrace"), "Rewrite Move Trace command activation is missing.");
-  assert.ok(packageJson.activationEvents?.includes("onCommand:tiinex.aiProvenance.rewriteCopyTrace"), "Rewrite Copy Trace command activation is missing.");
-  assert.ok(packageJson.activationEvents?.includes("onCommand:tiinex.aiProvenance.returnToParentTrace"), "Return to Parent Trace command activation is missing.");
-  assert.ok(packageJson.activationEvents?.includes("onCommand:tiinex.aiProvenance.repairTraceLineage"), "Repair Trace Lineage command activation is missing.");
-  assert.ok(packageJson.activationEvents?.includes("onCommand:tiinex.aiProvenance.addFileToTraceableChat"), "Add File to Traceable Chat command activation is missing.");
-  assert.ok(packageJson.activationEvents?.includes("onCommand:tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder"), "Default New Traceable Chat export-folder command activation is missing.");
+  assert.ok(packageJson.activationEvents?.includes("onStartupFinished"), "onStartupFinished activation is missing.");
   assert.ok(packageJson.activationEvents?.includes("onLanguageModelTool:list_traceable_agents"), "Provenance traceable agent catalog activation is missing.");
   assert.ok(packageJson.activationEvents?.includes("onLanguageModelTool:list_traceable_models"), "Provenance traceable model catalog activation is missing.");
   assert.ok(packageJson.activationEvents?.includes("onLanguageModelTool:view_traceable_subagent"), "Provenance LM tool activation is missing.");
   assert.ok(packageJson.activationEvents?.includes("onLanguageModelTool:run_traceable_subagent"), "Provenance runtime LM tool activation is missing.");
   assert.ok(packageJson.activationEvents?.includes("onLanguageModelTool:transfer_trace"), "Provenance transfer LM tool activation is missing.");
+  assert.ok(packageJson.activationEvents?.includes("onLanguageModelTool:validate_traceable_continuity"), "Provenance continuity validation LM tool activation is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "list_traceable_agents"), "Provenance traceable agent catalog contribution is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "list_traceable_models"), "Provenance traceable model catalog contribution is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "run_traceable_subagent"), "Provenance runtime LM tool contribution is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "view_traceable_subagent"), "Provenance LM tool contribution is missing.");
   assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "transfer_trace"), "Provenance transfer LM tool contribution is missing.");
+  assert.ok(packageJson.contributes?.languageModelTools?.some((entry) => entry.name === "validate_traceable_continuity"), "Provenance continuity validation LM tool contribution is missing.");
   const runTraceableTool = packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "run_traceable_subagent");
   assert.ok(runTraceableTool?.inputSchema?.properties?.parentTracePath, "run_traceable_subagent is missing the public parentTracePath continuation input schema property.");
   assert.ok(runTraceableTool?.inputSchema?.properties?.parentRoles, "run_traceable_subagent is missing the public parentRoles input schema property.");
@@ -166,6 +329,12 @@ async function main() {
   assert.ok(viewTraceableTool?.modelDescription?.includes("tool-forensics"), "view_traceable_subagent model description is missing tool-forensics guidance.");
   assert.ok(viewTraceableTool?.modelDescription?.includes("lineage"), "view_traceable_subagent model description is missing lineage guidance.");
   assert.equal(viewTraceableTool?.toolReferenceName, "viewTrace", "view_traceable_subagent should expose the shorter public tool reference name viewTrace.");
+  const validateTraceTool = packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "validate_traceable_continuity");
+  assert.equal(validateTraceTool?.toolReferenceName, "validateTrace", "validate_traceable_continuity should expose the public tool reference name validateTrace.");
+  assert.ok(validateTraceTool?.inputSchema?.properties?.filePath, "validate_traceable_continuity is missing the public filePath input property.");
+  assert.ok(validateTraceTool?.inputSchema?.properties?.maxDepth, "validate_traceable_continuity is missing the public maxDepth input property.");
+  assert.ok(validateTraceTool?.modelDescription?.includes("parent links"), "validate_traceable_continuity is missing backward parent-link guidance in the public tool description.");
+  assert.ok(validateTraceTool?.modelDescription?.includes("high-confidence proof"), "validate_traceable_continuity should describe the proof-oriented validation intent.");
   const transferTraceTool = packageJson.contributes?.languageModelTools?.find((entry) => entry.name === "transfer_trace");
   assert.equal(transferTraceTool?.toolReferenceName, "transferTrace", "transfer_trace should expose the public tool reference name transferTrace.");
   assert.ok(transferTraceTool?.inputSchema?.properties?.operation?.enum?.includes("move"), "transfer_trace is missing the public move operation.");
@@ -222,10 +391,19 @@ async function main() {
   assert.ok(packageJson.contributes?.commands?.some((entry) => entry.command === "tiinex.aiProvenance.rewriteCopyTrace"), "Rewrite Copy Trace command is missing.");
   assert.ok(packageJson.contributes?.commands?.some((entry) => entry.command === "tiinex.aiProvenance.returnToParentTrace"), "Return to Parent Trace command is missing.");
   assert.ok(packageJson.contributes?.commands?.some((entry) => entry.command === "tiinex.aiProvenance.repairTraceLineage"), "Repair Trace Lineage command is missing.");
+  assert.ok(packageJson.contributes?.commands?.some((entry) => entry.command === "tiinex.aiProvenance.validateTraceableContinuity"), "Validate Traceable Continuity command is missing.");
   assert.ok(packageJson.contributes?.commands?.some((entry) => entry.command === "tiinex.aiProvenance.addFileToTraceableChat"), "Add File to Traceable Chat command is missing.");
   assert.ok(packageJson.contributes?.menus?.["explorer/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.openTraceableEvidenceEditor" && entry.group === "navigation@32"), "Open Reconstructed Traceable View should be anchored in the built-in Explorer navigation group just after Open in Integrated Terminal.");
   assert.ok(packageJson.contributes?.menus?.["explorer/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.rewriteCopyTrace" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/"), "Copy Trace should appear in Explorer for .trace.md files.");
+  assert.ok(packageJson.contributes?.menus?.["explorer/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.validateTraceableContinuity" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/"), "Validate Traceable Continuity should appear in Explorer for .trace.md files.");
+  assert.ok(packageJson.contributes?.menus?.["explorer/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.validateTraceableContinuity" && entry.when === "resourceExtname == .md && resourcePath =~ /\\/\\.topics\\/\\.schemas\\/.*\\.md$/"), "Validate Traceable Continuity should appear in Explorer for schema markdown files under .topics/.schemas.");
+  assert.ok(packageJson.contributes?.menus?.["explorer/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.inspectTraceableEvidence" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/"), "Inspect TRACEABLE Evidence should appear in Explorer for .trace.md files.");
   assert.ok(packageJson.contributes?.menus?.["editor/title"]?.some((entry) => entry.command === "tiinex.aiProvenance.openTraceableEvidenceEditor" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && (activeWebviewPanelId == markdown.preview || activeCustomEditorId == vscode.markdown.preview.editor)"), "Open Reconstructed Traceable View should stay hidden for non-.trace markdown previews in the editor title.");
+  assert.ok(packageJson.contributes?.menus?.["editor/title"]?.some((entry) => entry.command === "tiinex.aiProvenance.validateTraceableContinuity" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/"), "Validate Traceable Continuity should appear in the editor title for .trace.md files.");
+  assert.ok(packageJson.contributes?.menus?.["editor/title"]?.some((entry) => entry.command === "tiinex.aiProvenance.validateTraceableContinuity" && entry.when === "resourceExtname == .md && resourcePath =~ /\\/\\.topics\\/\\.schemas\\/.*\\.md$/"), "Validate Traceable Continuity should appear in the editor title for schema markdown files under .topics/.schemas.");
+  assert.ok(packageJson.contributes?.menus?.["editor/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.validateTraceableContinuity" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/"), "Validate Traceable Continuity should appear in the editor context menu for .trace.md files.");
+  assert.ok(packageJson.contributes?.menus?.["editor/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.inspectTraceableEvidence" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/"), "Inspect TRACEABLE Evidence should appear in the editor context menu for .trace.md files.");
+  assert.ok(packageJson.contributes?.menus?.["editor/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.validateTraceableContinuity" && entry.when === "resourceExtname == .md && resourcePath =~ /\\/\\.topics\\/\\.schemas\\/.*\\.md$/"), "Validate Traceable Continuity should appear in the editor context menu for schema markdown files under .topics/.schemas.");
   assert.ok(packageJson.contributes?.menus?.["explorer/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.returnToParentTrace" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/ && resourcePath in tiinex.aiProvenance.returnToParentEligibleResources"), "Return to Parent Trace should only appear in Explorer when an ancestor parent actually leaves the current folder.");
   assert.ok(packageJson.contributes?.menus?.["explorer/context"]?.some((entry) => entry.command === "tiinex.aiProvenance.repairTraceLineage" && entry.when === "resourceExtname == .md && resourcePath =~ /\\.trace\\.md$/"), "Repair Trace Lineage should appear in Explorer for .trace.md files.");
   assert.ok(packageJson.contributes?.commands?.some((entry) => entry.command === "tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder"), "Default New Traceable Chat export-folder command is missing.");
@@ -265,14 +443,19 @@ async function main() {
   assert.ok(bundle.includes("rewriteCopyTrace"), "Built bundle is missing the Rewrite Copy Trace command wiring.");
   assert.ok(bundle.includes("returnToParentTrace"), "Built bundle is missing the Return to Parent Trace command wiring.");
   assert.ok(bundle.includes("repairTraceLineage"), "Built bundle is missing the Repair Trace Lineage command wiring.");
+  assert.ok(bundle.includes("validateTraceableContinuity"), "Built bundle is missing the Validate Traceable Continuity command wiring.");
   assert.ok(bundle.includes("addFileToTraceableChat"), "Built bundle is missing the Add File to Traceable Chat command wiring.");
   assert.ok(bundle.includes("traceableDefaultMoveAction"), "Built bundle is missing the TRACEABLE default move action setting wiring.");
   assert.ok(bundle.includes("setDefaultNewTraceableChatExportFolder"), "Built bundle is missing the default New Traceable Chat export-folder command wiring.");
   assert.ok(bundle.includes("openTraceableEvidenceEditor"), "Built bundle is missing the TRACEABLE evidence viewer command.");
   assert.ok(bundle.includes("reopenTraceableEvidenceSource"), "Built bundle is missing the TRACEABLE evidence reopen-source command.");
   assert.ok(bundle.includes("reopenTraceableEvidencePreview"), "Built bundle is missing the TRACEABLE evidence reopen-preview command.");
+  assert.ok(bundle.includes("tiinexTraceableContinuity"), "Built bundle is missing the continuity diagnostic collection wiring.");
+  assert.ok(bundle.includes("Continuity footer checksum does not match the current artifact body."), "Built bundle is missing the continuity mismatch diagnostic message.");
+  assert.ok(!bundle.includes("Continuity footer is missing; backward proof for this artifact remains partial."), "Built bundle should no longer emit partial-proof info diagnostics into Problems by default.");
   assert.ok(bundle.includes("run_traceable_subagent"), "Built bundle is missing the provenance TRACEABLE runtime tool wiring.");
   assert.ok(bundle.includes("transfer_trace"), "Built bundle is missing the provenance TRACEABLE transfer tool wiring.");
+  assert.ok(bundle.includes("validate_traceable_continuity"), "Built bundle is missing the provenance continuity validation tool wiring.");
   assert.ok(bundle.includes("list_traceable_agents"), "Built bundle is missing the provenance traceable agent catalog tool wiring.");
   assert.ok(bundle.includes("list_traceable_models"), "Built bundle is missing the provenance traceable model catalog tool wiring.");
   assert.ok(bundle.includes("Preferred matches"), "Built bundle is missing the traceable model policy summary rendering.");
@@ -295,6 +478,7 @@ async function main() {
   assert.ok(bundle.includes("tiinexTraceableEvidenceEditor"), "Built bundle is missing the restored TRACEABLE evidence editor view type.");
   assert.ok(bundle.includes("view_traceable_subagent"), "Built bundle is missing the provenance LM tool wiring.");
   assert.ok(bundle.includes("transferTrace"), "Built bundle is missing the public transferTrace reference name.");
+  assert.ok(bundle.includes("validateTrace"), "Built bundle is missing the public validateTrace reference name.");
   assert.ok(bundle.includes("## Lineage"), "Built bundle is missing the evidence lineage observability section.");
   assert.ok(bundle.includes("### Direct Children"), "Built bundle is missing direct-child lineage rendering in evidence views.");
   assert.ok(bundle.includes("Carry State"), "Built bundle is missing the separate carry-state request summary label.");
