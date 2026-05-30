@@ -35,6 +35,46 @@ If schema guidance and local body wording appear to disagree, prefer the schema 
 
 Do not invent extra fields, hidden semantics, or envelope meanings that are not supported by the named schema or the continuity envelope.
 
+## Common Reading Modes
+
+When the current schema is one of the common Tiinex trace schemas below, prefer the corresponding reading posture.
+
+### Topic Read
+
+When `Current -> Current Schema` is `tiinex.topic.v1`:
+
+- read the artifact as a working thread, not as a landed outcome
+- treat body sections such as current read, design direction, risks, and next artifacts as the main carrier of meaning
+- do not over-read `Why` or `Summary` as if they settle the topic by themselves
+- if the artifact looks like it now governs what should happen, check whether it should really be a decision artifact instead
+
+### Decision Read
+
+When `Current -> Current Schema` is `tiinex.decision.v1`:
+
+- read the artifact for the landed decision first
+- look for explicit state, scope, actor-bearing decision signal, and operative direction
+- treat `Current -> Why` as rationale support, not as the decision itself
+- do not reduce a decision artifact to general discussion when the main value is what now governs
+
+### Evidence Read
+
+When `Current -> Current Schema` is `tiinex.evidence.v1`:
+
+- read the artifact for what material is being preserved and what it supports
+- look for provenance, representation method, fidelity limits, and supported claim or question
+- prefer an explicit `Origin` block as provenance when concrete supporting artifacts exist
+- do not overclaim from evidence that is partial, transformed, summarized, or only weakly grounded
+
+### Feedback Read
+
+When `Current -> Current Schema` is `tiinex.feedback.v1`:
+
+- read the artifact as interaction-shaped signal, not as generic evidence or broad topic prose
+- look for source surface, reply or response relation, representation method, and current disposition
+- preserve the difference between quoted feedback, normalized summary, and mixed representation
+- do not flatten weakly interactive signal into feedback when the interaction relation is absent or unclear
+
 ## Lineage Discipline
 
 Treat `Parent` as continuity lineage, not as a generic hint that the file was merely inspired by something else.
@@ -63,6 +103,20 @@ That means:
 - avoid adding ad hoc metadata outside the named schema unless the change is explicitly experimental and clearly marked
 
 If a change needs a new structural field or a new interpretation rule, prefer evolving the relevant schema note instead of improvising a local one-off pattern inside a single trace.
+
+## Validation Honesty
+
+Do not claim stronger certainty, stronger validation, or stronger provenance than the available evidence supports.
+
+That means:
+
+- do not say a trace is validated unless the relevant validation was actually run
+- do not say a parent relation is confirmed if it is only inferred from nearby prose or naming
+- do not say a checksum matches if the checksum-bearing surface was not actually refreshed or checked
+- do not say provenance is committed or remotely recoverable when only local paths are present
+- do not treat a clean local editor state as proof that lineage semantics are correct
+
+When the current basis is partial, say so plainly and keep the claim narrow.
 
 ## Repair Read
 
