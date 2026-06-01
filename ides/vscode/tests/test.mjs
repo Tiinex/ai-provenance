@@ -206,6 +206,132 @@ This body intentionally does not match the stored footer checksum.
   assert.ok(result.findings.some((finding) => finding.surfaces.includes("problems")), "Normalized continuity findings should declare whether they belong on Problems surfaces.");
 }
 
+function testValidatorPolicyKeepsLegacyNoChecksumInternal() {
+  const tempRoot = path.join(packageRoot, ".test-temp", "continuity-legacy-no-checksum");
+  const parentPath = path.join(tempRoot, "001-parent.trace.md");
+  const childPath = path.join(tempRoot, "001-1-child.trace.md");
+  const fileMap = new Map();
+
+  const parentMarkdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-30 00:00:00
+  - Summary: Parent fixture.
+
+---
+
+# Parent Fixture
+
+## Summary
+
+- Fixture: parent
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1.md](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Value: PLACEHOLDER`);
+  fileMap.set(path.resolve(parentPath), parentMarkdown);
+
+  const childMarkdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Parent
+  - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-30 00:00:00
+  - Trace: [001-parent.trace.md](001-parent.trace.md)
+  - Origin:
+    - [relative](001-parent.trace.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-30 00:00:01
+  - Summary: Child fixture.
+
+## Traceable State
+
+\`\`\`json
+{
+  "schema": "tiinex.traceable-state.v1",
+  "result": {
+    "parentTracePath": "001-parent.trace.md",
+    "lineageLabel": "001-1",
+    "lineageDepth": 2
+  }
+}
+\`\`\`
+
+---
+
+# Child Fixture
+
+## Summary
+
+- Fixture: child
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1.md](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Value: PLACEHOLDER`);
+  fileMap.set(path.resolve(childPath), childMarkdown);
+
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: childPath,
+    readTextFileSync: (filePath) => {
+      const markdown = fileMap.get(path.resolve(filePath));
+      if (!markdown) {
+        throw new Error(`Missing test fixture ${filePath}`);
+      }
+      return markdown;
+    }
+  });
+
+  assert.equal(result.nodes[0].traceableParentIntegrity?.status, "legacy-no-checksum", "Missing direct-parent checksum should remain an internal legacy status, not a surfaced Problems finding.");
+  assert.equal(result.findings.length, 0, "Legacy no-checksum cases should not produce a Problems finding under the current policy.");
+}
+
+function testValidatorPolicyKeepsUnsupportedFooterMethodsOutOfProblems() {
+  const tempRoot = path.join(packageRoot, ".test-temp", "continuity-unsupported-method");
+  const artifactPath = path.join(tempRoot, "001-unsupported.trace.md");
+  const markdown = `# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-05-30 00:00:00
+  - Summary: Unsupported method fixture.
+
+---
+
+# Unsupported Method Fixture
+
+## Summary
+
+- Fixture: unsupported-method
+
+---
+
+# Continuity Integrity
+
+- sha1-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1.md](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Value: not-used-by-the-current-checker`;
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: () => markdown,
+    maxDepth: 1
+  });
+
+  assert.equal(result.nodes[0].continuityIntegrity.status, "unsupported-method", "Unsupported continuity footer methods should remain explicitly classified in the validator result.");
+  assert.equal(result.findings.length, 0, "Unsupported footer methods should not invent a Problems finding under the current policy.");
+}
+
 async function main() {
   testStandaloneMoveRetainedDescendantRewrites();
   testContinuityValidationCoreWithLocalFixtureChain();
@@ -213,6 +339,8 @@ async function main() {
   testParseCurrentRuntimeSchemaContinuity();
   testRenderContinuityValidationMarkdown();
   testContinuityValidationProducesNormalizedFindings();
+  testValidatorPolicyKeepsLegacyNoChecksumInternal();
+  testValidatorPolicyKeepsUnsupportedFooterMethodsOutOfProblems();
 
   const workspaceFolders = [
     { name: "ai-provenance", fsPath: path.win32.normalize("C:/Users/micro/Documents/Repos/Tiinex/ai-provenance") },
