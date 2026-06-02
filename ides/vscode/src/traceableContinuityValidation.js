@@ -125,6 +125,10 @@ function extractMarkdownLink(value) {
   };
 }
 
+function extractSchemaIdentity(schema) {
+  return trimToUndefined(schema?.label) || trimToUndefined(schema?.target);
+}
+
 function extractLabeledValue(line, label) {
   const match = line.match(new RegExp(`^-\\s+${label}:\\s+(.*)$`, "u"));
   return match ? trimToUndefined(match[1]) : undefined;
@@ -296,6 +300,14 @@ function isExternalUrl(target) {
   return /^[a-z][a-z0-9+.-]*:\/\//iu.test(target);
 }
 
+function isCommitPinnedBrowseGitTarget(target) {
+  const trimmed = trimToUndefined(target);
+  if (!trimmed || !isExternalUrl(trimmed)) {
+    return false;
+  }
+  return /\/(?:blob|commit)\/[0-9a-f]{7,40}(?:\/|$)/iu.test(trimmed);
+}
+
 function resolveLocalReference(currentFilePath, reference) {
   const trimmed = trimToUndefined(reference);
   if (!trimmed) {
@@ -358,6 +370,28 @@ function normalizeHeadingToken(value) {
 
 function collectHeadingMap(headings, level) {
   return new Set(headings.filter((heading) => heading.level === level).map((heading) => normalizeHeadingToken(heading.text)));
+}
+
+function isSchemaNoteFilePath(filePath) {
+  return /[\\/]\.topics[\\/]\.schemas[\\/]/u.test(path.resolve(filePath)) && !/README\.md$/iu.test(filePath);
+}
+
+function collectSchemaNoteStructureFindings(node) {
+  if (!isSchemaNoteFilePath(node.filePath)) {
+    return [];
+  }
+  const levelTwoHeadings = collectHeadingMap(node.parsed.headings, 2);
+  if (levelTwoHeadings.has("validation-friendly shape")) {
+    return [];
+  }
+  return [{
+    code: "schema-validation-friendly-shape-missing",
+    category: "schema-note-structure",
+    filePath: node.filePath,
+    message: "Schema notes in .topics/.schemas should include a Validation-Friendly Shape section so humans and validators can scan them the same way.",
+    severity: "warning",
+    surfaces: ["problems", "report"]
+  }];
 }
 
 function validateRuntimeTraceStructure(parsed) {
@@ -610,7 +644,12 @@ function validateTraceableContinuityArtifactChainSync(input) {
 function collectTraceableContinuityFindings(result) {
   const findings = [];
 
-  for (const node of result.nodes) {
+  for (let index = 0; index < result.nodes.length; index += 1) {
+    const node = result.nodes[index];
+    const parentNode = result.nodes[index + 1];
+
+    findings.push(...collectSchemaNoteStructureFindings(node));
+
     switch (node.continuityIntegrity?.status) {
       case "mismatch":
         findings.push({
@@ -624,6 +663,30 @@ function collectTraceableContinuityFindings(result) {
         break;
       default:
         break;
+    }
+
+    const declaredParentSchemaIdentity = extractSchemaIdentity(node.parsed.parentSchema);
+    const resolvedParentSchemaIdentity = extractSchemaIdentity(parentNode?.parsed.currentSchema);
+    if (declaredParentSchemaIdentity && resolvedParentSchemaIdentity && declaredParentSchemaIdentity !== resolvedParentSchemaIdentity) {
+      findings.push({
+        code: "traceable-parent-schema-mismatch",
+        category: "direct-parent-integrity",
+        filePath: node.filePath,
+        message: "Parent Schema does not match the resolved parent artifact's current schema.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    }
+
+    if (trimToUndefined(node.parsed.parentOrigin?.browseGit) && !isCommitPinnedBrowseGitTarget(node.parsed.parentOrigin.browseGit)) {
+      findings.push({
+        code: "traceable-parent-origin-unpinned-browse-git",
+        category: "direct-parent-integrity",
+        filePath: node.filePath,
+        message: "Parent Origin browse + git target is not commit-pinned.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
     }
 
     switch (node.traceableParentIntegrity?.status) {

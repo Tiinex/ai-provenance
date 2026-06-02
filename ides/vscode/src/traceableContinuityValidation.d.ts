@@ -26,9 +26,12 @@ export interface TraceableContinuityFinding {
   code:
     | "continuity-checksum-mismatch"
     | "traceable-parent-missing-parent"
+    | "traceable-parent-schema-mismatch"
+    | "traceable-parent-origin-unpinned-browse-git"
     | "traceable-parent-unreadable-parent"
     | "traceable-parent-checksum-mismatch"
     | "traceable-parent-cycle-detected"
+    | "schema-validation-friendly-shape-missing"
     | "runtime-required-sections-missing"
     | "runtime-recommended-sections-missing"
     | "runtime-technical-detail-sections-missing"
@@ -37,6 +40,7 @@ export interface TraceableContinuityFinding {
   category:
     | "continuity-integrity"
     | "direct-parent-integrity"
+    | "schema-note-structure"
     | "runtime-trace-structure"
     | "backward-traversal";
   filePath: string;
