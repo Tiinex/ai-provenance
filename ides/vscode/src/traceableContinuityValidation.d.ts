@@ -31,6 +31,8 @@ export interface TraceableContinuityFinding {
     | "traceable-parent-unreadable-parent"
     | "traceable-parent-checksum-mismatch"
     | "traceable-parent-cycle-detected"
+    | "schema-definition-core-contract-missing"
+    | "schema-machine-validation-contract-missing"
     | "schema-validation-friendly-shape-missing"
     | "runtime-required-sections-missing"
     | "runtime-recommended-sections-missing"

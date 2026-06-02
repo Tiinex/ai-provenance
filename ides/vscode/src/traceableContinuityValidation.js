@@ -372,6 +372,17 @@ function collectHeadingMap(headings, level) {
   return new Set(headings.filter((heading) => heading.level === level).map((heading) => normalizeHeadingToken(heading.text)));
 }
 
+function hasAnyHeading(headingMap, candidates) {
+  return candidates.some((candidate) => headingMap.has(normalizeHeadingToken(candidate)));
+}
+
+const SCHEMA_NOTE_CORE_CONTRACT_HEADING_GROUP = [
+  "Required Structure",
+  "Required Fields",
+  "Required Body Expectations",
+  "Envelope Expectations"
+];
+
 function isSchemaNoteFilePath(filePath) {
   return /[\\/]\.topics[\\/]\.schemas[\\/]/u.test(path.resolve(filePath)) && !/README\.md$/iu.test(filePath);
 }
@@ -381,17 +392,59 @@ function collectSchemaNoteStructureFindings(node) {
     return [];
   }
   const levelTwoHeadings = collectHeadingMap(node.parsed.headings, 2);
-  if (levelTwoHeadings.has("validation-friendly shape")) {
-    return [];
+  const schemaIdentity = extractSchemaIdentity(node.parsed.currentSchema);
+  const findings = [];
+
+  if (!levelTwoHeadings.has("summary") || !hasAnyHeading(levelTwoHeadings, SCHEMA_NOTE_CORE_CONTRACT_HEADING_GROUP)) {
+    const missingParts = [];
+    if (!levelTwoHeadings.has("summary")) {
+      missingParts.push("Summary");
+    }
+    if (!hasAnyHeading(levelTwoHeadings, SCHEMA_NOTE_CORE_CONTRACT_HEADING_GROUP)) {
+      missingParts.push("at least one contract-bearing section such as Required Structure, Required Fields, Required Body Expectations, or Envelope Expectations");
+    }
+    findings.push({
+      code: "schema-definition-core-contract-missing",
+      category: "schema-note-structure",
+      filePath: node.filePath,
+      message: `Schema notes in .topics/.schemas should include ${missingParts.join(" and ")}.`,
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
   }
-  return [{
+
+  if (levelTwoHeadings.has("validation-friendly shape")) {
+    if (schemaIdentity === "tiinex.schema.v1" && !levelTwoHeadings.has("machine validation contract")) {
+      findings.push({
+        code: "schema-machine-validation-contract-missing",
+        category: "schema-note-structure",
+        filePath: node.filePath,
+        message: "The shared schema-definition root should include a Machine Validation Contract section so later schema notes can reuse the same machine-facing rule set.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    }
+    return findings;
+  }
+  findings.push({
     code: "schema-validation-friendly-shape-missing",
     category: "schema-note-structure",
     filePath: node.filePath,
     message: "Schema notes in .topics/.schemas should include a Validation-Friendly Shape section so humans and validators can scan them the same way.",
     severity: "warning",
     surfaces: ["problems", "report"]
-  }];
+  });
+  if (schemaIdentity === "tiinex.schema.v1" && !levelTwoHeadings.has("machine validation contract")) {
+    findings.push({
+      code: "schema-machine-validation-contract-missing",
+      category: "schema-note-structure",
+      filePath: node.filePath,
+      message: "The shared schema-definition root should include a Machine Validation Contract section so later schema notes can reuse the same machine-facing rule set.",
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
+  }
+  return findings;
 }
 
 function validateRuntimeTraceStructure(parsed) {
@@ -593,7 +646,10 @@ function validateTraceableContinuityArtifactChainSync(input) {
 
     const parsed = parseTraceableContinuityMarkdown(markdown);
     const backwardLink = chooseBackwardLink(currentFilePath, parsed);
-    const traceableParentIntegrity = parsed.traceableState?.parentTracePath
+    const currentSchemaIdentity = extractSchemaIdentity(parsed.currentSchema);
+    const selfRootSchemaNote = currentSchemaIdentity === "tiinex.schema.v1"
+      && normalizePathForComparison(backwardLink.resolvedPath) === normalizedCurrentPath;
+    const traceableParentIntegrity = parsed.traceableState?.parentTracePath && !selfRootSchemaNote
       ? evaluateTraceableDirectParentIntegrityCoreSync({
         childFilePath: currentFilePath,
         resolvedParentTracePath: resolveLocalReference(currentFilePath, parsed.traceableState.parentTracePath),
@@ -611,6 +667,11 @@ function validateTraceableContinuityArtifactChainSync(input) {
       runtimeTraceStructure: validateRuntimeTraceStructure(parsed)
     };
     nodes.push(node);
+
+    if (selfRootSchemaNote) {
+      stoppedBecause = "complete";
+      break;
+    }
 
     if (!backwardLink.resolvedPath) {
       stoppedBecause = backwardLink.source === "external-only" ? "external-parent" : "complete";

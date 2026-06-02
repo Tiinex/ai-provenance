@@ -332,7 +332,7 @@ function testValidatorFindsMissingValidationFriendlyShape() {
 
 - Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
 - Current
-  - Current Schema: [tiinex.schema.v1](../../docs/.topics/.schemas/tiinex.schema.v1.md)
+  - Current Schema: [tiinex.evidence.v1](../../docs/.topics/.schemas/tiinex.evidence.v1.md)
   - Created At: 2026-05-30 00:00:02
   - Summary: Schema note missing validation-friendly shape.
 
@@ -345,12 +345,16 @@ function testValidatorFindsMissingValidationFriendlyShape() {
 - Fixture: schema-note
 - Status: intentionally missing validation-friendly shape
 
+## Required Body Expectations
+
+- Fixture: present so only the Validation-Friendly Shape rule is under test
+
 ---
 
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [tiinex.schema.v1.md](../../docs/.topics/.schemas/tiinex.schema.v1.md)
+  - Towards: [tiinex.evidence.v1.md](../../docs/.topics/.schemas/tiinex.evidence.v1.md)
   - Value: PLACEHOLDER`);
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: artifactPath,
@@ -429,6 +433,99 @@ This body intentionally does not match the stored footer checksum.
 
   assert.ok(result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"), "Continuity validator should expose a normalized mismatch finding from the core validator surface.");
   assert.ok(result.findings.some((finding) => finding.surfaces.includes("problems")), "Normalized continuity findings should declare whether they belong on Problems surfaces.");
+}
+
+function testSchemaDefinitionRootSelfValidates() {
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.schema.v1.md");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: schemaPath,
+    maxDepth: 2
+  });
+
+  assert.equal(result.findings.length, 0, "The shared schema-definition root should self-validate without findings.");
+  assert.equal(result.stoppedBecause, "complete", "The shared schema-definition root should stop cleanly at its canonical self-rooting anchor.");
+}
+
+function testSchemaNoteCoreContractFindingForBaseSchemaNote() {
+  const artifactPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", ".test-temp", "schema-core-contract", "001-base-schema-note.md");
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Current
+  - Current Schema: [tiinex.schema.v1](../../docs/.topics/.schemas/tiinex.schema.v1.md)
+  - Created At: 2026-06-02 00:00:00
+  - Summary: Base schema-note fixture.
+
+---
+
+# Base Schema Note Fixture
+
+## Summary
+
+- Fixture: base schema note
+
+## Required Structure
+
+- Fixture: includes a normal contract-bearing section so only the root machine contract rule is under test
+
+## Validation-Friendly Shape
+
+- Fixture: intentionally missing a contract-bearing section
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.schema.v1.md](../../docs/.topics/.schemas/tiinex.schema.v1.md)
+  - Value: PLACEHOLDER`);
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: () => markdown,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "schema-machine-validation-contract-missing"), "Schema-note validation should surface the missing root machine validation contract for tiinex.schema.v1.");
+  assert.equal(result.findings.length, 1, "Only the root machine-validation-contract issue should be surfaced for this schema-root fixture.");
+}
+
+function testSchemaNoteCoreContractFindingForSubSchemaNote() {
+  const artifactPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", ".test-temp", "schema-core-contract", "001-sub-schema-note.md");
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Current
+  - Current Schema: [tiinex.evidence.v1](../../docs/.topics/.schemas/tiinex.evidence.v1.md)
+  - Created At: 2026-06-02 00:00:00
+  - Summary: Sub-schema fixture.
+
+---
+
+# Sub Schema Note Fixture
+
+## Summary
+
+- Fixture: sub schema note
+
+## Validation-Friendly Shape
+
+- Fixture: intentionally missing a contract-bearing section
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.evidence.v1.md](../../docs/.topics/.schemas/tiinex.evidence.v1.md)
+  - Value: PLACEHOLDER`);
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: () => markdown,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "schema-definition-core-contract-missing"), "Schema-note validation should surface a missing core contract section for a sub-schema note family.");
+  assert.equal(result.findings.length, 1, "Only the core schema-note contract issue should be surfaced for this sub-schema fixture.");
 }
 
 function testValidatorPolicyKeepsLegacyNoChecksumInternal() {
@@ -567,6 +664,9 @@ async function main() {
   testParseCurrentRuntimeSchemaContinuity();
   testRenderContinuityValidationMarkdown();
   testContinuityValidationProducesNormalizedFindings();
+  testSchemaDefinitionRootSelfValidates();
+  testSchemaNoteCoreContractFindingForBaseSchemaNote();
+  testSchemaNoteCoreContractFindingForSubSchemaNote();
   testValidatorPolicyKeepsLegacyNoChecksumInternal();
   testValidatorPolicyKeepsUnsupportedFooterMethodsOutOfProblems();
 
