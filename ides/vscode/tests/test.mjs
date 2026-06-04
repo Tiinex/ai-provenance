@@ -58,6 +58,17 @@ function finalizeContinuityIntegrity(markdown) {
   return markdown.replace(/(- Value:\s+)([^\r\n]+)/u, `$1${digest}`);
 }
 
+function excludeSchemaTargetReadabilityFindings(findings) {
+  return findings.filter((finding) => ![
+    "traceable-envelope-schema-permalink-required",
+    "traceable-envelope-schema-unreadable",
+    "traceable-current-schema-permalink-required",
+    "traceable-current-schema-unreadable",
+    "traceable-parent-schema-permalink-required",
+    "traceable-parent-schema-unreadable"
+  ].includes(finding.code));
+}
+
 function testContinuityValidationCoreWithLocalFixtureChain() {
   const tempRoot = path.join(packageRoot, ".test-temp", "continuity-validation");
   const parentPath = path.join(tempRoot, "001-parent.trace.md");
@@ -126,10 +137,13 @@ function testContinuityValidationCoreWithLocalFixtureChain() {
     filePath: childPath,
     readTextFileSync: (filePath) => {
       const markdown = fileMap.get(path.resolve(filePath));
-      if (!markdown) {
-        throw new Error(`Missing test fixture ${filePath}`);
+      if (markdown) {
+        return markdown;
       }
-      return markdown;
+      if (/\.schema\.md$/iu.test(filePath)) {
+        return "# Schema Fixture\n";
+      }
+      throw new Error(`Missing test fixture ${filePath}`);
     }
   });
 
@@ -231,7 +245,7 @@ function testValidatorFindsParentSchemaMismatch() {
   assert.equal(result.nodes.length, 2, "Continuity validator should still follow the local parent trace chain backwards.");
   assert.equal(result.nodes[0].traceableParentIntegrity?.status, "ok", "The direct-parent checksum should still be treated as valid for this schema mismatch fixture.");
   assert.ok(result.findings.some((finding) => finding.code === "traceable-parent-schema-mismatch"), "Validator should surface a parent-schema mismatch when the declared Parent Schema does not match the resolved parent artifact.");
-  assert.equal(result.findings.length, 1, "Only the schema-parent mismatch should be surfaced for this fixture.");
+  assert.equal(excludeSchemaTargetReadabilityFindings(result.findings).length, 1, "Only the schema-parent mismatch should be surfaced for this fixture outside the dedicated schema-target readability checks.");
 }
 
 function testValidatorFindsUnpinnedBrowseGitParentOrigin() {
@@ -326,7 +340,7 @@ function testValidatorFindsUnpinnedBrowseGitParentOrigin() {
   assert.equal(result.nodes.length, 2, "Continuity validator should still follow the local parent trace chain backwards.");
   assert.equal(result.nodes[0].traceableParentIntegrity?.status, "ok", "The direct-parent checksum should stay valid when only the browse+git target is malformed.");
   assert.ok(result.findings.some((finding) => finding.code === "traceable-parent-origin-unpinned-browse-git"), "Validator should surface a browse + git origin that is not commit-pinned.");
-  assert.equal(result.findings.length, 1, "Only the origin-lawfulness issue should be surfaced for this fixture.");
+  assert.equal(excludeSchemaTargetReadabilityFindings(result.findings).length, 1, "Only the origin-lawfulness issue should be surfaced for this fixture outside the dedicated schema-target readability checks.");
 }
 
 function testValidatorFindsMissingValidationFriendlyShape() {
@@ -418,7 +432,7 @@ function testValidatorFindsInvalidContinuityHeaderTimestamps() {
 
   assert.ok(result.findings.some((finding) => finding.code === "traceable-parent-created-at-invalid"), "Validator should surface malformed Parent Created At values.");
   assert.ok(result.findings.some((finding) => finding.code === "continuity-current-created-at-invalid"), "Validator should surface malformed Current Created At values.");
-  assert.equal(result.findings.length, 2, "Only the malformed Created At findings should be surfaced for this fixture.");
+  assert.equal(excludeSchemaTargetReadabilityFindings(result.findings).length, 2, "Only the malformed Created At findings should be surfaced for this fixture outside the dedicated schema-target readability checks.");
 }
 
 function testValidatorFindsMissingContinuityHeaderFields() {
@@ -473,7 +487,7 @@ function testValidatorFindsMissingContinuityHeaderFields() {
   assert.ok(result.findings.some((finding) => finding.code === "traceable-parent-created-at-missing"), "Validator should recommend Parent Created At when parent signal exists.");
   assert.deepEqual(result.findings.find((finding) => finding.code === "traceable-parent-schema-missing")?.surfaces, ["problems", "report"], "Recommended Parent Schema findings should now also surface in Problems.");
   assert.deepEqual(result.findings.find((finding) => finding.code === "traceable-parent-created-at-missing")?.surfaces, ["problems", "report"], "Recommended Parent Created At findings should now also surface in Problems.");
-  assert.equal(result.findings.length, 3, "Only the missing continuity-header field findings should be surfaced for this fixture.");
+  assert.equal(excludeSchemaTargetReadabilityFindings(result.findings).length, 3, "Only the missing continuity-header field findings should be surfaced for this fixture outside the dedicated schema-target readability checks.");
 }
 
 function testValidatorFindsMissingTaskStructure() {
@@ -506,7 +520,254 @@ This body intentionally omits objective, completion, and constraint sections.
   });
 
   assert.ok(result.findings.some((finding) => finding.code === "task-required-structure-missing"), "Validator should surface missing task body structure for ordinary task artifacts.");
-  assert.equal(result.findings.length, 1, "Only the missing task-structure finding should be surfaced for this fixture.");
+  assert.equal(excludeSchemaTargetReadabilityFindings(result.findings).length, 1, "Only the missing task-structure finding should be surfaced for this fixture outside the dedicated schema-target readability checks.");
+}
+
+function testValidatorAcceptsTabIndentedCurrentContinuityFields() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "tab-indented-current-fields", "001-tab-indented.trace.md");
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Current
+	- Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
+	- Created At: 2026-06-03 00:00:00
+	- Summary: Tab-indented continuity header fixture.
+
+---
+
+# Tab-Indented Topic
+
+## Current Read
+
+This fixture uses tabs inside the continuity envelope.
+
+## Design Direction
+
+The validator should still read Current fields correctly.
+
+## Relevance
+
+This protects older trace files that mix tabs into the continuity header.`);
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: () => markdown,
+    maxDepth: 1
+  });
+
+  assert.ok(
+    !result.findings.some((finding) => finding.code === "continuity-current-created-at-missing"),
+    "Validator should not report Current Created At missing when the continuity envelope uses tab indentation."
+  );
+  assert.equal(result.nodes[0]?.parsed.currentCreatedAt, "2026-06-03 00:00:00", "Validator should parse tab-indented Current Created At values.");
+}
+
+function testValidatorFindsUnreadableOrdinaryTraceSchemaTargets() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "ordinary-trace-schema-targets-permalink-required", "001-permalink-required.trace.md");
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Parent
+  - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-06-01 03:15:00
+  - Trace: [001-parent.trace.md](001-parent.trace.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
+  - Created At: 2026-06-02 22:38:22
+  - Summary: Old schema target paths fixture.
+
+---
+
+# Old Schema Target Fixture
+
+## Current Read
+
+This fixture preserves old schema target paths that no longer resolve locally.
+
+## Design Direction
+
+Ordinary trace validation should surface unreadable schema targets.
+
+## Relevance
+
+This protects old traces that still point to obsolete .md schema files.`);
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: () => markdown,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-envelope-schema-permalink-required"), "Validator should require commit-pinned Envelope Schema permalinks on ordinary traces.");
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-current-schema-permalink-required"), "Validator should require commit-pinned Current Schema permalinks on ordinary traces.");
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-parent-schema-permalink-required"), "Validator should require commit-pinned Parent Schema permalinks on ordinary traces.");
+}
+
+function testValidatorFindsUnresolvableGitHubSchemaPermalinks() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "ordinary-trace-schema-targets-github-unreadable", "001-github-unreadable.trace.md");
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/0000000000000000000000000000000000000000/.topics/.schemas/tiinex.root.v1.schema.md)
+- Parent
+  - Parent Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/0000000000000000000000000000000000000000/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Created At: 2026-06-01 03:15:00
+  - Trace: [001-parent.trace.md](001-parent.trace.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/0000000000000000000000000000000000000000/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Created At: 2026-06-02 22:38:22
+  - Summary: Broken permalink fixture.
+
+---
+
+# Broken Permalink Fixture
+
+## Current Read
+
+This fixture uses commit-pinned schema links that cannot be resolved against local repo state.
+
+## Design Direction
+
+Ordinary trace validation should reject unreadable GitHub schema permalinks.
+
+## Relevance
+
+This protects traces that look pinned but actually point nowhere.`);
+  const docsRoot = path.resolve(packageRoot, "..", "..", "..", "docs");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: () => markdown,
+    workspaceRoots: [{ name: "docs", fsPath: docsRoot }],
+    gitRevisionExistsSync: () => false,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-envelope-schema-unreadable"), "Validator should surface unreadable Envelope Schema permalinks on ordinary traces.");
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-current-schema-unreadable"), "Validator should surface unreadable Current Schema permalinks on ordinary traces.");
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-parent-schema-unreadable"), "Validator should surface unreadable Parent Schema permalinks on ordinary traces.");
+}
+
+function testValidatorFindsMissingContinuityIntegrityFooter() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "continuity-footer-missing", "001-footer-missing.trace.md");
+  const markdown = `# Continuity Context
+
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/0e6d169685d56c913cb890ba568a96b366ebd4bf/.topics/.schemas/tiinex.root.v1.schema.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/4a64e25b9d4dc657104bee51877d140ee93f4b2/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Created At: 2026-06-02 22:38:22
+  - Summary: Missing footer fixture.
+
+---
+
+# Missing Footer Fixture
+
+## Current Read
+
+This fixture intentionally omits the continuity footer.
+
+## Design Direction
+
+Ordinary trace validation should surface missing continuity integrity sections.
+
+## Relevance
+
+This prevents traces from silently skipping checksum coverage.`;
+  const docsRoot = path.resolve(packageRoot, "..", "..", "..", "docs");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: (filePath) => {
+      if (path.resolve(filePath) === path.resolve(artifactPath)) {
+        return markdown;
+      }
+      throw new Error(`Missing test fixture ${filePath}`);
+    },
+    workspaceRoots: [{ name: "docs", fsPath: docsRoot }],
+    gitRevisionExistsSync: () => true,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "continuity-checksum-missing"), "Validator should surface missing continuity footers on ordinary traces.");
+}
+
+function testValidatorFindsMissingTopicStructure() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "topic-structure-missing", "001-topic-structure-missing.trace.md");
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/0e6d169685d56c913cb890ba568a96b366ebd4bf/.topics/.schemas/tiinex.root.v1.schema.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/4a64e25b9d4dc657104bee51877d140ee93f4b2/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Created At: 2026-06-02 22:38:22
+  - Summary: Missing topic structure fixture.
+
+---
+
+Body content without a title or named topic sections.
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/4a64e25b9d4dc657104bee51877d140ee93f4b2/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Value: PLACEHOLDER`);
+  const docsRoot = path.resolve(packageRoot, "..", "..", "..", "docs");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: (filePath) => {
+      if (path.resolve(filePath) === path.resolve(artifactPath)) {
+        return markdown;
+      }
+      throw new Error(`Missing test fixture ${filePath}`);
+    },
+    workspaceRoots: [{ name: "docs", fsPath: docsRoot }],
+    gitRevisionExistsSync: () => true,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "topic-required-structure-missing"), "Validator should surface missing body-title or topic-section structure on ordinary tiinex.topic.v1 traces.");
+}
+
+function testValidatorFindsUnreadableParentTraceTarget() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "continuity-parent-trace-unreadable", "001-parent-trace-unreadable.trace.md");
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/0e6d169685d56c913cb890ba568a96b366ebd4bf/.topics/.schemas/tiinex.root.v1.schema.md)
+- Parent
+  - Parent Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/4a64e25b9d4dc657104bee51877d140ee93f4b2/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Created At: 2026-06-01 03:15:00
+  - Trace: [../001.trace.md](../001.trace.m)
+- Current
+  - Current Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/4a64e25b9d4dc657104bee51877d140ee93f4b2/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Created At: 2026-06-02 22:38:22
+  - Summary: Broken Parent Trace fixture.
+
+---
+
+# Broken Parent Trace
+
+## Summary
+
+- Fixture: unreadable-parent-trace
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/4a64e25b9d4dc657104bee51877d140ee93f4b2/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Value: PLACEHOLDER`);
+  const docsRoot = path.resolve(packageRoot, "..", "..", "..", "docs");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: (filePath) => {
+      if (path.resolve(filePath) === path.resolve(artifactPath)) {
+        return markdown;
+      }
+      throw new Error(`Missing test fixture ${filePath}`);
+    },
+    workspaceRoots: [{ name: "docs", fsPath: docsRoot }],
+    gitRevisionExistsSync: () => true,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-parent-trace-unreadable"), "Validator should surface Parent Trace targets that cannot be read.");
 }
 
 function testTaskSchemaNoteDoesNotTriggerTaskArtifactRule() {
@@ -1876,7 +2137,7 @@ function testValidatorPolicyKeepsLegacyNoChecksumInternal() {
   });
 
   assert.equal(result.nodes[0].traceableParentIntegrity?.status, "legacy-no-checksum", "Missing direct-parent checksum should remain an internal legacy status, not a surfaced Problems finding.");
-  assert.equal(result.findings.length, 0, "Legacy no-checksum cases should not produce a Problems finding under the current policy.");
+  assert.equal(excludeSchemaTargetReadabilityFindings(result.findings).length, 0, "Legacy no-checksum cases should not produce a Problems finding under the current policy outside the dedicated schema-target readability checks.");
 }
 
 function testValidatorPolicyKeepsUnsupportedFooterMethodsOutOfProblems() {
@@ -1912,7 +2173,7 @@ function testValidatorPolicyKeepsUnsupportedFooterMethodsOutOfProblems() {
   });
 
   assert.equal(result.nodes[0].continuityIntegrity.status, "unsupported-method", "Unsupported continuity footer methods should remain explicitly classified in the validator result.");
-  assert.equal(result.findings.length, 0, "Unsupported footer methods should not invent a Problems finding under the current policy.");
+  assert.equal(excludeSchemaTargetReadabilityFindings(result.findings).length, 0, "Unsupported footer methods should not invent a Problems finding under the current policy outside the dedicated schema-target readability checks.");
 }
 
 async function main() {
@@ -1924,6 +2185,12 @@ async function main() {
   testValidatorFindsInvalidContinuityHeaderTimestamps();
   testValidatorFindsMissingContinuityHeaderFields();
   testValidatorFindsMissingTaskStructure();
+  testValidatorAcceptsTabIndentedCurrentContinuityFields();
+  testValidatorFindsUnreadableOrdinaryTraceSchemaTargets();
+  testValidatorFindsUnresolvableGitHubSchemaPermalinks();
+  testValidatorFindsMissingContinuityIntegrityFooter();
+  testValidatorFindsMissingTopicStructure();
+  testValidatorFindsUnreadableParentTraceTarget();
   testTaskSchemaNoteDoesNotTriggerTaskArtifactRule();
   testCurrentValidatorTaskLeafSatisfiesTaskStructureRule();
   testRuntimeTraceStructureValidationAgainstTransferFixture();
@@ -2310,7 +2577,7 @@ async function main() {
   assert.ok(extensionSource.includes("Latest Carry Package"), "Traceable extension source is missing the latest-carry-package picker label.");
   assert.ok(extensionSource.includes('vscode.workspace.onWillRenameFiles') && extensionSource.includes('vscode.workspace.onDidRenameFiles') && extensionSource.includes('traceableRenameMoveRewriteBehavior') && extensionSource.includes('confirmTraceableRenameMoveRewrite') && extensionSource.includes('performTraceableStagedFileMoveOperation') && extensionSource.includes('runTraceableOwnedMoveOperation') && extensionSource.includes('pendingTraceableRewriteRenames'), "Traceable extension source is missing the trace-aware rename/move wiring across staged lineage moves and host-owned alone rewrites.");
   assert.ok(extensionSource.includes('const RETURN_TO_PARENT_TRACE_ELIGIBLE_CONTEXT = "tiinex.aiProvenance.returnToParentEligibleResources";') && extensionSource.includes('buildTraceableExplorerResourceContextKeys(resource: vscode.Uri)') && extensionSource.includes('const uriPath = resource.path;') && extensionSource.includes('const decodedUriPath = decodeURIComponent(uriPath);') && extensionSource.includes('refreshReturnToParentTraceEligibleContext') && extensionSource.includes('vscode.workspace.findFiles("**/*.trace.md")'), "Traceable extension source should keep the return-to-parent eligibility context computation available for Explorer gating and command-side lineage checks.");
-  assert.ok(extensionSource.includes('topic-schema-parent-origin-missing') && extensionSource.includes('topic-schema-parent-origin-browse-git-missing') && extensionSource.includes('topic-schema-parent-origin-unpinned-browse-git') && extensionSource.includes('topic-schema-parent-created-at-missing') && extensionSource.includes('topic-schema-parent-created-at-invalid') && extensionSource.includes('topic-schema-parent-created-at-mismatch') && extensionSource.includes('topic-schema-footer-target-mismatch') && extensionSource.includes('topic-schema-footer-target-not-permalink') && extensionSource.includes('topic-schema-lineage-unexpected-envelope-field') && extensionSource.includes('topic-schema-envelope-schema-mismatch') && extensionSource.includes('topic-schema-envelope-schema-unreadable') && extensionSource.includes('topic-schema-parent-schema-unreadable') && extensionSource.includes('topic-schema-current-schema-unreadable') && extensionSource.includes('root-schema-envelope-schema-mismatch') && extensionSource.includes('root-schema-envelope-schema-unreadable') && extensionSource.includes('root-schema-current-schema-unreadable') && extensionSource.includes('function createInsertTopicSchemaParentOriginEdit(') && extensionSource.includes('function createSetTopicSchemaParentCreatedAtEdit(') && extensionSource.includes('function createSetTopicSchemaFooterTowardsEdit(') && extensionSource.includes('Insert Parent Created At from parent trace') && extensionSource.includes('Replace Parent Created At from parent trace') && extensionSource.includes('Insert Parent Origin scaffold') && extensionSource.includes('Insert browse + git permalink scaffold') && extensionSource.includes('Replace footer Towards permalink'), "Traceable extension source should map schema-envelope, footer-target, parent-created-at, and Parent Origin diagnostics to the right lines and expose scaffold quick fixes for missing or drifted origin metadata.");
+  assert.ok(extensionSource.includes('topic-schema-parent-origin-missing') && extensionSource.includes('topic-schema-parent-origin-browse-git-missing') && extensionSource.includes('topic-schema-parent-origin-unpinned-browse-git') && extensionSource.includes('topic-schema-parent-created-at-missing') && extensionSource.includes('topic-schema-parent-created-at-invalid') && extensionSource.includes('topic-schema-parent-created-at-mismatch') && extensionSource.includes('topic-schema-footer-target-mismatch') && extensionSource.includes('topic-schema-footer-target-not-permalink') && extensionSource.includes('topic-schema-lineage-unexpected-envelope-field') && extensionSource.includes('topic-schema-envelope-schema-mismatch') && extensionSource.includes('topic-schema-envelope-schema-unreadable') && extensionSource.includes('topic-schema-parent-schema-unreadable') && extensionSource.includes('topic-schema-current-schema-unreadable') && extensionSource.includes('root-schema-envelope-schema-mismatch') && extensionSource.includes('root-schema-envelope-schema-unreadable') && extensionSource.includes('root-schema-current-schema-unreadable') && extensionSource.includes('function createInsertTopicSchemaParentOriginEdit(') && extensionSource.includes('function createSetTopicSchemaParentCreatedAtEdit(') && extensionSource.includes('function createSetTopicSchemaFooterTowardsEdit(') && extensionSource.includes('function createInsertContinuityIntegrityFooterEdit(') && extensionSource.includes('function createSetContinuityParentCreatedAtEdit(') && extensionSource.includes('Insert Parent Created At from parent trace') && extensionSource.includes('Replace Parent Created At from parent trace') && extensionSource.includes('Insert Continuity Integrity footer') && extensionSource.includes('Insert Parent Origin scaffold') && extensionSource.includes('Insert browse + git permalink scaffold') && extensionSource.includes('Replace footer Towards permalink'), "Traceable extension source should map schema-envelope, footer-target, parent-created-at, and Parent Origin diagnostics to the right lines and expose scaffold quick fixes for missing or drifted origin metadata across both schema notes and ordinary traces.");
   assert.ok(extensionSource.includes('computeTargetedTraceableContinuityChecksumSha256') && extensionSource.includes('parseSchemaNoteMarkdown(markdown).footerIntegrity') && extensionSource.includes('artifactUri.fsPath.endsWith(".schema.md")'), "Traceable extension checksum rotation should use the declared footer target when rotating schema-note checksums.");
   assert.ok(extensionSource.includes('const returnToParentTraceWatcher = vscode.workspace.createFileSystemWatcher("**/*.trace.md");') && extensionSource.includes('onDidSaveTextDocument((document) => {') && extensionSource.includes('onDidChangeWorkspaceFolders(() => {'), "Traceable extension source should keep the return-to-parent eligibility context refreshed as trace files change.");
   assert.ok(extensionSource.includes('function getConfiguredTraceableDefaultMoveAction(resource?: vscode.Uri): TraceableDefaultFileAction {') && extensionSource.includes('function getConfiguredTraceableMovePromptOutcome(') && extensionSource.includes('pickPreferredTraceableLineageScope'), "Traceable extension source is missing the configurable default move action readers and lineage-scope preference helper.");

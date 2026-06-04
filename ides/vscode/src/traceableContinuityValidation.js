@@ -1,3 +1,4 @@
+const { execFileSync } = require("node:child_process");
 const { createHash } = require("node:crypto");
 const { readFileSync } = require("node:fs");
 const path = require("node:path");
@@ -123,9 +124,13 @@ const { fileURLToPath } = require("node:url");
  * @typedef {{
  *   filePath: string,
  *   maxDepth?: number,
- *   readTextFileSync?: (filePath: string) => string
+ *   readTextFileSync?: (filePath: string) => string,
+ *   workspaceRoots?: Array<{ name?: string, fsPath: string }>,
+ *   gitRevisionExistsSync?: (repoRoot: string, revision: string) => boolean | undefined
  * }} ValidateTraceableContinuityArtifactChainInput
  */
+
+const gitRevisionExistsCache = new Map();
 
 function normalizePathForComparison(candidate) {
   const trimmed = typeof candidate === "string" ? candidate.trim() : "";
@@ -166,7 +171,7 @@ function extractLabeledValue(line, label) {
 }
 
 function extractNestedLabeledValue(line, label) {
-  const match = line.match(new RegExp(`^\\s{2,}-\\s+${label}:\\s+(.*)$`, "u"));
+  const match = line.match(new RegExp(`^(?: {2,}|\\t+)-\\s+${label}:\\s+(.*)$`, "u"));
   return match ? trimToUndefined(match[1]) : undefined;
 }
 
@@ -330,6 +335,7 @@ function parseArtifactCreationContract(markdown) {
 
 function parseContinuityContext(lines) {
   const result = {
+    envelopeSchema: undefined,
     currentSchema: undefined,
     parentSchema: undefined,
     parentCreatedAt: undefined,
@@ -356,6 +362,12 @@ function parseContinuityContext(lines) {
       break;
     }
 
+    const envelopeSchemaValue = extractLabeledValue(line, "Envelope Schema");
+    if (envelopeSchemaValue) {
+      result.envelopeSchema = extractMarkdownLink(envelopeSchemaValue);
+      continue;
+    }
+
     if (/^-\s+Parent\s*$/u.test(line)) {
       currentTopLevel = "parent";
       inParentOrigin = false;
@@ -367,7 +379,7 @@ function parseContinuityContext(lines) {
       continue;
     }
 
-    if (currentTopLevel === "parent" && /^\s{2,}-\s+Origin:\s*$/u.test(line)) {
+    if (currentTopLevel === "parent" && /^(?: {2,}|\t+)-\s+Origin:\s*$/u.test(line)) {
       inParentOrigin = true;
       continue;
     }
@@ -392,7 +404,7 @@ function parseContinuityContext(lines) {
         continue;
       }
       if (inParentOrigin) {
-        const originMatch = line.match(/^\s{4,}-\s+\[(relative|absolute|browse \+ git)\]\((.*?)\)\s*$/u);
+        const originMatch = line.match(/^(?: {4,}|\t{2,})-\s+\[(relative|absolute|browse \+ git)\]\((.*?)\)\s*$/u);
         if (originMatch) {
           const key = originMatch[1] === "browse + git"
             ? "browseGit"
@@ -517,6 +529,192 @@ function resolveLocalReference(currentFilePath, reference) {
     : path.resolve(path.dirname(currentFilePath), trimmed);
 }
 
+function isReadableLocalReferenceCandidate(reference) {
+  const trimmed = trimToUndefined(reference);
+  if (!trimmed) {
+    return false;
+  }
+  if (/^file:\/\//iu.test(trimmed)) {
+    return true;
+  }
+  if (isExternalUrl(trimmed)) {
+    return false;
+  }
+  if (path.isAbsolute(trimmed)) {
+    return true;
+  }
+  return /^[.]{1,2}(?:[\\/]|$)/u.test(trimmed) || trimmed.includes("/") || trimmed.includes("\\");
+}
+
+function canReadResolvedLocalReference(filePath, reference, readTextFileSync) {
+  if (!isReadableLocalReferenceCandidate(reference)) {
+    return true;
+  }
+  const resolvedPath = resolveLocalReference(filePath, reference);
+  if (!resolvedPath) {
+    return false;
+  }
+  try {
+    readTextFileSync(resolvedPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseGitHubSchemaPermalink(reference) {
+  const trimmed = trimToUndefined(reference);
+  if (!trimmed || !isExternalUrl(trimmed)) {
+    return undefined;
+  }
+  try {
+    const parsedUrl = new URL(trimmed);
+    const pathnameParts = parsedUrl.pathname.split("/").filter(Boolean);
+    if (parsedUrl.hostname === "github.com") {
+      if (pathnameParts.length < 5 || pathnameParts[2] !== "blob") {
+        return undefined;
+      }
+      const revision = trimToUndefined(pathnameParts[3]);
+      const relativePath = trimToUndefined(pathnameParts.slice(4).join("/"));
+      if (!revision || !relativePath || !/^[0-9a-f]{7,40}$/iu.test(revision)) {
+        return undefined;
+      }
+      return {
+        repoOwner: trimToUndefined(pathnameParts[0]),
+        repoName: trimToUndefined(pathnameParts[1]),
+        revision,
+        relativePath
+      };
+    }
+    if (parsedUrl.hostname === "raw.githubusercontent.com") {
+      if (pathnameParts.length < 4) {
+        return undefined;
+      }
+      const revision = trimToUndefined(pathnameParts[2]);
+      const relativePath = trimToUndefined(pathnameParts.slice(3).join("/"));
+      if (!revision || !relativePath || !/^[0-9a-f]{7,40}$/iu.test(revision)) {
+        return undefined;
+      }
+      return {
+        repoOwner: trimToUndefined(pathnameParts[0]),
+        repoName: trimToUndefined(pathnameParts[1]),
+        revision,
+        relativePath
+      };
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function normalizeWorkspaceRootEntry(root) {
+  if (!root || typeof root.fsPath !== "string") {
+    return undefined;
+  }
+  return {
+    name: trimToUndefined(root.name) ?? path.basename(root.fsPath),
+    fsPath: path.resolve(root.fsPath)
+  };
+}
+
+function findAncestorRepoRoot(filePath, repoName) {
+  const normalizedRepoName = trimToUndefined(repoName)?.toLowerCase();
+  if (!normalizedRepoName) {
+    return undefined;
+  }
+  let currentDirectory = path.dirname(path.resolve(filePath));
+  while (true) {
+    if (path.basename(currentDirectory).toLowerCase() === normalizedRepoName) {
+      return currentDirectory;
+    }
+    const parentDirectory = path.dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) {
+      return undefined;
+    }
+    currentDirectory = parentDirectory;
+  }
+}
+
+function listCandidateRepoRoots(filePath, repoName, workspaceRoots) {
+  const normalizedRepoName = trimToUndefined(repoName)?.toLowerCase();
+  if (!normalizedRepoName) {
+    return [];
+  }
+  const results = [];
+  const seen = new Set();
+  for (const candidate of Array.isArray(workspaceRoots) ? workspaceRoots : []) {
+    const normalized = normalizeWorkspaceRootEntry(candidate);
+    if (!normalized) {
+      continue;
+    }
+    const candidateName = trimToUndefined(normalized.name)?.toLowerCase();
+    const candidateBaseName = path.basename(normalized.fsPath).toLowerCase();
+    if (candidateName !== normalizedRepoName && candidateBaseName !== normalizedRepoName) {
+      continue;
+    }
+    const key = normalizePathForComparison(normalized.fsPath);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      results.push(normalized.fsPath);
+    }
+  }
+  const ancestorMatch = findAncestorRepoRoot(filePath, repoName);
+  const ancestorKey = ancestorMatch ? normalizePathForComparison(ancestorMatch) : undefined;
+  if (ancestorMatch && ancestorKey && !seen.has(ancestorKey)) {
+    seen.add(ancestorKey);
+    results.push(ancestorMatch);
+  }
+  return results;
+}
+
+function defaultGitRevisionExistsSync(repoRoot, revision) {
+  const normalizedRoot = normalizePathForComparison(repoRoot);
+  const normalizedRevision = trimToUndefined(revision)?.toLowerCase();
+  if (!normalizedRoot || !normalizedRevision) {
+    return undefined;
+  }
+  const cacheKey = `${normalizedRoot}::${normalizedRevision}`;
+  if (gitRevisionExistsCache.has(cacheKey)) {
+    return gitRevisionExistsCache.get(cacheKey);
+  }
+  try {
+    execFileSync("git", ["-C", repoRoot, "rev-parse", "--verify", `${revision}^{commit}`], { stdio: "ignore" });
+    gitRevisionExistsCache.set(cacheKey, true);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      gitRevisionExistsCache.set(cacheKey, undefined);
+      return undefined;
+    }
+    gitRevisionExistsCache.set(cacheKey, false);
+    return false;
+  }
+}
+
+function canReadResolvedSchemaPermalink(filePath, reference, readTextFileSync, workspaceRoots, gitRevisionExistsSync) {
+  const permalink = parseGitHubSchemaPermalink(reference);
+  if (!permalink) {
+    return false;
+  }
+  for (const repoRoot of listCandidateRepoRoots(filePath, permalink.repoName, workspaceRoots)) {
+    const revisionKnown = typeof gitRevisionExistsSync === "function"
+      ? gitRevisionExistsSync(repoRoot, permalink.revision)
+      : defaultGitRevisionExistsSync(repoRoot, permalink.revision);
+    if (revisionKnown === false) {
+      continue;
+    }
+    const resolvedPath = path.resolve(repoRoot, ...permalink.relativePath.split("/"));
+    try {
+      readTextFileSync(resolvedPath);
+      return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
 function chooseBackwardLink(filePath, parsed) {
   const traceableParentTarget = trimToUndefined(parsed.traceableState?.parentTracePath);
   if (traceableParentTarget) {
@@ -608,6 +806,17 @@ const TASK_CONSTRAINT_SIGNAL_HEADING_GROUP = [
   "Scope And Non-Goals"
 ];
 
+const TOPIC_BODY_SIGNAL_HEADING_GROUP = [
+  "Summary",
+  "Current Read",
+  "Design Direction",
+  "Relevance",
+  "Risks",
+  "Open Questions",
+  "Next Artifacts",
+  "Next Steps"
+];
+
 const ROOT_SCHEMA_REQUIRED_CONTRACT_GROUPS = [
   "Machine Authority Surfaces",
   "Contract Syntax",
@@ -627,6 +836,66 @@ const ROOT_SCHEMA_REQUIRED_CONTRACT_GROUPS = [
   "Extension",
   "Optional Machine Sections"
 ];
+
+function collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileSync, workspaceRoots, gitRevisionExistsSync) {
+  if (isSchemaNoteFilePath(node.filePath)) {
+    return [];
+  }
+
+  const findings = [];
+  const schemaTargets = [
+    {
+      target: node.parsed.envelopeSchema?.target,
+      nonPermalinkCode: "traceable-envelope-schema-permalink-required",
+      unreadableCode: "traceable-envelope-schema-unreadable",
+      category: "continuity-integrity",
+      label: "Envelope Schema"
+    },
+    {
+      target: node.parsed.currentSchema?.target,
+      nonPermalinkCode: "traceable-current-schema-permalink-required",
+      unreadableCode: "traceable-current-schema-unreadable",
+      category: "continuity-integrity",
+      label: "Current Schema"
+    },
+    {
+      target: node.parsed.parentSchema?.target,
+      nonPermalinkCode: "traceable-parent-schema-permalink-required",
+      unreadableCode: "traceable-parent-schema-unreadable",
+      category: "direct-parent-integrity",
+      label: "Parent Schema"
+    }
+  ];
+
+  for (const schemaTarget of schemaTargets) {
+    const target = trimToUndefined(schemaTarget.target);
+    if (!target) {
+      continue;
+    }
+    if (!parseGitHubSchemaPermalink(target)) {
+      findings.push({
+        code: schemaTarget.nonPermalinkCode,
+        category: schemaTarget.category,
+        filePath: node.filePath,
+        message: `${schemaTarget.label} must use a commit-pinned schema permalink on ordinary trace artifacts.`,
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+      continue;
+    }
+    if (!canReadResolvedSchemaPermalink(node.filePath, target, readTextFileSync, workspaceRoots, gitRevisionExistsSync)) {
+      findings.push({
+        code: schemaTarget.unreadableCode,
+        category: schemaTarget.category,
+        filePath: node.filePath,
+        message: `${schemaTarget.label} points to a schema permalink that could not be resolved against the local repo/workspace state.`,
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    }
+  }
+  return findings;
+}
 
 function isSchemaNoteFilePath(filePath) {
   return /[\\/]\.topics[\\/]\.schemas[\\/]/u.test(path.resolve(filePath)) && !/README\.md$/iu.test(filePath);
@@ -729,6 +998,76 @@ function collectTaskStructureFindings(node) {
     severity: "error",
     surfaces: ["problems", "report"]
   }];
+}
+
+function collectTopicStructureFindings(node) {
+  if (isSchemaNoteFilePath(node.filePath) || extractSchemaIdentity(node.parsed.currentSchema) !== "tiinex.topic.v1") {
+    return [];
+  }
+
+  const levelOneHeadings = node.parsed.headings
+    .filter((heading) => heading.level === 1)
+    .map((heading) => normalizeHeadingToken(heading.text))
+    .filter((heading) => heading !== normalizeHeadingToken("Continuity Context") && heading !== normalizeHeadingToken("Continuity Integrity"));
+  const levelTwoHeadings = collectHeadingMap(node.parsed.headings, 2);
+  const missingParts = [];
+
+  if (levelOneHeadings.length === 0) {
+    missingParts.push("a body title");
+  }
+  if (!hasAnyHeading(levelTwoHeadings, TOPIC_BODY_SIGNAL_HEADING_GROUP)) {
+    missingParts.push("at least one reader-facing topic section such as Summary, Current Read, Design Direction, or Relevance");
+  }
+
+  if (missingParts.length === 0) {
+    return [];
+  }
+
+  return [{
+    code: "topic-required-structure-missing",
+    category: "topic-structure",
+    filePath: node.filePath,
+    message: `Topic artifacts using tiinex.topic.v1 should include ${missingParts.join(" and ")}.`,
+    severity: "error",
+    surfaces: ["problems", "report"]
+  }];
+}
+
+function collectContinuityParentTraceFindings(node, readTextFileSync) {
+  if (isSchemaNoteFilePath(node.filePath)) {
+    return [];
+  }
+
+  const parentTraceTarget = trimToUndefined(node.parsed.parentTrace?.target);
+  if (!parentTraceTarget) {
+    return [];
+  }
+
+  const resolvedParentTrace = resolveLocalReference(node.filePath, parentTraceTarget);
+  if (!resolvedParentTrace) {
+    return [{
+      code: "traceable-parent-trace-unresolvable",
+      category: "direct-parent-integrity",
+      filePath: node.filePath,
+      message: "Parent Trace should point to a locally readable trace artifact so the declared parent can be looked up directly.",
+      severity: "error",
+      surfaces: ["problems", "report"]
+    }];
+  }
+
+  try {
+    readTextFileSync(resolvedParentTrace);
+    return [];
+  } catch {
+    return [{
+      code: "traceable-parent-trace-unreadable",
+      category: "direct-parent-integrity",
+      filePath: node.filePath,
+      message: "Parent Trace points to a trace artifact that could not be read.",
+      severity: "error",
+      surfaces: ["problems", "report"]
+    }];
+  }
 }
 
 function collectContractSectionShapeFindings(node, contract, options = {}) {
@@ -937,6 +1276,7 @@ function parseTraceableContinuityMarkdown(markdown) {
   const context = parseContinuityContext(lines);
   const footerIntegrity = parseContinuityIntegrity(lines);
   return {
+    envelopeSchema: context.envelopeSchema,
     currentSchema: context.currentSchema,
     parentSchema: context.parentSchema,
     parentCreatedAt: context.parentCreatedAt,
@@ -1114,7 +1454,10 @@ function validateTraceableContinuityArtifactChainSync(input) {
 
   const findings = collectTraceableContinuityFindings({
     nodes,
-    stoppedBecause
+    stoppedBecause,
+    readTextFileSync,
+    workspaceRoots: input.workspaceRoots,
+    gitRevisionExistsSync: input.gitRevisionExistsSync
   });
 
   return {
@@ -1127,6 +1470,9 @@ function validateTraceableContinuityArtifactChainSync(input) {
 
 function collectTraceableContinuityFindings(result) {
   const findings = [];
+  const readTextFileSync = typeof result.readTextFileSync === "function" ? result.readTextFileSync : (filePath) => readFileSync(filePath, "utf8");
+  const workspaceRoots = Array.isArray(result.workspaceRoots) ? result.workspaceRoots : [];
+  const gitRevisionExistsSync = typeof result.gitRevisionExistsSync === "function" ? result.gitRevisionExistsSync : undefined;
 
   for (let index = 0; index < result.nodes.length; index += 1) {
     const node = result.nodes[index];
@@ -1138,6 +1484,9 @@ function collectTraceableContinuityFindings(result) {
     findings.push(...collectDeclaredArtifactCreationContractFindings(node));
     findings.push(...collectRootSchemaContractFindings(node));
     findings.push(...collectTaskStructureFindings(node));
+    findings.push(...collectTopicStructureFindings(node));
+    findings.push(...collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileSync, workspaceRoots, gitRevisionExistsSync));
+    findings.push(...collectContinuityParentTraceFindings(node, readTextFileSync));
 
     if (!trimToUndefined(node.parsed.currentCreatedAt)) {
       findings.push({
@@ -1173,6 +1522,16 @@ function collectTraceableContinuityFindings(result) {
     }
 
     switch (node.continuityIntegrity?.status) {
+      case "missing":
+        findings.push({
+          code: "continuity-checksum-missing",
+          category: "continuity-integrity",
+          filePath: node.filePath,
+          message: "Continuity Integrity footer is missing or incomplete.",
+          severity: "error",
+          surfaces: ["problems", "report"]
+        });
+        break;
       case "mismatch":
         findings.push({
           code: "continuity-checksum-mismatch",

@@ -24,13 +24,22 @@ export interface EvaluateTraceableDirectParentIntegrityCoreInput {
 
 export interface TraceableContinuityFinding {
   code:
+    | "continuity-checksum-missing"
     | "continuity-checksum-mismatch"
     | "continuity-current-created-at-missing"
     | "continuity-current-created-at-invalid"
+    | "traceable-envelope-schema-permalink-required"
+    | "traceable-envelope-schema-unreadable"
+    | "traceable-current-schema-permalink-required"
+    | "traceable-current-schema-unreadable"
     | "traceable-parent-missing-parent"
     | "traceable-parent-created-at-invalid"
     | "traceable-parent-created-at-missing"
+    | "traceable-parent-trace-unresolvable"
+    | "traceable-parent-trace-unreadable"
+    | "traceable-parent-schema-permalink-required"
     | "traceable-parent-schema-missing"
+    | "traceable-parent-schema-unreadable"
     | "traceable-parent-schema-mismatch"
     | "traceable-parent-origin-unpinned-browse-git"
     | "traceable-parent-unreadable-parent"
@@ -56,6 +65,7 @@ export interface TraceableContinuityFinding {
     | "root-schema-contract-star-bullets-present"
     | "root-schema-contract-unexpected-content"
     | "root-schema-contract-groups-missing"
+    | "topic-required-structure-missing"
     | "task-required-structure-missing"
     | "runtime-required-sections-missing"
     | "runtime-recommended-sections-missing"
@@ -68,6 +78,7 @@ export interface TraceableContinuityFinding {
     | "schema-note-structure"
     | "schema-validation-contract"
     | "artifact-creation-contract"
+    | "topic-structure"
     | "task-structure"
     | "runtime-trace-structure"
     | "backward-traversal";
@@ -101,6 +112,7 @@ export interface TraceableContinuityValidationResult {
       optionalStateSectionsPresent: string[];
     };
     parsed: {
+      envelopeSchema?: { id?: string; target?: string; label?: string };
       currentSchema?: { id?: string; target?: string; label?: string };
       parentSchema?: { id?: string; target?: string; label?: string };
       parentCreatedAt?: string;
@@ -144,15 +156,31 @@ export interface TraceableContinuityValidationResult {
   stoppedBecause: "complete" | "external-parent" | "unreadable-parent" | "cycle-detected" | "max-depth";
 }
 
+export interface ParsedTraceableContinuityMarkdown {
+  envelopeSchema?: { id?: string; target?: string; label?: string };
+  currentSchema?: { id?: string; target?: string; label?: string };
+  parentSchema?: { id?: string; target?: string; label?: string };
+  parentCreatedAt?: string;
+  parentTrace?: { label?: string; target?: string };
+  parentOrigin?: { relative?: string; absolute?: string; browseGit?: string };
+  currentCreatedAt?: string;
+  currentWhy?: string;
+  currentSummary?: string;
+  footerIntegrity?: { method?: string; towardsTarget?: string; value?: string };
+}
+
 export function canonicalizeTraceableContinuityChecksumSource(markdown: string): string;
 export function computeTraceableContinuityChecksumSha256(markdown: string): string;
 export function evaluateTraceableDirectParentIntegrityCoreSync(
   input: EvaluateTraceableDirectParentIntegrityCoreInput,
   options?: { readTextFileSync?: (filePath: string) => string }
 ): TraceableDirectParentIntegrityCoreResult;
+export function parseTraceableContinuityMarkdown(markdown: string): ParsedTraceableContinuityMarkdown;
 export function validateTraceableContinuityArtifactChainSync(input: {
   filePath: string;
   maxDepth?: number;
   readTextFileSync?: (filePath: string) => string;
+  workspaceRoots?: Array<{ name?: string; fsPath: string }>;
+  gitRevisionExistsSync?: (repoRoot: string, revision: string) => boolean | undefined;
 }): TraceableContinuityValidationResult;
 export function renderTraceableContinuityValidationMarkdown(result: TraceableContinuityValidationResult): string;

@@ -1696,7 +1696,14 @@ class TraceableStructureTreeController implements vscode.TreeDataProvider<Tracea
     }
 
     try {
-      const validation = validateTraceableContinuityArtifactChainSync({ filePath: node.path, maxDepth: 9000 });
+      const validation = validateTraceableContinuityArtifactChainSync({
+        filePath: node.path,
+        maxDepth: 9000,
+        workspaceRoots: vscode.workspace.workspaceFolders?.map((folder) => ({
+          name: folder.name,
+          fsPath: folder.uri.fsPath
+        }))
+      });
       const rootNode = validation.nodes[0];
       const integrity = rootNode?.traceableParentIntegrity;
       const directStatus = integrity?.status ?? rootNode?.continuityIntegrity?.status ?? "unknown";
