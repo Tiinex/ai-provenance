@@ -32,12 +32,43 @@ const { fileURLToPath } = require("node:url");
 
 /**
  * @typedef {{
+ *   label: string,
+ *   items: string[]
+ * }} TraceableContractCategory
+ */
+
+/**
+ * @typedef {{
+ *   heading: string,
+ *   categories: TraceableContractCategory[]
+ * }} TraceableContractGroup
+ */
+
+/**
+ * @typedef {{
+ *   present: boolean,
+ *   groups: TraceableContractGroup[],
+ *   duplicateGroupHeadings: string[],
+ *   categoriesMissingLists: string[],
+ *   unlabeledHyphenListLines: string[],
+ *   starBulletLines: string[],
+ *   unexpectedContentLines: string[]
+ * }} ParsedTraceableSchemaValidationContract
+ */
+
+/**
+ * @typedef {{
  *   currentSchema?: { id?: string, target?: string },
  *   parentSchema?: { id?: string, target?: string },
+ *   parentCreatedAt?: string,
  *   parentTrace?: { label?: string, target?: string },
  *   parentOrigin?: { relative?: string, absolute?: string, browseGit?: string },
+ *   currentCreatedAt?: string,
+ *   currentWhy?: string,
+ *   currentSummary?: string,
  *   footerIntegrity?: { method?: string, towardsLabel?: string, towardsTarget?: string, value?: string },
  *   traceableState?: { schema?: string, parentTracePath?: string, parentTraceChecksumSha256?: string, lineageLabel?: string, lineageDepth?: number },
+ *   schemaValidationContract?: ParsedTraceableSchemaValidationContract,
  *   headings: TraceableMarkdownHeading[]
  * }} ParsedTraceableContinuityMarkdown
  */
@@ -184,12 +215,129 @@ function parseHeadings(markdown) {
   }));
 }
 
+function parseContractSection(markdown, sectionHeading) {
+  const lines = markdown.replace(/\r\n?/gu, "\n").split("\n");
+  const startIndex = lines.findIndex((line) => line.trim() === `## ${sectionHeading}`);
+  if (startIndex < 0) {
+    return {
+      present: false,
+      groups: [],
+      duplicateGroupHeadings: [],
+      categoriesMissingLists: [],
+      unlabeledHyphenListLines: [],
+      starBulletLines: [],
+      unexpectedContentLines: []
+    };
+  }
+
+  const groups = [];
+  const duplicateGroupHeadings = [];
+  const categoriesMissingLists = [];
+  const unlabeledHyphenListLines = [];
+  const starBulletLines = [];
+  const unexpectedContentLines = [];
+  const seenGroupHeadings = new Set();
+  let currentGroup;
+  let currentCategory;
+
+  function finalizePendingCategory() {
+    if (currentCategory && currentCategory.items.length === 0) {
+      categoriesMissingLists.push(`${currentGroup?.heading ?? "<unknown group>"} -> ${currentCategory.label}`);
+    }
+  }
+
+  for (const line of lines.slice(startIndex + 1)) {
+    const trimmed = line.trim();
+    if (trimmed === "---" || /^##\s+/u.test(trimmed) || /^#\s+/u.test(trimmed)) {
+      break;
+    }
+    if (!trimmed) {
+      continue;
+    }
+
+    const levelThreeHeading = trimmed.match(/^###\s+(.+)$/u);
+    if (levelThreeHeading) {
+      finalizePendingCategory();
+      currentCategory = undefined;
+      const heading = trimToUndefined(levelThreeHeading[1]);
+      if (!heading) {
+        continue;
+      }
+      if (seenGroupHeadings.has(heading)) {
+        duplicateGroupHeadings.push(heading);
+      }
+      seenGroupHeadings.add(heading);
+      currentGroup = {
+        heading,
+        categories: []
+      };
+      groups.push(currentGroup);
+      continue;
+    }
+
+    if (!currentGroup) {
+      unexpectedContentLines.push(trimmed);
+      continue;
+    }
+
+    if (/^(\*|\s+\*)\s+/u.test(line)) {
+      starBulletLines.push(trimmed);
+      continue;
+    }
+
+    if (/^(-|\s+-)\s+/u.test(line)) {
+      if (!currentCategory) {
+        unlabeledHyphenListLines.push(trimmed);
+        continue;
+      }
+      currentCategory.items.push(trimmed.replace(/^\s*-\s+/u, ""));
+      continue;
+    }
+
+    if (!/^#/u.test(trimmed)) {
+      finalizePendingCategory();
+      currentCategory = {
+        label: trimmed,
+        items: []
+      };
+      currentGroup.categories.push(currentCategory);
+      continue;
+    }
+
+    unexpectedContentLines.push(trimmed);
+  }
+
+  finalizePendingCategory();
+
+  return {
+    present: true,
+    groups,
+    duplicateGroupHeadings,
+    categoriesMissingLists,
+    unlabeledHyphenListLines,
+    starBulletLines,
+    unexpectedContentLines
+  };
+}
+
+function parseSchemaValidationContract(markdown) {
+  return parseContractSection(markdown, "Schema Validation Contract");
+}
+
+function parseArtifactCreationContract(markdown) {
+  return parseContractSection(markdown, "Artifact Creation Contract");
+}
+
 function parseContinuityContext(lines) {
   const result = {
     currentSchema: undefined,
     parentSchema: undefined,
+    parentCreatedAt: undefined,
     parentTrace: undefined,
     parentOrigin: {},
+    currentCreatedAt: undefined,
+    currentWhy: undefined,
+    currentSummary: undefined,
     footerIntegrity: undefined
   };
 
@@ -231,6 +379,12 @@ function parseContinuityContext(lines) {
         inParentOrigin = false;
         continue;
       }
+      const parentCreatedAtValue = extractNestedLabeledValue(line, "Created At");
+      if (parentCreatedAtValue) {
+        result.parentCreatedAt = parentCreatedAtValue;
+        inParentOrigin = false;
+        continue;
+      }
       const parentTraceValue = extractNestedLabeledValue(line, "Trace");
       if (parentTraceValue) {
         result.parentTrace = extractMarkdownLink(parentTraceValue);
@@ -253,6 +407,21 @@ function parseContinuityContext(lines) {
       const currentSchemaValue = extractNestedLabeledValue(line, "Current Schema");
       if (currentSchemaValue) {
         result.currentSchema = extractMarkdownLink(currentSchemaValue);
+        continue;
+      }
+      const currentCreatedAtValue = extractNestedLabeledValue(line, "Created At");
+      if (currentCreatedAtValue) {
+        result.currentCreatedAt = currentCreatedAtValue;
+        continue;
+      }
+      const currentWhyValue = extractNestedLabeledValue(line, "Why");
+      if (currentWhyValue) {
+        result.currentWhy = currentWhyValue;
+        continue;
+      }
+      const currentSummaryValue = extractNestedLabeledValue(line, "Summary");
+      if (currentSummaryValue) {
+        result.currentSummary = currentSummaryValue;
       }
     }
   }
@@ -306,6 +475,26 @@ function isCommitPinnedBrowseGitTarget(target) {
     return false;
   }
   return /\/(?:blob|commit)\/[0-9a-f]{7,40}(?:\/|$)/iu.test(trimmed);
+}
+
+function isTraceableContinuityTimestamp(value) {
+  const trimmed = trimToUndefined(value);
+  if (!trimmed) {
+    return false;
+  }
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/u);
+  if (!match) {
+    return false;
+  }
+  const [, year, month, day, hour, minute, second] = match;
+  const candidate = new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}Z`);
+  return Number.isFinite(candidate.getTime())
+    && candidate.getUTCFullYear() === Number(year)
+    && candidate.getUTCMonth() + 1 === Number(month)
+    && candidate.getUTCDate() === Number(day)
+    && candidate.getUTCHours() === Number(hour)
+    && candidate.getUTCMinutes() === Number(minute)
+    && candidate.getUTCSeconds() === Number(second);
 }
 
 function resolveLocalReference(currentFilePath, reference) {
@@ -364,6 +553,19 @@ function chooseBackwardLink(filePath, parsed) {
   return { source: "none" };
 }
 
+function hasParentSignal(parsed) {
+  return Boolean(
+    trimToUndefined(parsed.parentCreatedAt)
+    || trimToUndefined(parsed.parentTrace?.target)
+    || trimToUndefined(parsed.parentSchema?.target)
+    || trimToUndefined(parsed.parentSchema?.label)
+    || trimToUndefined(parsed.parentOrigin?.relative)
+    || trimToUndefined(parsed.parentOrigin?.absolute)
+    || trimToUndefined(parsed.parentOrigin?.browseGit)
+    || trimToUndefined(parsed.traceableState?.parentTracePath)
+  );
+}
+
 function normalizeHeadingToken(value) {
   return value.trim().toLowerCase();
 }
@@ -377,10 +579,53 @@ function hasAnyHeading(headingMap, candidates) {
 }
 
 const SCHEMA_NOTE_CORE_CONTRACT_HEADING_GROUP = [
+  "Schema Validation Contract",
   "Required Structure",
   "Required Fields",
   "Required Body Expectations",
   "Envelope Expectations"
+];
+
+const TASK_WORK_SIGNAL_HEADING_GROUP = [
+  "Objective",
+  "Requested Work",
+  "Goal",
+  "Target"
+];
+
+const TASK_COMPLETION_SIGNAL_HEADING_GROUP = [
+  "Done Criteria",
+  "Acceptance Criteria",
+  "Completion Criteria",
+  "Review Gate"
+];
+
+const TASK_CONSTRAINT_SIGNAL_HEADING_GROUP = [
+  "Scope",
+  "Scope And Constraints",
+  "Constraints",
+  "Non-Goals",
+  "Scope And Non-Goals"
+];
+
+const ROOT_SCHEMA_REQUIRED_CONTRACT_GROUPS = [
+  "Machine Authority Surfaces",
+  "Contract Syntax",
+  "Named Declaration",
+  "Contract Category Extension",
+  "Document Layout",
+  "Continuity Context",
+  "Parent",
+  "Parent Origin",
+  "Current",
+  "Schema Reference Fields",
+  "Trace Field",
+  "Created At",
+  "Envelope Extension",
+  "Continuity Integrity Footer",
+  "Method Entry",
+  "Extension",
+  "Optional Machine Sections"
 ];
 
 function isSchemaNoteFilePath(filePath) {
@@ -414,12 +659,12 @@ function collectSchemaNoteStructureFindings(node) {
   }
 
   if (levelTwoHeadings.has("validation-friendly shape")) {
-    if (schemaIdentity === "tiinex.schema.v1" && !levelTwoHeadings.has("machine validation contract")) {
+    if (schemaIdentity === "tiinex.definition.v1" && !levelTwoHeadings.has("machine validation contract")) {
       findings.push({
         code: "schema-machine-validation-contract-missing",
         category: "schema-note-structure",
         filePath: node.filePath,
-        message: "The shared schema-definition root should include a Machine Validation Contract section so later schema notes can reuse the same machine-facing rule set.",
+        message: "The shared definition root should include a Machine Validation Contract section so later schema notes can reuse the same machine-facing rule set.",
         severity: "error",
         surfaces: ["problems", "report"]
       });
@@ -434,16 +679,188 @@ function collectSchemaNoteStructureFindings(node) {
     severity: "warning",
     surfaces: ["problems", "report"]
   });
-  if (schemaIdentity === "tiinex.schema.v1" && !levelTwoHeadings.has("machine validation contract")) {
+  if (schemaIdentity === "tiinex.definition.v1" && !levelTwoHeadings.has("machine validation contract")) {
     findings.push({
       code: "schema-machine-validation-contract-missing",
       category: "schema-note-structure",
       filePath: node.filePath,
-      message: "The shared schema-definition root should include a Machine Validation Contract section so later schema notes can reuse the same machine-facing rule set.",
+      message: "The shared definition root should include a Machine Validation Contract section so later schema notes can reuse the same machine-facing rule set.",
       severity: "error",
       surfaces: ["problems", "report"]
     });
   }
+  return findings;
+}
+
+function collectTaskStructureFindings(node) {
+  if (isSchemaNoteFilePath(node.filePath) || extractSchemaIdentity(node.parsed.currentSchema) !== "tiinex.task.v1") {
+    return [];
+  }
+
+  const levelOneHeadings = node.parsed.headings
+    .filter((heading) => heading.level === 1)
+    .map((heading) => normalizeHeadingToken(heading.text))
+    .filter((heading) => heading !== normalizeHeadingToken("Continuity Context") && heading !== normalizeHeadingToken("Continuity Integrity"));
+  const levelTwoHeadings = collectHeadingMap(node.parsed.headings, 2);
+  const missingParts = [];
+
+  if (levelOneHeadings.length === 0) {
+    missingParts.push("a body title");
+  }
+  if (!hasAnyHeading(levelTwoHeadings, TASK_WORK_SIGNAL_HEADING_GROUP)) {
+    missingParts.push("a concrete work section such as Objective or Requested Work");
+  }
+  if (!hasAnyHeading(levelTwoHeadings, TASK_COMPLETION_SIGNAL_HEADING_GROUP)) {
+    missingParts.push("a completion section such as Done Criteria or Acceptance Criteria");
+  }
+  if (!hasAnyHeading(levelTwoHeadings, TASK_CONSTRAINT_SIGNAL_HEADING_GROUP)) {
+    missingParts.push("a constraints section such as Scope, Scope And Constraints, or Non-Goals");
+  }
+
+  if (missingParts.length === 0) {
+    return [];
+  }
+
+  return [{
+    code: "task-required-structure-missing",
+    category: "task-structure",
+    filePath: node.filePath,
+    message: `Task artifacts using tiinex.task.v1 should include ${missingParts.join(", ")}.`,
+    severity: "error",
+    surfaces: ["problems", "report"]
+  }];
+}
+
+function collectContractSectionShapeFindings(node, contract, options = {}) {
+  const codePrefix = trimToUndefined(options.codePrefix) ?? "schema-validation-contract";
+  const category = trimToUndefined(options.category) ?? "schema-validation-contract";
+  const displayName = trimToUndefined(options.displayName) ?? "schema validation contract";
+
+  if (!contract?.present) {
+    return [];
+  }
+
+  const findings = [];
+
+  if (contract.duplicateGroupHeadings.length > 0) {
+    findings.push({
+      code: `${codePrefix}-duplicate-groups`,
+      category,
+      filePath: node.filePath,
+      message: `The ${displayName} repeats group headings: ${contract.duplicateGroupHeadings.join(", ")}.`,
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
+  }
+
+  if (contract.categoriesMissingLists.length > 0) {
+    findings.push({
+      code: `${codePrefix}-category-list-missing`,
+      category,
+      filePath: node.filePath,
+      message: `The ${displayName} has category labels without a following hyphen list: ${contract.categoriesMissingLists.join(", ")}.`,
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
+  }
+
+  if (contract.unlabeledHyphenListLines.length > 0) {
+    findings.push({
+      code: `${codePrefix}-unlabeled-list`,
+      category,
+      filePath: node.filePath,
+      message: `The ${displayName} contains hyphen list items without a preceding category label: ${contract.unlabeledHyphenListLines.join(", ")}.`,
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
+  }
+
+  if (contract.starBulletLines.length > 0) {
+    findings.push({
+      code: `${codePrefix}-star-bullets-present`,
+      category,
+      filePath: node.filePath,
+      message: `The ${displayName} contains star bullets where hyphen bullets are required: ${contract.starBulletLines.join(", ")}.`,
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
+  }
+
+  if (contract.unexpectedContentLines.length > 0) {
+    findings.push({
+      code: `${codePrefix}-unexpected-content`,
+      category,
+      filePath: node.filePath,
+      message: `The ${displayName} contains content outside the allowed heading/category/list shape: ${contract.unexpectedContentLines.join(", ")}.`,
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
+  }
+
+  return findings;
+}
+
+function collectDeclaredSchemaValidationContractFindings(node) {
+  if (!isSchemaNoteFilePath(node.filePath) || extractSchemaIdentity(node.parsed.currentSchema) === "tiinex.root.v1") {
+    return [];
+  }
+
+  return collectContractSectionShapeFindings(node, node.parsed.schemaValidationContract, {
+    codePrefix: "schema-validation-contract",
+    category: "schema-validation-contract",
+    displayName: "schema validation contract"
+  });
+}
+
+function collectDeclaredArtifactCreationContractFindings(node) {
+  if (!isSchemaNoteFilePath(node.filePath)) {
+    return [];
+  }
+
+  return collectContractSectionShapeFindings(node, node.parsed.artifactCreationContract, {
+    codePrefix: "artifact-creation-contract",
+    category: "artifact-creation-contract",
+    displayName: "artifact creation contract"
+  });
+}
+
+function collectRootSchemaContractFindings(node) {
+  if (extractSchemaIdentity(node.parsed.currentSchema) !== "tiinex.root.v1") {
+    return [];
+  }
+
+  const contract = node.parsed.schemaValidationContract;
+  if (!contract?.present) {
+    return [{
+      code: "root-schema-validation-contract-missing",
+      category: "schema-validation-contract",
+      filePath: node.filePath,
+      message: "The root schema must include a Schema Validation Contract section.",
+      severity: "error",
+      surfaces: ["problems", "report"]
+    }];
+  }
+
+  const findings = [];
+  const groupHeadings = new Set(contract.groups.map((group) => group.heading));
+  const missingGroups = ROOT_SCHEMA_REQUIRED_CONTRACT_GROUPS.filter((heading) => !groupHeadings.has(heading));
+
+  findings.push(...collectContractSectionShapeFindings(node, contract, {
+    codePrefix: "root-schema-contract",
+    category: "schema-validation-contract"
+  }));
+
+  if (missingGroups.length > 0) {
+    findings.push({
+      code: "root-schema-contract-groups-missing",
+      category: "schema-validation-contract",
+      filePath: node.filePath,
+      message: `The root schema contract is missing required groups: ${missingGroups.join(", ")}.`,
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
+  }
+
   return findings;
 }
 
@@ -522,10 +939,16 @@ function parseTraceableContinuityMarkdown(markdown) {
   return {
     currentSchema: context.currentSchema,
     parentSchema: context.parentSchema,
+    parentCreatedAt: context.parentCreatedAt,
     parentTrace: context.parentTrace,
     parentOrigin: context.parentOrigin,
+    currentCreatedAt: context.currentCreatedAt,
+    currentWhy: context.currentWhy,
+    currentSummary: context.currentSummary,
     footerIntegrity,
     traceableState: parseTraceableState(markdown),
+    schemaValidationContract: parseSchemaValidationContract(markdown),
+    artifactCreationContract: parseArtifactCreationContract(markdown),
     headings: parseHeadings(markdown)
   };
 }
@@ -647,7 +1070,7 @@ function validateTraceableContinuityArtifactChainSync(input) {
     const parsed = parseTraceableContinuityMarkdown(markdown);
     const backwardLink = chooseBackwardLink(currentFilePath, parsed);
     const currentSchemaIdentity = extractSchemaIdentity(parsed.currentSchema);
-    const selfRootSchemaNote = currentSchemaIdentity === "tiinex.schema.v1"
+    const selfRootSchemaNote = currentSchemaIdentity === "tiinex.definition.v1"
       && normalizePathForComparison(backwardLink.resolvedPath) === normalizedCurrentPath;
     const traceableParentIntegrity = parsed.traceableState?.parentTracePath && !selfRootSchemaNote
       ? evaluateTraceableDirectParentIntegrityCoreSync({
@@ -708,8 +1131,46 @@ function collectTraceableContinuityFindings(result) {
   for (let index = 0; index < result.nodes.length; index += 1) {
     const node = result.nodes[index];
     const parentNode = result.nodes[index + 1];
+    const parentSignalPresent = hasParentSignal(node.parsed);
 
     findings.push(...collectSchemaNoteStructureFindings(node));
+    findings.push(...collectDeclaredSchemaValidationContractFindings(node));
+    findings.push(...collectDeclaredArtifactCreationContractFindings(node));
+    findings.push(...collectRootSchemaContractFindings(node));
+    findings.push(...collectTaskStructureFindings(node));
+
+    if (!trimToUndefined(node.parsed.currentCreatedAt)) {
+      findings.push({
+        code: "continuity-current-created-at-missing",
+        category: "continuity-integrity",
+        filePath: node.filePath,
+        message: "Current Created At is required by the continuity envelope.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    }
+
+    if (parentSignalPresent && !extractSchemaIdentity(node.parsed.parentSchema)) {
+      findings.push({
+        code: "traceable-parent-schema-missing",
+        category: "direct-parent-integrity",
+        filePath: node.filePath,
+        message: "Parent signal is present but Parent Schema is missing from the continuity header.",
+        severity: "warning",
+        surfaces: ["problems", "report"]
+      });
+    }
+
+    if (parentSignalPresent && !trimToUndefined(node.parsed.parentCreatedAt)) {
+      findings.push({
+        code: "traceable-parent-created-at-missing",
+        category: "direct-parent-integrity",
+        filePath: node.filePath,
+        message: "Parent signal is present but Parent Created At is missing from the continuity header.",
+        severity: "warning",
+        surfaces: ["problems", "report"]
+      });
+    }
 
     switch (node.continuityIntegrity?.status) {
       case "mismatch":
@@ -734,6 +1195,28 @@ function collectTraceableContinuityFindings(result) {
         category: "direct-parent-integrity",
         filePath: node.filePath,
         message: "Parent Schema does not match the resolved parent artifact's current schema.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    }
+
+    if (trimToUndefined(node.parsed.parentCreatedAt) && !isTraceableContinuityTimestamp(node.parsed.parentCreatedAt)) {
+      findings.push({
+        code: "traceable-parent-created-at-invalid",
+        category: "direct-parent-integrity",
+        filePath: node.filePath,
+        message: "Parent Created At is not in the expected YYYY-MM-DD hh:mm:ss shape.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    }
+
+    if (trimToUndefined(node.parsed.currentCreatedAt) && !isTraceableContinuityTimestamp(node.parsed.currentCreatedAt)) {
+      findings.push({
+        code: "continuity-current-created-at-invalid",
+        category: "continuity-integrity",
+        filePath: node.filePath,
+        message: "Current Created At is not in the expected YYYY-MM-DD hh:mm:ss shape.",
         severity: "error",
         surfaces: ["problems", "report"]
       });
@@ -935,6 +1418,10 @@ function renderTraceableContinuityValidationMarkdown(result) {
     lines.push(`- File: ${node.filePath}`);
     lines.push(`- Current Schema: ${node.parsed.currentSchema?.label ?? node.parsed.currentSchema?.target ?? "-"}`);
     lines.push(`- Parent Schema: ${node.parsed.parentSchema?.label ?? node.parsed.parentSchema?.target ?? "-"}`);
+    lines.push(`- Parent Created At: ${node.parsed.parentCreatedAt ?? "-"}`);
+    lines.push(`- Current Created At: ${node.parsed.currentCreatedAt ?? "-"}`);
+    lines.push(`- Current Why: ${node.parsed.currentWhy ?? "-"}`);
+    lines.push(`- Current Summary: ${node.parsed.currentSummary ?? "-"}`);
     lines.push(`- Backward Link Source: ${formatBackwardLinkSource(node.backwardLink.source)}`);
     lines.push(`- Backward Link Target: ${node.backwardLink.rawTarget ?? "-"}`);
     lines.push(`- Resolved Parent Path: ${node.backwardLink.resolvedPath ?? "-"}`);

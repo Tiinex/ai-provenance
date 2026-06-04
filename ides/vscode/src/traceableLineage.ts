@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 
 export interface TraceableEvidenceFileNameParts {
@@ -24,6 +25,33 @@ function isPathWithinRoot(filePath: string, rootPath: string): boolean {
   const normalizedFile = normalizeComparablePath(filePath);
   const normalizedRoot = normalizeComparablePath(rootPath);
   return normalizedFile === normalizedRoot || normalizedFile.startsWith(`${normalizedRoot}/`);
+}
+
+function findTraceableGitRoot(filePath: string): string | undefined {
+  let currentPath = path.resolve(filePath);
+  while (true) {
+    if (existsSync(path.join(currentPath, ".git"))) {
+      return currentPath;
+    }
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return undefined;
+    }
+    currentPath = parentPath;
+  }
+}
+
+export function resolveTraceableGitRoot(filePath: string | undefined): string | undefined {
+  const trimmed = filePath?.trim();
+  if (!trimmed) return undefined;
+  return findTraceableGitRoot(trimmed);
+}
+
+export function areTraceablePathsInSameGitRoot(leftPath: string | undefined, rightPath: string | undefined): boolean {
+  const left = resolveTraceableGitRoot(leftPath);
+  const right = resolveTraceableGitRoot(rightPath);
+  if (!left || !right) return false;
+  return normalizeComparablePath(left) === normalizeComparablePath(right);
 }
 
 function normalizeTraceableEvidenceFileNameFormatOptions(
@@ -115,6 +143,16 @@ export function allocateNextTraceableLineageLabel(
 export function computeStoredParentTracePath(parentTracePath: string, childEvidenceFilePath: string, workspaceRoots: string[]): string {
   const resolvedParent = path.resolve(parentTracePath);
   const resolvedChild = path.resolve(childEvidenceFilePath);
+  // Prefer git-root based same-repo detection when possible.
+  try {
+    if (areTraceablePathsInSameGitRoot(resolvedParent, resolvedChild)) {
+      const relative = path.relative(path.dirname(resolvedChild), resolvedParent);
+      return relative ? relative.replace(/\\+/g, "/") : path.basename(resolvedParent);
+    }
+  } catch {
+    // ignore and fall back to workspace-root heuristic
+  }
+
   const sharedRoot = workspaceRoots.find((rootPath) => isPathWithinRoot(resolvedParent, rootPath) && isPathWithinRoot(resolvedChild, rootPath));
   if (!sharedRoot) {
     return resolvedParent;

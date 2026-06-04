@@ -5,6 +5,7 @@ import { parseTraceableEvidenceStateMarkdown } from "./traceableEvidence";
 import {
   buildTraceableMarkdownPathRenderOptions,
   formatTraceablePathReference,
+  normalizeTraceableParentOrigin,
   renderTraceableSubagentMarkdown,
   type TraceableSubagentRunResult
 } from "./traceableContract";
@@ -221,6 +222,21 @@ function removeTraceableSummaryTitleLine(title: string | undefined, prefix: stri
     .split(/\r?\n/u)
     .filter((line) => !line.startsWith(prefix));
   return remainingLines.length > 0 ? remainingLines.join("\n") : undefined;
+}
+
+function remapStoredParentOriginForRewrite(
+  parentOrigin: TraceableSubagentRunResult["parentOrigin"] | undefined,
+  remappedParentPath: string | undefined,
+  nextStoredParentTracePath: string | undefined
+): TraceableSubagentRunResult["parentOrigin"] | undefined {
+  if (!parentOrigin) {
+    return undefined;
+  }
+  return normalizeTraceableParentOrigin({
+    ...(parentOrigin.relative ? { relative: nextStoredParentTracePath ?? parentOrigin.relative } : {}),
+    ...(parentOrigin.absolute ? { absolute: remappedParentPath ?? parentOrigin.absolute } : {}),
+    ...(parentOrigin.browseGit ? { browseGit: parentOrigin.browseGit } : {})
+  });
 }
 
 function rewriteStoredRequestSummaryForMove(
@@ -885,13 +901,20 @@ function rewriteParsedTraceableStateForMove(input: {
   const nextStoredParentTracePath = remappedParentPath
     ? computeStoredParentTracePath(remappedParentPath, input.nextPath, [...input.workspaceRoots])
     : undefined;
+  const nextParentCreatedAt = parsed.result.parentCreatedAt?.trim() || undefined;
+  const nextParentOrigin = remapStoredParentOriginForRewrite(parsed.result.parentOrigin, remappedParentPath, nextStoredParentTracePath);
   const nextParentTraceChecksumSha256 = remappedParentPath && checksumEnabled
     ? computeTraceableParentChecksumSha256ForFileSync(remappedParentPath)
     : undefined;
   const priorRequest = typeof parsed.result.request === "object" && parsed.result.request
     ? parsed.result.request as Record<string, unknown>
     : {};
-  const { parentTracePath: _ignoredParentTracePath, ...remainingRequest } = priorRequest;
+  const {
+    parentTracePath: _ignoredParentTracePath,
+    parentCreatedAt: _ignoredParentCreatedAt,
+    parentOrigin: _ignoredParentOrigin,
+    ...remainingRequest
+  } = priorRequest;
 
   const nextEvidenceFile: TraceableSubagentEvidenceFileState = {
     status: parsed.snapshot.evidenceFile?.status ?? parsed.result.evidenceFile?.status ?? "ready",
@@ -906,12 +929,16 @@ function rewriteParsedTraceableStateForMove(input: {
     ...parsed.result,
     lineageLabel: input.nextLineageLabel,
     lineageDepth: input.nextLineageLabel.split("-").filter(Boolean).length,
+    continuedFromParent: Boolean(nextStoredParentTracePath || nextParentOrigin),
     parentTracePath: nextStoredParentTracePath,
+    parentCreatedAt: nextParentCreatedAt,
+    parentOrigin: nextParentOrigin,
     parentTraceChecksumSha256: nextParentTraceChecksumSha256,
-    continuedFromParent: Boolean(nextStoredParentTracePath),
     request: {
       ...remainingRequest,
-      ...(nextStoredParentTracePath ? { parentTracePath: nextStoredParentTracePath } : {})
+      ...(nextStoredParentTracePath ? { parentTracePath: nextStoredParentTracePath } : {}),
+      ...(nextParentCreatedAt ? { parentCreatedAt: nextParentCreatedAt } : {}),
+      ...(nextParentOrigin ? { parentOrigin: nextParentOrigin } : {})
     },
     evidenceFile: { ...nextEvidenceFile }
   };

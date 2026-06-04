@@ -4,7 +4,7 @@ import * as vscode from "vscode";
 import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import { allocateNextTraceableLineageLabel, buildTraceableEvidenceFileName, computeStoredParentTracePath, parseTraceableEvidenceFileName } from "./traceableLineage";
 import { computeTraceableParentChecksumSha256ForFile, isTraceableLineageChecksumEnabled } from "./traceableLineageIntegrity";
-import { buildTraceableMarkdownPathRenderOptions, formatTraceablePathReference, normalizeModelSelector } from "./traceableContract";
+import { buildTraceableMarkdownPathRenderOptions, formatTraceablePathReference, normalizeModelSelector, normalizeTraceableParentOrigin } from "./traceableContract";
 import type {
   TraceableMarkdownPathRenderOptions,
   TraceableSubagentEvidenceFileState,
@@ -31,6 +31,20 @@ function hasRequestedModelSelector(value: unknown): boolean {
 export interface ParsedTraceableEvidenceState {
   snapshot: TraceableSubagentDetailSnapshot;
   result?: TraceableSubagentRunResult;
+}
+
+function remapStoredParentOriginForExport(
+  parentOrigin: TraceableSubagentRunResult["parentOrigin"] | undefined,
+  nextStoredParentTracePath: string | undefined
+): TraceableSubagentRunResult["parentOrigin"] | undefined {
+  if (!parentOrigin) {
+    return undefined;
+  }
+  return normalizeTraceableParentOrigin({
+    ...(parentOrigin.relative ? { relative: nextStoredParentTracePath ?? parentOrigin.relative } : {}),
+    ...(parentOrigin.absolute ? { absolute: parentOrigin.absolute } : {}),
+    ...(parentOrigin.browseGit ? { browseGit: parentOrigin.browseGit } : {})
+  });
 }
 
 function slugifyTraceableRoleLabel(value: string | undefined): string {
@@ -722,32 +736,28 @@ export class TraceableSubagentEvidenceController {
     const nextStoredParentTracePath = result.continuedFromParent && result.parentTracePath
       ? computeStoredParentTracePath(result.parentTracePath, readyFilePath, workspaceRoots)
       : undefined;
+    const nextParentCreatedAt = result.parentCreatedAt?.trim() || undefined;
+    const nextParentOrigin = remapStoredParentOriginForExport(result.parentOrigin, nextStoredParentTracePath);
     const nextParentTraceChecksumSha256 = result.continuedFromParent && result.parentTracePath && checksumEnabled
       ? await computeTraceableParentChecksumSha256ForFile(result.parentTracePath)
       : undefined;
-    const exportAwareResult = nextStoredParentTracePath
-      ? {
-        ...result,
-        parentTracePath: nextStoredParentTracePath,
-        parentTraceChecksumSha256: nextParentTraceChecksumSha256,
-        request: {
-          ...result.request,
-          parentTracePath: nextStoredParentTracePath,
-          ...(!hasRequestedModelSelector(result.request?.modelSelector) && persistedRuntimeModelSelector.id
-            ? { modelSelector: persistedRuntimeModelSelector }
-            : {})
-        }
+    const exportAwareResult = {
+      ...result,
+      continuedFromParent: Boolean(nextStoredParentTracePath || nextParentOrigin || result.continuedFromParent),
+      parentTracePath: nextStoredParentTracePath ?? result.parentTracePath,
+      parentCreatedAt: nextParentCreatedAt,
+      parentOrigin: nextParentOrigin,
+      parentTraceChecksumSha256: nextStoredParentTracePath ? nextParentTraceChecksumSha256 : undefined,
+      request: {
+        ...result.request,
+        ...(nextStoredParentTracePath ? { parentTracePath: nextStoredParentTracePath } : {}),
+        ...(nextParentCreatedAt ? { parentCreatedAt: nextParentCreatedAt } : {}),
+        ...(nextParentOrigin ? { parentOrigin: nextParentOrigin } : {}),
+        ...(!hasRequestedModelSelector(result.request?.modelSelector) && persistedRuntimeModelSelector.id
+          ? { modelSelector: persistedRuntimeModelSelector }
+          : {})
       }
-      : {
-        ...result,
-        parentTraceChecksumSha256: undefined,
-        request: {
-          ...result.request,
-          ...(!hasRequestedModelSelector(result.request?.modelSelector) && persistedRuntimeModelSelector.id
-            ? { modelSelector: persistedRuntimeModelSelector }
-            : {})
-        }
-      };
+    };
     const finalizedResult: TraceableSubagentRunResult = {
       ...exportAwareResult,
       outputMode,

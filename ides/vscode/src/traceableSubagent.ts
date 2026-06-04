@@ -95,6 +95,7 @@ const DEFAULT_TRACEABLE_ALLOWED_TOOL_NAMES = [
   "list_directory",
   "semantic_search",
   "get_errors",
+  "show_traceable_traces",
   "list_traceable_agents",
   "list_traceable_models",
   "view_traceable_subagent",
@@ -187,6 +188,12 @@ interface TraceableWrapperPolicy {
 interface TraceableBudgetPolicy {
   maxIterations?: number;
   maxToolCalls?: number;
+}
+
+export interface TraceableParentOrigin {
+  relative?: string;
+  absolute?: string;
+  browseGit?: string;
 }
 
 export interface TraceableAgentRole {
@@ -407,6 +414,8 @@ export function normalizeTraceableOutputMode(mode: unknown): TraceableSubagentOu
 export interface TraceableSubagentInput {
   userInput?: string;
   parentTracePath?: string;
+  parentCreatedAt?: string;
+  parentOrigin?: TraceableParentOrigin;
   parentFrame?: string;
   parentTask?: string;
   parentRoles?: string | string[];
@@ -570,6 +579,8 @@ export interface TraceableSubagentRunResult {
   expectedButMissing: TraceableSubagentMissingItem[];
   continuedFromParent?: boolean;
   parentTracePath?: string;
+  parentCreatedAt?: string;
+  parentOrigin?: TraceableParentOrigin;
   parentTraceChecksumSha256?: string;
   lineageDepth?: number;
   lineageLabel?: string;

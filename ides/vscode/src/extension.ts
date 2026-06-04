@@ -1,4 +1,5 @@
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { promises as fs, readFileSync } from "node:fs";
 import * as vscode from "vscode";
 import {
@@ -10,6 +11,20 @@ import {
   type TraceableEvidenceSurface,
   type ViewTraceableSubagentInput
 } from "./traceableEvidence";
+import {
+  renderShowTracesMarkdown,
+  type ShowTracesInput
+} from "./traceableShowTraces";
+import {
+  buildTraceableStructureIndex,
+  compareTraceableStructureSchemaEntries,
+  type TraceableStructureNode,
+  type TraceableStructureSchemaEntry
+} from "./traceableStructure";
+import {
+  getSelectedTraceableStructureSnapshot,
+  registerTraceableStructureTreeView
+} from "./traceableStructureTreeView";
 import {
   formatTraceableModelIdDisplayName,
   listTraceableAgentCatalogEntries,
@@ -46,9 +61,12 @@ import {
   resolveRelativeOpenPathInWorkspace
 } from "./traceableOpenPath.js";
 import {
+  computeTraceableContinuityChecksumSha256,
   renderTraceableContinuityValidationMarkdown,
   validateTraceableContinuityArtifactChainSync
 } from "./traceableContinuityValidation.js";
+import { validateTraceableRootSchemaSync, type TraceableSchemaValidationResult } from "./traceableRootSchemaValidation.js";
+import { validateTraceableTopicSchemaSync } from "./traceableTopicSchemaValidation.js";
 import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import {
   buildTraceableRenameMoveWorkspaceEdit,
@@ -69,6 +87,12 @@ import {
 } from "./traceableFileOperations";
 import { isTraceableLineageChecksumEnabled } from "./traceableLineageIntegrity";
 import {
+  allocateNextTraceableLineageLabel,
+  buildTraceableEvidenceFileName,
+  computeStoredParentTracePath,
+  resolveTraceableGitRoot
+} from "./traceableLineage";
+import {
   createTraceableCopyMutation,
   createTraceableMoveMutation,
   createTraceableRewriteMutation,
@@ -76,6 +100,22 @@ import {
   type TraceableMutationPlan,
   type TraceableMutationPlanMutation
 } from "./traceableMutationPlan";
+
+const {
+  computeTargetedTraceableContinuityChecksumSha256,
+  parseSchemaNoteMarkdown
+} = require("./traceableSchemaValidationShared.js") as {
+  computeTargetedTraceableContinuityChecksumSha256: (
+    filePath: string,
+    markdown: string,
+    footerIntegrity: unknown,
+    readTextFileSync?: (filePath: string) => string
+  ) => string | undefined;
+  parseSchemaNoteMarkdown: (markdown: string) => {
+    currentCreatedAt?: string;
+    footerIntegrity?: unknown;
+  };
+};
 
 const OPEN_OVERVIEW_COMMAND = "tiinex.aiProvenance.openOverview";
 const INSPECT_TRACEABLE_EVIDENCE_COMMAND = "tiinex.aiProvenance.inspectTraceableEvidence";
@@ -89,14 +129,17 @@ const REWRITE_COPY_TRACE_COMMAND = "tiinex.aiProvenance.rewriteCopyTrace";
 const RETURN_TO_PARENT_TRACE_COMMAND = "tiinex.aiProvenance.returnToParentTrace";
 const REPAIR_TRACE_LINEAGE_COMMAND = "tiinex.aiProvenance.repairTraceLineage";
 const VALIDATE_TRACEABLE_CONTINUITY_COMMAND = "tiinex.aiProvenance.validateTraceableContinuity";
+const ROTATE_TRACEABLE_CONTINUITY_CHECKSUM_COMMAND = "tiinex.aiProvenance.rotateTraceableContinuityChecksum";
 const ADD_FILE_TO_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.addFileToTraceableChat";
 const NEW_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.newTraceableChat";
+const CREATE_TRACEABLE_CHAT_FROM_VIEW_COMMAND = "tiinex.aiProvenance.createTraceableChatFromView";
 const RESUME_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.resumeTraceableChat";
 const SET_DEFAULT_NEW_TRACEABLE_CHAT_EXPORT_FOLDER_COMMAND = "tiinex.aiProvenance.setDefaultNewTraceableChatExportFolder";
 const RUN_TRACEABLE_SUBAGENT_TOOL = "run_traceable_subagent";
 const VIEW_TRACEABLE_SUBAGENT_TOOL = "view_traceable_subagent";
 const TRANSFER_TRACE_TOOL = "transfer_trace";
 const VALIDATE_TRACEABLE_CONTINUITY_TOOL = "validate_traceable_continuity";
+const SHOW_TRACEABLE_TRACES_TOOL = "show_traceable_traces";
 const TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE = "tiinexTraceableEvidenceEditor";
 const TRACEABLE_EVIDENCE_REFRESH_DEBOUNCE_MS = 250;
 const TRACEABLE_PANEL_VISIBLE_CONTEXT = "tiinex.aiProvenance.traceablePanelVisible";
@@ -105,7 +148,30 @@ const TRACEABLE_PANEL_FALLBACK_COMMAND = "workbench.action.terminal.focus";
 const TOGGLE_MAXIMIZED_PANEL_COMMAND = "workbench.action.toggleMaximizedPanel";
 const TRACEABLE_BUSY_MESSAGE = "Another TRACEABLE run is already starting or running. Wait for it to settle before sending another turn.";
 const TRACEABLE_NATIVE_COPY_PASTE_UNSUPPORTED_MESSAGE = "Native Explorer copy/paste for .trace.md is not supported because VS Code does not expose the source trace or replace intent on file-create hooks. TRACEABLE removed the created copy. Use Copy Trace... instead.";
-const TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE = "TRACEABLE move/copy destinations must stay inside the same workspace folder as the source evidence file. Choose a destination inside the same repo root.";
+const TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE = "TRACEABLE move/copy destinations must stay inside the same repo root as the source evidence file. Choose a destination inside the same repo root.";
+const LAST_TRACEABLE_NODE_SCHEMA_ID_STATE_KEY = "traceableStructure.lastTraceNodeSchemaId";
+const DEFAULT_NEW_TOPIC_LOCATION_SETTING = "defaultNewTraceableTopicLocation";
+
+const TRACEABLE_NODE_SCHEMA_COMMANDS = [
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.topic", schemaId: "tiinex.topic.v1", title: "Topic" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.zip", schemaId: "tiinex.zip.v1", title: "Zip" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.schema", schemaId: "tiinex.definition.v1", title: "Definition" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.signal", schemaId: "tiinex.signal.v1", title: "Signal" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.task", schemaId: "tiinex.task.v1", title: "Task" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.reduction", schemaId: "tiinex.reduction.v1", title: "Reduction" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.runtime", schemaId: "tiinex.runtime.v1", title: "Runtime" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.feedback", schemaId: "tiinex.feedback.v1", title: "Feedback" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.machineRuntime", schemaId: "tiinex.machine.runtime.v1", title: "Machine Runtime" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.evidence", schemaId: "tiinex.evidence.v1", title: "Evidence" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.encrypted", schemaId: "tiinex.encrypted.v1", title: "Encrypted" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.decision", schemaId: "tiinex.decision.v1", title: "Decision" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.continuation", schemaId: "tiinex.continuation.v1", title: "Continuation" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.capability", schemaId: "tiinex.capability.v1", title: "Capability" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.broken", schemaId: "tiinex.broken.v1", title: "Broken" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.archive", schemaId: "tiinex.archive.v1", title: "Archive" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.aiRuntime", schemaId: "tiinex.ai.runtime.v1", title: "AI Runtime" },
+  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.pointer", schemaId: "tiinex.pointer.v1", title: "Pointer" }
+] as const;
 
 function isTraceableResolvedPathTarget(value: unknown): value is TraceableResolvedPathTarget {
   if (!value || typeof value !== "object") {
@@ -158,6 +224,10 @@ interface TransferTraceInput {
 interface ValidateTraceableContinuityInput {
   filePath: string;
   maxDepth?: number;
+}
+
+interface ResolvedShowTracesInput extends ShowTracesInput {
+  detailLevel?: "compact" | "standard" | "full";
 }
 
 type TraceableTransferSelection =
@@ -322,6 +392,212 @@ function normalizeTraceableEvidenceTabLabel(label: string | undefined): string |
   }
   const withoutPreviewPrefix = trimmed.replace(/^preview\s+/iu, "").trim();
   return withoutPreviewPrefix.toLowerCase().endsWith(".trace.md") ? withoutPreviewPrefix : undefined;
+}
+
+function normalizeComparableFsPath(filePath: string): string {
+  const resolved = path.resolve(filePath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+function hasDirtyOpenDocumentForPath(filePath: string): boolean {
+  const normalizedTarget = normalizeComparableFsPath(filePath);
+  return vscode.workspace.textDocuments.some((document) => (
+    document.uri.scheme === "file"
+    && normalizeComparableFsPath(document.uri.fsPath) === normalizedTarget
+    && document.isDirty
+  ));
+}
+
+function hasTrackedGitChangesForPath(filePath: string): boolean {
+  const gitRoot = resolveTraceableGitRoot(filePath);
+  if (!gitRoot) {
+    return false;
+  }
+  const relativePath = path.relative(gitRoot, filePath);
+  if (!relativePath || relativePath.startsWith("..")) {
+    return false;
+  }
+  try {
+    const status = execFileSync("git", ["-C", gitRoot, "status", "--porcelain", "--", relativePath], { encoding: "utf8" }).trim();
+    return status.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function isContinuityChecksumMismatchDiagnostic(diagnostic: vscode.Diagnostic): boolean {
+  return normalizeDiagnosticCode(diagnostic.code) === "continuity-checksum-mismatch";
+}
+
+function buildSchemaLayoutCodeActions(
+  document: vscode.TextDocument,
+  diagnostics: readonly vscode.Diagnostic[]
+): vscode.CodeAction[] {
+  const actions: vscode.CodeAction[] = [];
+  const validationResult = getSchemaValidationResultForDocument(document);
+  if (!validationResult) {
+    return actions;
+  }
+
+  const diagnosticCodes = new Set(
+    diagnostics
+      .map((diagnostic) => normalizeDiagnosticCode(diagnostic.code))
+      .filter((code): code is string => Boolean(code))
+  );
+
+  if (
+    diagnosticCodes.has("root-schema-layout-title-mismatch")
+    || diagnosticCodes.has("topic-schema-layout-title-mismatch")
+    || diagnosticCodes.has("root-schema-layout-unexpected-heading")
+    || diagnosticCodes.has("topic-schema-layout-unexpected-heading")
+  ) {
+    const edit = createNormalizeSchemaDisplayHeadingEdit(document);
+    if (edit) {
+      const action = new vscode.CodeAction("Normalize schema display heading", vscode.CodeActionKind.QuickFix);
+      action.edit = edit;
+      action.diagnostics = diagnostics.filter((diagnostic) => {
+        const code = normalizeDiagnosticCode(diagnostic.code);
+        return code === "root-schema-layout-title-mismatch"
+          || code === "topic-schema-layout-title-mismatch"
+          || code === "root-schema-layout-unexpected-heading"
+          || code === "topic-schema-layout-unexpected-heading";
+      });
+      action.isPreferred = true;
+      actions.push(action);
+    }
+  }
+
+  for (const diagnostic of diagnostics) {
+    const diagnosticCode = normalizeDiagnosticCode(diagnostic.code);
+    if (diagnosticCode !== "root-schema-layout-missing-heading" && diagnosticCode !== "topic-schema-layout-missing-heading") {
+      continue;
+    }
+    const finding = validationResult.findings.find((candidate) => candidate.code === diagnosticCode && candidate.message === diagnostic.message);
+    if (!finding) {
+      continue;
+    }
+    const edit = createInsertMissingSchemaHeadingEdit(document, finding);
+    if (!edit) {
+      continue;
+    }
+    const action = new vscode.CodeAction(
+      `Insert heading: ${finding.placement?.expectedHeading ?? "missing heading"}`,
+      vscode.CodeActionKind.QuickFix
+    );
+    action.edit = edit;
+    action.diagnostics = [diagnostic];
+    actions.push(action);
+  }
+
+  return actions;
+}
+
+function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagnostics: readonly vscode.Diagnostic[]): vscode.CodeAction[] {
+  const actions: vscode.CodeAction[] = [];
+  for (const diagnostic of diagnostics) {
+    const diagnosticCode = normalizeDiagnosticCode(diagnostic.code);
+    if (diagnosticCode === "continuity-current-created-at-missing") {
+      const edit = createSetCurrentCreatedAtEdit(document, false);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction("Insert Current Created At", vscode.CodeActionKind.QuickFix);
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "continuity-current-created-at-invalid") {
+      const edit = createSetCurrentCreatedAtEdit(document, true);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction("Replace Current Created At", vscode.CodeActionKind.QuickFix);
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "topic-schema-parent-created-at-missing" || diagnosticCode === "topic-schema-parent-created-at-invalid" || diagnosticCode === "topic-schema-parent-created-at-mismatch") {
+      const edit = createSetTopicSchemaParentCreatedAtEdit(document);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction(
+        diagnosticCode === "topic-schema-parent-created-at-missing"
+          ? "Insert Parent Created At from parent trace"
+          : "Replace Parent Created At from parent trace",
+        vscode.CodeActionKind.QuickFix
+      );
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "topic-schema-parent-origin-missing") {
+      const edit = createInsertTopicSchemaParentOriginEdit(document, false);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction("Insert Parent Origin scaffold", vscode.CodeActionKind.QuickFix);
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "topic-schema-parent-origin-browse-git-missing") {
+      const edit = createInsertTopicSchemaParentOriginEdit(document, true);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction("Insert browse + git permalink scaffold", vscode.CodeActionKind.QuickFix);
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "topic-schema-parent-origin-unpinned-browse-git" || diagnosticCode === "topic-schema-parent-origin-browse-git-mismatch") {
+      const edit = createInsertTopicSchemaParentOriginEdit(document, true);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction("Replace browse + git permalink", vscode.CodeActionKind.QuickFix);
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "topic-schema-footer-target-mismatch" || diagnosticCode === "topic-schema-footer-target-not-permalink") {
+      const edit = createSetTopicSchemaFooterTowardsEdit(document);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction("Replace footer Towards permalink", vscode.CodeActionKind.QuickFix);
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+    }
+  }
+  return actions;
+}
+
+function buildSchemaContractCodeActions(document: vscode.TextDocument, diagnostics: readonly vscode.Diagnostic[]): vscode.CodeAction[] {
+  const actions: vscode.CodeAction[] = [];
+  for (const diagnostic of diagnostics) {
+    const edit = createNormalizeCurrentLineContractLabelEdit(document, diagnostic.range.start.line);
+    if (!edit) {
+      continue;
+    }
+    const diagnosticCode = normalizeDiagnosticCode(diagnostic.code);
+    const title = diagnosticCode?.includes("star-bullets-present")
+      ? "Convert bullet to hyphen"
+      : "Normalize contract label";
+    const action = new vscode.CodeAction(title, vscode.CodeActionKind.QuickFix);
+    action.edit = edit;
+    action.diagnostics = [diagnostic];
+    actions.push(action);
+  }
+  return actions;
 }
 
 function hasDirtyOpenTraceableDocument(resolvedUri: vscode.Uri): boolean {
@@ -1987,6 +2263,14 @@ function normalizeTraceableWorkspaceFolderKey(folderPath: string): string {
 }
 
 function assertTraceableDestinationWithinSourceWorkspace(sourceUri: vscode.Uri, destinationUri: vscode.Uri): void {
+  const sourceGitRoot = resolveTraceableGitRoot(sourceUri.fsPath);
+  const destinationGitRoot = resolveTraceableGitRoot(destinationUri.fsPath);
+  if (sourceGitRoot || destinationGitRoot) {
+    if (!sourceGitRoot || !destinationGitRoot || normalizeTraceableWorkspaceFolderKey(sourceGitRoot) !== normalizeTraceableWorkspaceFolderKey(destinationGitRoot)) {
+      throw new Error(TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE);
+    }
+    return;
+  }
   const sourceWorkspaceFolder = vscode.workspace.getWorkspaceFolder(sourceUri);
   if (!sourceWorkspaceFolder) {
     return;
@@ -1995,10 +2279,7 @@ function assertTraceableDestinationWithinSourceWorkspace(sourceUri: vscode.Uri, 
   if (!destinationWorkspaceFolder) {
     throw new Error(TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE);
   }
-  if (
-    normalizeTraceableWorkspaceFolderKey(sourceWorkspaceFolder.uri.fsPath)
-    !== normalizeTraceableWorkspaceFolderKey(destinationWorkspaceFolder.uri.fsPath)
-  ) {
+  if (normalizeTraceableWorkspaceFolderKey(sourceWorkspaceFolder.uri.fsPath) !== normalizeTraceableWorkspaceFolderKey(destinationWorkspaceFolder.uri.fsPath)) {
     throw new Error(TRACEABLE_CROSS_WORKSPACE_DESTINATION_UNSUPPORTED_MESSAGE);
   }
 }
@@ -2418,16 +2699,27 @@ async function renderTraceableEvidenceSurfaceFromFile(input: {
   });
 }
 
-function isTraceableContinuityEligibleFsPath(fsPath: string): boolean {
+type TraceableEditorValidationKind = "continuity-trace" | "root-schema" | "topic-schema";
+
+function getTraceableEditorValidationKindForFsPath(fsPath: string): TraceableEditorValidationKind | undefined {
   const normalized = path.resolve(fsPath);
-  return normalized.toLowerCase().endsWith(".trace.md")
-    || /(?:^|[\\/])\.topics[\\/]\.schemas[\\/].+\.md$/iu.test(normalized);
+  const normalizedLower = normalized.toLowerCase();
+  if (normalizedLower.endsWith(".trace.md")) {
+    return "continuity-trace";
+  }
+  if (normalizedLower.endsWith("tiinex.root.v1.schema.md")) {
+    return "root-schema";
+  }
+  if (normalizedLower.endsWith("tiinex.topic.v1.schema.md")) {
+    return "topic-schema";
+  }
+  return undefined;
 }
 
 function isTraceableContinuityEligibleDocument(document: vscode.TextDocument): boolean {
   return document.uri.scheme === "file"
     && document.languageId === "markdown"
-    && isTraceableContinuityEligibleFsPath(document.uri.fsPath);
+    && getTraceableEditorValidationKindForFsPath(document.uri.fsPath) !== undefined;
 }
 
 function createTopOfDocumentRange(document: vscode.TextDocument): vscode.Range {
@@ -2437,6 +2729,824 @@ function createTopOfDocumentRange(document: vscode.TextDocument): vscode.Range {
   return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, Math.max(document.lineAt(0).text.length, 1)));
 }
 
+function findTraceableDiagnosticLineRange(
+  document: vscode.TextDocument,
+  predicate: (lineText: string) => boolean
+): vscode.Range | undefined {
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const line = document.lineAt(lineIndex);
+    if (!predicate(line.text)) {
+      continue;
+    }
+    return new vscode.Range(
+      new vscode.Position(lineIndex, 0),
+      new vscode.Position(lineIndex, Math.max(line.text.length, 1))
+    );
+  }
+  return undefined;
+}
+
+function collectDocumentMarkdownHeadings(document: vscode.TextDocument): Array<{ level: number; text: string; lineIndex: number }> {
+  const headings: Array<{ level: number; text: string; lineIndex: number }> = [];
+  let inFence = false;
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text;
+    if (/^```/u.test(lineText.trim())) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) {
+      continue;
+    }
+    const match = lineText.match(/^(#{1,6})\s+(.+)$/u);
+    if (!match) {
+      continue;
+    }
+    headings.push({
+      level: match[1].length,
+      text: match[2].trim(),
+      lineIndex
+    });
+  }
+  return headings;
+}
+
+function getExpectedSchemaDisplayHeading(validationKind: TraceableEditorValidationKind | undefined): string | undefined {
+  switch (validationKind) {
+    case "root-schema":
+      return "Root";
+    case "topic-schema":
+      return "Topic";
+    default:
+      return undefined;
+  }
+}
+
+function getSchemaValidationResultForDocument(document: vscode.TextDocument): TraceableSchemaValidationResult | undefined {
+  const validationKind = getTraceableEditorValidationKindForFsPath(document.uri.fsPath);
+  if (!validationKind || validationKind === "continuity-trace") {
+    return undefined;
+  }
+  const readTextFileSync = (filePath: string): string => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(document.uri.fsPath)
+    ? document.getText()
+    : readFileSync(filePath, "utf8");
+  return validationKind === "root-schema"
+    ? validateTraceableRootSchemaSync({ filePath: document.uri.fsPath, readTextFileSync })
+    : validateTraceableTopicSchemaSync({ filePath: document.uri.fsPath, readTextFileSync });
+}
+
+function createNormalizeSchemaDisplayHeadingEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
+  const expectedHeading = getExpectedSchemaDisplayHeading(getTraceableEditorValidationKindForFsPath(document.uri.fsPath));
+  if (!expectedHeading) {
+    return undefined;
+  }
+  const titleHeading = collectDocumentMarkdownHeadings(document)
+    .find((heading) => heading.level === 1 && heading.text !== "Continuity Context" && heading.text !== "Continuity Integrity");
+  if (!titleHeading) {
+    return undefined;
+  }
+  const line = document.lineAt(titleHeading.lineIndex);
+  const expectedLine = `# ${expectedHeading}`;
+  if (line.text.trim() === expectedLine) {
+    return undefined;
+  }
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, line.range, expectedLine);
+  return edit;
+}
+
+function createInsertMissingSchemaHeadingEdit(
+  document: vscode.TextDocument,
+  finding: TraceableSchemaValidationResult["findings"][number]
+): vscode.WorkspaceEdit | undefined {
+  const expectedHeading = finding.placement?.expectedHeading;
+  const headingLevel = finding.placement?.headingLevel ?? 2;
+  if (!expectedHeading) {
+    return undefined;
+  }
+  const headings = collectDocumentMarkdownHeadings(document);
+  const anchorAfterHeading = finding.placement?.anchorAfterHeading
+    ? headings.find((heading) => heading.text === finding.placement?.anchorAfterHeading)
+    : undefined;
+  const anchorBeforeHeading = finding.placement?.anchorBeforeHeading
+    ? headings.find((heading) => heading.text === finding.placement?.anchorBeforeHeading)
+    : undefined;
+  const newHeadingLine = `${"#".repeat(headingLevel)} ${expectedHeading}`;
+  const insertionText = `\n${newHeadingLine}\n`;
+  const edit = new vscode.WorkspaceEdit();
+
+  if (anchorAfterHeading) {
+    edit.insert(document.uri, new vscode.Position(anchorAfterHeading.lineIndex, 0), insertionText);
+    return edit;
+  }
+  if (anchorBeforeHeading) {
+    edit.insert(document.uri, new vscode.Position(anchorBeforeHeading.lineIndex + 1, 0), insertionText);
+    return edit;
+  }
+  return undefined;
+}
+
+function normalizeDiagnosticCode(code: vscode.Diagnostic["code"]): string | undefined {
+  if (typeof code === "string") {
+    return code;
+  }
+  if (typeof code === "number") {
+    return String(code);
+  }
+  if (code && typeof code === "object" && "value" in code) {
+    return typeof code.value === "string" || typeof code.value === "number" ? String(code.value) : undefined;
+  }
+  return undefined;
+}
+
+const ROOT_SCHEMA_CONTRACT_GROUP_HEADINGS = [
+  "Machine Authority Surfaces",
+  "Contract Syntax",
+  "Named Declaration",
+  "Contract Category Extension",
+  "Document Layout",
+  "Continuity Context",
+  "Parent",
+  "Parent Origin",
+  "Current",
+  "Schema Reference Fields",
+  "Trace Field",
+  "Created At",
+  "Envelope Extension",
+  "Continuity Integrity Footer",
+  "Method Entry",
+  "Extension",
+  "Optional Machine Sections"
+];
+
+const TOPIC_SCHEMA_CONTRACT_GROUP_HEADINGS = [
+  "Topic Scope",
+  "Topic Body",
+  "Topic Envelope Companions",
+  "File Naming",
+  "Interpretation Boundaries"
+];
+
+const TOPIC_SCHEMA_ARTIFACT_CONTRACT_GROUP_HEADINGS = [
+  "Prompt Fields",
+  "Template Body"
+];
+
+const TRACEABLE_CONTRACT_CATEGORY_LABELS = [
+  "Allowed Labels",
+  "Allowed Shapes",
+  "Allowed Target Blocks",
+  "Applies To",
+  "Category Shape",
+  "Declaration Fields",
+  "Entry Shape",
+  "Fields",
+  "Footer Sections",
+  "Generation Authority",
+  "Group Shape",
+  "Header Sections",
+  "Integrity Authority",
+  "Known Category Labels",
+  "List Marker",
+  "Non-Authoritative For Validation",
+  "Optional Fields",
+  "Optional Sections",
+  "Ordering",
+  "Required Entries",
+  "Required Fields",
+  "Required Heading",
+  "Required Shape",
+  "Required When",
+  "Rules",
+  "Towards Allowed Shapes",
+  "Validation Authority"
+];
+
+function formatTraceableCurrentUtcTimestamp(): string {
+  const now = new Date();
+  const year = String(now.getUTCFullYear()).padStart(4, "0");
+  const month = String(now.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(now.getUTCDate()).padStart(2, "0");
+  const hour = String(now.getUTCHours()).padStart(2, "0");
+  const minute = String(now.getUTCMinutes()).padStart(2, "0");
+  const second = String(now.getUTCSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
+}
+
+function getNearestTraceableLabel(candidate: string, knownLabels: readonly string[]): string | undefined {
+  const normalizedCandidate = candidate.trim().toLowerCase();
+  if (!normalizedCandidate) {
+    return undefined;
+  }
+  const computeDistance = (left: string, right: string): number => {
+    const rows = Array.from({ length: left.length + 1 }, () => new Array<number>(right.length + 1).fill(0));
+    for (let row = 0; row <= left.length; row += 1) rows[row][0] = row;
+    for (let column = 0; column <= right.length; column += 1) rows[0][column] = column;
+    for (let row = 1; row <= left.length; row += 1) {
+      for (let column = 1; column <= right.length; column += 1) {
+        const substitutionCost = left[row - 1] === right[column - 1] ? 0 : 1;
+        rows[row][column] = Math.min(
+          rows[row - 1][column] + 1,
+          rows[row][column - 1] + 1,
+          rows[row - 1][column - 1] + substitutionCost
+        );
+      }
+    }
+    return rows[left.length][right.length];
+  };
+
+  const ranked = knownLabels
+    .map((label) => ({ label, distance: computeDistance(normalizedCandidate, label.toLowerCase()) }))
+    .sort((left, right) => left.distance - right.distance || left.label.localeCompare(right.label));
+  if (!ranked[0]) {
+    return undefined;
+  }
+  const threshold = Math.max(1, Math.ceil(normalizedCandidate.length / 4));
+  if (ranked[0].distance > threshold) {
+    return undefined;
+  }
+  if (ranked[1] && ranked[1].distance === ranked[0].distance) {
+    return undefined;
+  }
+  return ranked[0].label;
+}
+
+function getTraceableContractSectionForLine(document: vscode.TextDocument, lineIndex: number): "Schema Validation Contract" | "Artifact Creation Contract" | undefined {
+  let activeSection: "Schema Validation Contract" | "Artifact Creation Contract" | undefined;
+  let inFence = false;
+  for (let index = 0; index <= Math.min(lineIndex, document.lineCount - 1); index += 1) {
+    const lineText = document.lineAt(index).text.trim();
+    if (/^```/u.test(lineText)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) {
+      continue;
+    }
+    if (lineText === "## Schema Validation Contract") {
+      activeSection = "Schema Validation Contract";
+      continue;
+    }
+    if (lineText === "## Artifact Creation Contract") {
+      activeSection = "Artifact Creation Contract";
+      continue;
+    }
+    if (/^##\s+/u.test(lineText) || /^#\s+/u.test(lineText) || lineText === "---") {
+      activeSection = undefined;
+    }
+  }
+  return activeSection;
+}
+
+function createSetCurrentCreatedAtEdit(document: vscode.TextDocument, replaceExistingLine: boolean): vscode.WorkspaceEdit | undefined {
+  const timestamp = formatTraceableCurrentUtcTimestamp();
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text.trim();
+    if (lineText === "- Current") {
+      const nextLineIndex = Math.min(lineIndex + 1, Math.max(document.lineCount - 1, 0));
+      const nextLine = document.lineAt(nextLineIndex);
+      const createdAtMatch = nextLine.text.match(/^(\s*)- Created At:\s+.*$/u);
+      const edit = new vscode.WorkspaceEdit();
+      if (replaceExistingLine && createdAtMatch) {
+        edit.replace(document.uri, nextLine.range, `${createdAtMatch[1]}- Created At: ${timestamp}`);
+        return edit;
+      }
+      if (!replaceExistingLine) {
+        const indentation = nextLine.text.match(/^(\s*)-/u)?.[1] ?? "  ";
+        edit.insert(document.uri, new vscode.Position(lineIndex + 1, 0), `${indentation}- Created At: ${timestamp}\n`);
+        return edit;
+      }
+    }
+  }
+  return undefined;
+}
+
+function createSetTopicSchemaParentCreatedAtEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
+  const tryReadPermalinkTargetMarkdown = (permalinkTarget: string): string | undefined => {
+    const permalinkMatch = permalinkTarget.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:blob|raw)\/([0-9a-f]{7,40})\/(.+)$/iu);
+    if (!permalinkMatch) {
+      return undefined;
+    }
+    const gitRoot = resolveTraceableGitRoot(document.uri.fsPath);
+    if (!gitRoot) {
+      return undefined;
+    }
+    try {
+      const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
+      const sshMatch = remoteUrl.match(/^git@github\.com:(.+?)(?:\.git)?$/iu);
+      const httpsMatch = remoteUrl.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/iu);
+      const repoSlug = sshMatch?.[1] ?? httpsMatch?.[1];
+      if (repoSlug !== permalinkMatch[1]) {
+        return undefined;
+      }
+      return execFileSync("git", ["-C", gitRoot, "show", `${permalinkMatch[2]}:${decodeURIComponent(permalinkMatch[3])}`], { encoding: "utf8" });
+    } catch {
+      return undefined;
+    }
+  };
+
+  let parentCreatedAtLineIndex: number | undefined;
+  let parentSchemaLineIndex: number | undefined;
+  let parentOriginBrowseGitTarget: string | undefined;
+  let parentTraceTarget: string | undefined;
+  let inParentBlock = false;
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text;
+    const trimmed = lineText.trim();
+    if (trimmed === "- Parent") {
+      inParentBlock = true;
+      continue;
+    }
+    if (inParentBlock && !lineText.startsWith("  ") && trimmed) {
+      break;
+    }
+    if (!inParentBlock) {
+      continue;
+    }
+    if (trimmed.startsWith("- Created At:")) {
+      parentCreatedAtLineIndex = lineIndex;
+      continue;
+    }
+    if (trimmed.startsWith("- Parent Schema:")) {
+      parentSchemaLineIndex = lineIndex;
+      continue;
+    }
+    if (trimmed.startsWith("- Trace:")) {
+      parentTraceTarget = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentTraceTarget;
+      continue;
+    }
+    if (trimmed.startsWith("- [browse + git](")) {
+      parentOriginBrowseGitTarget = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentOriginBrowseGitTarget;
+    }
+  }
+
+  const parentTraceMarkdown = parentTraceTarget
+    ? readFileSync(path.resolve(path.dirname(document.uri.fsPath), parentTraceTarget), "utf8")
+    : undefined;
+  const fallbackParentMarkdown = !parentTraceMarkdown && parentOriginBrowseGitTarget
+    ? tryReadPermalinkTargetMarkdown(parentOriginBrowseGitTarget)
+    : undefined;
+  const parentCreatedAt = parseSchemaNoteMarkdown(parentTraceMarkdown ?? fallbackParentMarkdown ?? "").currentCreatedAt;
+  if (!parentCreatedAt) {
+    return undefined;
+  }
+  const edit = new vscode.WorkspaceEdit();
+  if (parentCreatedAtLineIndex !== undefined) {
+    const line = document.lineAt(parentCreatedAtLineIndex);
+    const indentation = line.text.match(/^(\s*)/u)?.[1] ?? "  ";
+    edit.replace(document.uri, line.range, `${indentation}- Created At: ${parentCreatedAt}`);
+    return edit;
+  }
+  if (parentSchemaLineIndex === undefined) {
+    return undefined;
+  }
+  const parentSchemaLine = document.lineAt(parentSchemaLineIndex);
+  const indentation = parentSchemaLine.text.match(/^(\s*)/u)?.[1] ?? "  ";
+  edit.insert(document.uri, new vscode.Position(parentSchemaLineIndex + 1, 0), `${indentation}- Created At: ${parentCreatedAt}\n`);
+  return edit;
+}
+
+function createNormalizeCurrentLineContractLabelEdit(document: vscode.TextDocument, lineIndex: number): vscode.WorkspaceEdit | undefined {
+  const section = getTraceableContractSectionForLine(document, lineIndex);
+  if (!section) {
+    return undefined;
+  }
+  const validationKind = getTraceableEditorValidationKindForFsPath(document.uri.fsPath);
+  const line = document.lineAt(lineIndex);
+  const trimmed = line.text.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  let replacementLine: string | undefined;
+  const groupHeadingMatch = line.text.match(/^(\s*###\s+)(.+)$/u);
+  if (groupHeadingMatch) {
+    const candidates = section === "Schema Validation Contract"
+      ? validationKind === "root-schema"
+        ? ROOT_SCHEMA_CONTRACT_GROUP_HEADINGS
+        : TOPIC_SCHEMA_CONTRACT_GROUP_HEADINGS
+      : TOPIC_SCHEMA_ARTIFACT_CONTRACT_GROUP_HEADINGS;
+    const nearest = getNearestTraceableLabel(groupHeadingMatch[2], candidates);
+    if (!nearest || nearest === groupHeadingMatch[2].trim()) {
+      return undefined;
+    }
+    replacementLine = `${groupHeadingMatch[1]}${nearest}`;
+  } else if (!/^[-*#`]/u.test(trimmed)) {
+    const nearest = getNearestTraceableLabel(trimmed, TRACEABLE_CONTRACT_CATEGORY_LABELS);
+    if (!nearest || nearest === trimmed) {
+      return undefined;
+    }
+    const indentation = line.text.match(/^(\s*)/u)?.[1] ?? "";
+    replacementLine = `${indentation}${nearest}`;
+  } else if (/^(\s*)\*\s+/u.test(line.text)) {
+    replacementLine = line.text.replace(/^(\s*)\*\s+/u, "$1- ");
+  }
+  if (!replacementLine || replacementLine === line.text) {
+    return undefined;
+  }
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, line.range, replacementLine);
+  return edit;
+}
+
+function createInsertTopicSchemaParentOriginEdit(document: vscode.TextDocument, onlyBrowseGitLine: boolean): vscode.WorkspaceEdit | undefined {
+  const normalizeGitHubBrowseBaseUrl = (remoteUrl: string): string | undefined => {
+    const trimmed = remoteUrl.trim();
+    const sshMatch = trimmed.match(/^git@github\.com:(.+?)(?:\.git)?$/iu);
+    if (sshMatch) {
+      return `https://github.com/${sshMatch[1]}`;
+    }
+    const httpsMatch = trimmed.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/iu);
+    if (httpsMatch) {
+      return `https://github.com/${httpsMatch[1]}`;
+    }
+    return undefined;
+  };
+  const tryResolveTopicSchemaParentOriginBrowseGitTarget = (linkTarget: string): string => {
+    const resolvedTargetPath = path.resolve(path.dirname(document.uri.fsPath), linkTarget);
+    const gitRoot = resolveTraceableGitRoot(resolvedTargetPath);
+    if (!gitRoot) {
+      return "PASTE_COMMIT_PINNED_PERMALINK_HERE";
+    }
+    try {
+      const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
+      const browseBaseUrl = normalizeGitHubBrowseBaseUrl(remoteUrl);
+      const commitHash = execFileSync("git", ["-C", gitRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const relativePath = path.relative(gitRoot, resolvedTargetPath).replace(/\\+/g, "/");
+      if (!browseBaseUrl || !/^[0-9a-f]{40}$/iu.test(commitHash) || !relativePath || relativePath.startsWith("../")) {
+        return "PASTE_COMMIT_PINNED_PERMALINK_HERE";
+      }
+      return `${browseBaseUrl}/blob/${commitHash}/${relativePath}`;
+    } catch {
+      return "PASTE_COMMIT_PINNED_PERMALINK_HERE";
+    }
+  };
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text;
+    if (!lineText.trim().startsWith("- Trace:")) {
+      continue;
+    }
+    const traceTargetMatch = lineText.match(/\((.*?)\)/u);
+    const traceTarget = traceTargetMatch?.[1]?.trim() || "parent.trace.md";
+    const browseGitTarget = tryResolveTopicSchemaParentOriginBrowseGitTarget(traceTarget);
+    const edit = new vscode.WorkspaceEdit();
+    if (!onlyBrowseGitLine) {
+      const insertion = [
+        "  - Origin:",
+        `    - [relative](${traceTarget})`,
+        `    - [browse + git](${browseGitTarget})`
+      ].join("\n");
+      edit.insert(document.uri, new vscode.Position(lineIndex + 1, 0), `${insertion}\n`);
+      return edit;
+    }
+
+    let originLineIndex: number | undefined;
+    let relativeLineIndex: number | undefined;
+    for (let nestedLineIndex = lineIndex + 1; nestedLineIndex < document.lineCount; nestedLineIndex += 1) {
+      const nestedLineText = document.lineAt(nestedLineIndex).text;
+      if (nestedLineText.trim() === "- Origin:") {
+        originLineIndex = nestedLineIndex;
+        continue;
+      }
+      if (nestedLineText.trim().startsWith("- [relative](")) {
+        relativeLineIndex = nestedLineIndex;
+        continue;
+      }
+      if (nestedLineText.trim().startsWith("- [browse + git](")) {
+        edit.replace(document.uri, document.lineAt(nestedLineIndex).range, `    - [browse + git](${browseGitTarget})`);
+        return edit;
+      }
+      if (!nestedLineText.startsWith("  ") && nestedLineText.trim()) {
+        break;
+      }
+    }
+    if (originLineIndex !== undefined) {
+      const insertionLineIndex = relativeLineIndex !== undefined ? relativeLineIndex + 1 : originLineIndex + 1;
+      edit.insert(document.uri, new vscode.Position(insertionLineIndex, 0), `    - [browse + git](${browseGitTarget})\n`);
+      return edit;
+    }
+  }
+  return undefined;
+}
+
+function createSetTopicSchemaFooterTowardsEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
+  const normalizeGitHubBrowseBaseUrl = (remoteUrl: string): string | undefined => {
+    const trimmed = remoteUrl.trim();
+    const sshMatch = trimmed.match(/^git@github\.com:(.+?)(?:\.git)?$/iu);
+    if (sshMatch) {
+      return `https://github.com/${sshMatch[1]}`;
+    }
+    const httpsMatch = trimmed.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/iu);
+    if (httpsMatch) {
+      return `https://github.com/${httpsMatch[1]}`;
+    }
+    return undefined;
+  };
+  const tryResolveBrowseGitTargetFromLinkTarget = (linkTarget: string): string | undefined => {
+    const resolvedTargetPath = path.resolve(path.dirname(document.uri.fsPath), linkTarget);
+    const gitRoot = resolveTraceableGitRoot(resolvedTargetPath);
+    if (!gitRoot) {
+      return undefined;
+    }
+    try {
+      const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
+      const browseBaseUrl = normalizeGitHubBrowseBaseUrl(remoteUrl);
+      const commitHash = execFileSync("git", ["-C", gitRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const relativePath = path.relative(gitRoot, resolvedTargetPath).replace(/\\+/g, "/");
+      if (!browseBaseUrl || !/^[0-9a-f]{40}$/iu.test(commitHash) || !relativePath || relativePath.startsWith("../")) {
+        return undefined;
+      }
+      return `${browseBaseUrl}/blob/${commitHash}/${relativePath}`;
+    } catch {
+      return undefined;
+    }
+  };
+
+  let footerTowardsLineIndex: number | undefined;
+  let footerTowardsLabel: string | undefined;
+  let parentOriginBrowseGitTarget: string | undefined;
+  let traceTarget: string | undefined;
+
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text.trim();
+    if (lineText.startsWith("- Trace:")) {
+      const traceMatch = lineText.match(/\((.*?)\)/u);
+      traceTarget = traceMatch?.[1]?.trim() || traceTarget;
+      continue;
+    }
+    if (lineText.startsWith("- [browse + git](")) {
+      const browseMatch = lineText.match(/\((.*?)\)/u);
+      parentOriginBrowseGitTarget = browseMatch?.[1]?.trim() || parentOriginBrowseGitTarget;
+      continue;
+    }
+    if (lineText.startsWith("- Towards:")) {
+      footerTowardsLineIndex = lineIndex;
+      const labelMatch = lineText.match(/^-\s+Towards:\s+\[(.*?)\]\((.*?)\)$/u);
+      footerTowardsLabel = labelMatch?.[1]?.trim();
+    }
+  }
+
+  const nextTarget = parentOriginBrowseGitTarget
+    ?? (traceTarget ? tryResolveBrowseGitTargetFromLinkTarget(traceTarget) : undefined);
+  if (footerTowardsLineIndex === undefined || !nextTarget) {
+    return undefined;
+  }
+
+  const line = document.lineAt(footerTowardsLineIndex);
+  const label = footerTowardsLabel || path.posix.basename(nextTarget.split("/").pop() ?? "target");
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, line.range, `  - Towards: [${label}](${nextTarget})`);
+  return edit;
+}
+
+function createSingleLineDiagnosticRange(document: vscode.TextDocument, lineIndex: number): vscode.Range {
+  const boundedLineIndex = Math.max(0, Math.min(lineIndex, Math.max(document.lineCount - 1, 0)));
+  const line = document.lineAt(boundedLineIndex);
+  return new vscode.Range(
+    new vscode.Position(boundedLineIndex, 0),
+    new vscode.Position(boundedLineIndex, Math.max(line.text.length, 1))
+  );
+}
+
+function countSharedPrefixLength(left: string, right: string): number {
+  const normalizedLeft = left.trim().toLowerCase();
+  const normalizedRight = right.trim().toLowerCase();
+  const maxLength = Math.min(normalizedLeft.length, normalizedRight.length);
+  let index = 0;
+  while (index < maxLength && normalizedLeft[index] === normalizedRight[index]) {
+    index += 1;
+  }
+  return index;
+}
+
+function getTraceableSchemaPlacementRange(
+  document: vscode.TextDocument,
+  finding: TraceableSchemaValidationResult["findings"][number]
+): vscode.Range | undefined {
+  const placement = finding.placement;
+  if (!placement) {
+    return undefined;
+  }
+  if (placement.lineText) {
+    const trimmedTarget = placement.lineText.trim();
+    const exactLine = findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === trimmedTarget);
+    if (exactLine) {
+      return exactLine;
+    }
+    const headerMatch = trimmedTarget.match(/^(#{1,6})\s+(.+)$/u);
+    const targetText = headerMatch ? headerMatch[2].trim() : trimmedTarget;
+    const bestPrefixMatch = Array.from({ length: document.lineCount }, (_, lineIndex) => ({
+      lineIndex,
+      lineText: document.lineAt(lineIndex).text.trim()
+    }))
+      .filter(({ lineText }) => lineText.length > 0)
+      .map(({ lineIndex, lineText }) => {
+        const currentText = headerMatch
+          ? lineText.replace(/^#{1,6}\s+/u, "").trim()
+          : lineText;
+        return {
+          lineIndex,
+          prefixLength: countSharedPrefixLength(currentText, targetText),
+          headerCompatible: !headerMatch || /^#{1,6}\s+/u.test(lineText)
+        };
+      })
+      .filter((candidate) => candidate.headerCompatible && candidate.prefixLength >= Math.min(4, Math.max(3, targetText.length)))
+      .sort((left, right) => right.prefixLength - left.prefixLength || left.lineIndex - right.lineIndex)[0];
+    if (bestPrefixMatch) {
+      return createSingleLineDiagnosticRange(document, bestPrefixMatch.lineIndex);
+    }
+  }
+  const headings = collectDocumentMarkdownHeadings(document);
+  const expectedLevel = placement.headingLevel;
+  if (placement.actualHeading) {
+    const actualHeading = headings.find((heading) => heading.text === placement.actualHeading && (expectedLevel === undefined || heading.level === expectedLevel));
+    if (actualHeading) {
+      return createSingleLineDiagnosticRange(document, actualHeading.lineIndex);
+    }
+  }
+  const beforeHeading = placement.anchorBeforeHeading
+    ? headings.find((heading) => heading.text === placement.anchorBeforeHeading)
+    : undefined;
+  const afterHeading = placement.anchorAfterHeading
+    ? headings.find((heading) => heading.text === placement.anchorAfterHeading)
+    : undefined;
+  if (beforeHeading && afterHeading) {
+    if (afterHeading.lineIndex - beforeHeading.lineIndex > 1) {
+      return createSingleLineDiagnosticRange(document, afterHeading.lineIndex - 1);
+    }
+    return createSingleLineDiagnosticRange(document, afterHeading.lineIndex);
+  }
+  if (beforeHeading) {
+    return createSingleLineDiagnosticRange(document, Math.min(beforeHeading.lineIndex + 1, Math.max(document.lineCount - 1, 0)));
+  }
+  if (afterHeading) {
+    return createSingleLineDiagnosticRange(document, Math.max(afterHeading.lineIndex - 1, 0));
+  }
+  if (placement.expectedHeading) {
+    const expectedHeading = headings.find((heading) => heading.text === placement.expectedHeading && (expectedLevel === undefined || heading.level === expectedLevel));
+    if (expectedHeading) {
+      return createSingleLineDiagnosticRange(document, expectedHeading.lineIndex);
+    }
+  }
+  return undefined;
+}
+
+function getTraceableDiagnosticRange(
+  document: vscode.TextDocument,
+  finding: ReturnType<typeof validateTraceableContinuityArtifactChainSync>["findings"][number]
+): vscode.Range | undefined {
+  switch (finding.code) {
+    case "continuity-checksum-mismatch":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Value:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity");
+    case "continuity-current-created-at-missing":
+    case "continuity-current-created-at-invalid":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Current")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "traceable-parent-schema-missing":
+    case "traceable-parent-created-at-missing":
+    case "traceable-parent-created-at-invalid":
+    case "traceable-parent-origin-unpinned-browse-git":
+    case "traceable-parent-schema-mismatch":
+    case "traceable-parent-unreadable-parent":
+    case "traceable-parent-checksum-mismatch":
+    case "traceable-parent-cycle-detected":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Parent")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "schema-validation-friendly-shape-missing":
+      return findTraceableDiagnosticLineRange(document, (lineText) => /^#\s+/u.test(lineText.trim()))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "## Summary");
+    case "schema-validation-contract-duplicate-groups":
+    case "schema-validation-contract-category-list-missing":
+    case "schema-validation-contract-unlabeled-list":
+    case "schema-validation-contract-star-bullets-present":
+    case "schema-validation-contract-unexpected-content":
+    case "root-schema-validation-contract-missing":
+    case "root-schema-contract-duplicate-groups":
+    case "root-schema-contract-category-list-missing":
+    case "root-schema-contract-unlabeled-list":
+    case "root-schema-contract-star-bullets-present":
+    case "root-schema-contract-unexpected-content":
+    case "root-schema-contract-groups-missing":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "## Schema Validation Contract");
+    case "artifact-creation-contract-duplicate-groups":
+    case "artifact-creation-contract-category-list-missing":
+    case "artifact-creation-contract-unlabeled-list":
+    case "artifact-creation-contract-star-bullets-present":
+    case "artifact-creation-contract-unexpected-content":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "## Artifact Creation Contract");
+    case "task-required-structure-missing":
+      return findTraceableDiagnosticLineRange(document, (lineText) => /^#\s+/u.test(lineText.trim()) && lineText.trim() !== "# Continuity Context" && lineText.trim() !== "# Continuity Integrity");
+    case "runtime-required-sections-missing":
+    case "runtime-recommended-sections-missing":
+    case "runtime-technical-detail-sections-missing":
+      return findTraceableDiagnosticLineRange(document, (lineText) => /^#\s+/u.test(lineText.trim()) && lineText.trim() !== "# Continuity Context" && lineText.trim() !== "# Continuity Integrity");
+    default:
+      return undefined;
+  }
+}
+
+function getTraceableSchemaDiagnosticRange(
+  document: vscode.TextDocument,
+  finding: TraceableSchemaValidationResult["findings"][number]
+): vscode.Range | undefined {
+  switch (finding.code) {
+    case "continuity-checksum-mismatch":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Value:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity");
+    case "continuity-current-created-at-missing":
+    case "continuity-current-created-at-invalid":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Current")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "topic-schema-envelope-schema-mismatch":
+    case "topic-schema-envelope-schema-unreadable":
+    case "root-schema-envelope-schema-mismatch":
+    case "root-schema-envelope-schema-unreadable":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Envelope Schema:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "root-schema-current-schema-mismatch":
+    case "root-schema-current-schema-unreadable":
+    case "topic-schema-current-schema-mismatch":
+    case "topic-schema-current-schema-unreadable":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Current Schema:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "root-schema-parent-present":
+    case "topic-schema-parent-schema-mismatch":
+    case "topic-schema-parent-schema-unreadable":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Parent Schema:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "topic-schema-parent-created-at-missing":
+    case "topic-schema-parent-created-at-invalid":
+    case "topic-schema-parent-created-at-mismatch":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Created At:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Parent Schema:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Parent")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "topic-schema-parent-origin-missing":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Parent")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Trace:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "topic-schema-parent-origin-browse-git-missing":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Origin:")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Trace:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "topic-schema-parent-origin-unpinned-browse-git":
+    case "topic-schema-parent-origin-browse-git-mismatch":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- [browse + git]"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Origin:")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "topic-schema-parent-trace-unresolvable":
+    case "topic-schema-parent-root-invalid":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Trace:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "root-schema-lineage-unexpected-envelope-field":
+    case "topic-schema-lineage-unexpected-envelope-field":
+      return getTraceableSchemaPlacementRange(document, finding)
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "topic-schema-footer-target-mismatch":
+    case "topic-schema-footer-target-not-permalink":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Towards:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity");
+    case "root-schema-validation-contract-missing":
+    case "root-schema-contract-duplicate-groups":
+    case "root-schema-contract-category-list-missing":
+    case "root-schema-contract-unlabeled-list":
+    case "root-schema-contract-star-bullets-present":
+    case "root-schema-contract-unexpected-content":
+    case "root-schema-contract-groups-missing":
+    case "topic-schema-validation-contract-missing":
+    case "topic-schema-contract-duplicate-groups":
+    case "topic-schema-contract-category-list-missing":
+    case "topic-schema-contract-unlabeled-list":
+    case "topic-schema-contract-star-bullets-present":
+    case "topic-schema-contract-unexpected-content":
+    case "topic-schema-contract-unexpected-group":
+    case "topic-schema-contract-unexpected-category-label":
+      return getTraceableSchemaPlacementRange(document, finding)
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "## Schema Validation Contract");
+    case "topic-schema-artifact-creation-contract-missing":
+    case "topic-schema-artifact-creation-contract-duplicate-groups":
+    case "topic-schema-artifact-creation-contract-category-list-missing":
+    case "topic-schema-artifact-creation-contract-unlabeled-list":
+    case "topic-schema-artifact-creation-contract-star-bullets-present":
+    case "topic-schema-artifact-creation-contract-unexpected-content":
+    case "topic-schema-artifact-creation-contract-unexpected-group":
+    case "topic-schema-artifact-creation-contract-unexpected-category-label":
+      return getTraceableSchemaPlacementRange(document, finding)
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "## Artifact Creation Contract");
+    case "root-schema-layout-title-mismatch":
+    case "root-schema-layout-missing-heading":
+    case "root-schema-layout-unexpected-heading":
+    case "root-schema-layout-heading-order":
+    case "topic-schema-layout-title-mismatch":
+    case "topic-schema-layout-missing-heading":
+    case "topic-schema-layout-unexpected-heading":
+    case "topic-schema-layout-heading-order":
+      return getTraceableSchemaPlacementRange(document, finding);
+    default:
+      return undefined;
+  }
+}
+
 function buildTraceableContinuityDiagnostics(
   document: vscode.TextDocument,
   result: ReturnType<typeof validateTraceableContinuityArtifactChainSync>
@@ -2444,12 +3554,27 @@ function buildTraceableContinuityDiagnostics(
   const diagnostics: vscode.Diagnostic[] = [];
   const topRange = createTopOfDocumentRange(document);
   const currentFilePath = document.uri.fsPath;
-  const addDiagnostic = (message: string, severity: vscode.DiagnosticSeverity): void => {
-    diagnostics.push(new vscode.Diagnostic(topRange, message, severity));
+  const addDiagnostic = (
+    message: string,
+    severity: vscode.DiagnosticSeverity,
+    range?: vscode.Range,
+    code?: string
+  ): void => {
+    const diagnostic = new vscode.Diagnostic(range ?? topRange, message, severity);
+    diagnostic.source = "Tiinex Traceable Continuity";
+    if (code) {
+      diagnostic.code = code;
+    }
+    diagnostics.push(diagnostic);
   };
 
   if (!result.nodes[0]) {
-    addDiagnostic("Continuity validation did not produce a readable root node for this artifact.", vscode.DiagnosticSeverity.Error);
+    addDiagnostic(
+      "Continuity validation did not produce a readable root node for this artifact.",
+      vscode.DiagnosticSeverity.Error,
+      undefined,
+      "continuity-root-node-missing"
+    );
     return diagnostics;
   }
 
@@ -2466,10 +3591,108 @@ function buildTraceableContinuityDiagnostics(
       : finding.severity === "warning"
         ? vscode.DiagnosticSeverity.Warning
         : vscode.DiagnosticSeverity.Information;
-    addDiagnostic(finding.message, severity);
+    addDiagnostic(finding.message, severity, getTraceableDiagnosticRange(document, finding), finding.code);
   }
 
   return diagnostics;
+}
+
+function buildTraceableSchemaDiagnostics(
+  document: vscode.TextDocument,
+  result: TraceableSchemaValidationResult
+): vscode.Diagnostic[] {
+  const diagnostics: vscode.Diagnostic[] = [];
+  const topRange = createTopOfDocumentRange(document);
+  const currentFilePath = document.uri.fsPath;
+  for (const finding of result.findings) {
+    if (finding.filePath && path.normalize(finding.filePath) !== path.normalize(currentFilePath)) {
+      continue;
+    }
+    const severity = finding.severity === "error"
+      ? vscode.DiagnosticSeverity.Error
+      : finding.severity === "warning"
+        ? vscode.DiagnosticSeverity.Warning
+        : vscode.DiagnosticSeverity.Information;
+    const diagnostic = new vscode.Diagnostic(
+      getTraceableSchemaDiagnosticRange(document, finding) ?? topRange,
+      finding.message,
+      severity
+    );
+    diagnostic.source = "Tiinex Schema Validation";
+    diagnostic.code = finding.code;
+    diagnostics.push(diagnostic);
+  }
+  return diagnostics;
+}
+
+async function rotateTraceableContinuityChecksum(output: vscode.OutputChannel, target?: vscode.Uri): Promise<void> {
+  const artifactUri = resolveMarkdownArtifactUri(target);
+  if (!artifactUri) {
+    void vscode.window.showErrorMessage("Open a markdown continuity artifact first, or invoke the fix from a markdown file.");
+    return;
+  }
+
+  const document = await vscode.workspace.openTextDocument(artifactUri);
+  const markdown = document.getText();
+  const validation = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactUri.fsPath,
+    maxDepth: 1,
+    readTextFileSync: (filePath) => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(artifactUri.fsPath)
+      ? markdown
+      : readFileSync(filePath, "utf8")
+  });
+  const directParentPath = validation.nodes[0]?.backwardLink.resolvedPath;
+  const workspaceFolders = (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+    name: folder.name,
+    fsPath: folder.uri.fsPath
+  }));
+  if (directParentPath && isPathWithinAnyWorkspaceRoot(directParentPath, workspaceFolders)) {
+    if (hasDirtyOpenDocumentForPath(directParentPath) || hasTrackedGitChangesForPath(directParentPath)) {
+      void vscode.window.showWarningMessage("Commit the direct parent artifact before rotating this checksum. The parent is reachable in the workspace and still dirty.");
+      return;
+    }
+  }
+
+  const readTextFileSync = (filePath: string): string => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(artifactUri.fsPath)
+    ? markdown
+    : readFileSync(filePath, "utf8");
+  const nextChecksum = artifactUri.fsPath.endsWith(".schema.md")
+    ? computeTargetedTraceableContinuityChecksumSha256(
+      artifactUri.fsPath,
+      markdown,
+      parseSchemaNoteMarkdown(markdown).footerIntegrity,
+      readTextFileSync
+    )
+    : computeTraceableContinuityChecksumSha256(markdown);
+  if (!nextChecksum) {
+    void vscode.window.showErrorMessage("Could not resolve the declared continuity integrity target for the current schema note.");
+    return;
+  }
+  const valueLinePattern = /(- Value:\s+)([^\r\n]+)/u;
+  const match = valueLinePattern.exec(markdown);
+  if (!match || match.index === undefined) {
+    void vscode.window.showErrorMessage("Could not locate a continuity integrity Value line in the current document.");
+    return;
+  }
+  if (match[2] === nextChecksum) {
+    void vscode.window.showInformationMessage("The continuity checksum is already up to date.");
+    return;
+  }
+
+  const valueStartOffset = match.index + match[1].length;
+  const valueEndOffset = valueStartOffset + match[2].length;
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(
+    artifactUri,
+    new vscode.Range(document.positionAt(valueStartOffset), document.positionAt(valueEndOffset)),
+    nextChecksum
+  );
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    void vscode.window.showErrorMessage("VS Code could not apply the checksum rotation edit.");
+    return;
+  }
+  output.appendLine(`Rotated continuity checksum for: ${artifactUri.fsPath}`);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -3654,6 +4877,705 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
+  const getTraceableStructureWorkspaceFolders = (): Array<{ name: string; fsPath: string }> => {
+    return (vscode.workspace.workspaceFolders ?? []).map((workspaceFolder) => ({
+      name: workspaceFolder.name,
+      fsPath: workspaceFolder.uri.fsPath
+    }));
+  };
+
+  const slugifyTraceNodeSummary = (value: string): string => {
+    return value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 48);
+  };
+
+  const toRelativeMarkdownLinkTarget = (fromFilePath: string, targetPath: string): string => {
+    const relativePath = path.relative(path.dirname(fromFilePath), targetPath).replace(/\\+/g, "/");
+    return relativePath || path.basename(targetPath);
+  };
+
+  const sentenceFromSummary = (value: string): string => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return "Describe the current topic here.";
+    }
+    return /[.!?]$/u.test(trimmed) ? trimmed : `${trimmed}.`;
+  };
+
+  const formatUtcTraceTimestamp = (date: Date): string => {
+    const year = String(date.getUTCFullYear());
+    const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(date.getUTCDate()).padStart(2, "0");
+    const hours = String(date.getUTCHours()).padStart(2, "0");
+    const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+    const seconds = String(date.getUTCSeconds()).padStart(2, "0");
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+  };
+
+  type TraceNodeOriginReference =
+    | { kind: "file"; filePath: string }
+    | { kind: "url"; url: string };
+
+  type TraceNodeParentOrOriginResolution = {
+    parentNode?: TraceableStructureNode;
+    currentOrigin?: TraceNodeOriginReference;
+    targetFolderPath?: string;
+  };
+
+  const browseGitBaseUrlByGitRoot = new Map<string, string | null>();
+  const headCommitByGitRoot = new Map<string, string | null>();
+
+  const normalizeGitHubBrowseBaseUrl = (remoteUrl: string | undefined): string | undefined => {
+    const trimmed = remoteUrl?.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    const sshMatch = trimmed.match(/^git@github\.com:(.+?)(?:\.git)?$/iu);
+    if (sshMatch) {
+      return `https://github.com/${sshMatch[1]}`;
+    }
+    const httpsMatch = trimmed.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/iu);
+    if (httpsMatch) {
+      return `https://github.com/${httpsMatch[1]}`;
+    }
+    return undefined;
+  };
+
+  const resolveGitHubBrowseBaseUrl = (gitRoot: string | undefined): string | undefined => {
+    const normalizedGitRoot = gitRoot ? path.resolve(gitRoot) : undefined;
+    if (!normalizedGitRoot) {
+      return undefined;
+    }
+    if (browseGitBaseUrlByGitRoot.has(normalizedGitRoot)) {
+      return browseGitBaseUrlByGitRoot.get(normalizedGitRoot) ?? undefined;
+    }
+    try {
+      const remoteUrl = execFileSync("git", ["-C", normalizedGitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
+      const browseBaseUrl = normalizeGitHubBrowseBaseUrl(remoteUrl);
+      browseGitBaseUrlByGitRoot.set(normalizedGitRoot, browseBaseUrl ?? null);
+      return browseBaseUrl;
+    } catch {
+      browseGitBaseUrlByGitRoot.set(normalizedGitRoot, null);
+      return undefined;
+    }
+  };
+
+  const resolveHeadCommitHash = (gitRoot: string | undefined): string | undefined => {
+    const normalizedGitRoot = gitRoot ? path.resolve(gitRoot) : undefined;
+    if (!normalizedGitRoot) {
+      return undefined;
+    }
+    if (headCommitByGitRoot.has(normalizedGitRoot)) {
+      return headCommitByGitRoot.get(normalizedGitRoot) ?? undefined;
+    }
+    try {
+      const commitHash = execFileSync("git", ["-C", normalizedGitRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      const normalizedCommitHash = /^[0-9a-f]{40}$/iu.test(commitHash) ? commitHash : undefined;
+      headCommitByGitRoot.set(normalizedGitRoot, normalizedCommitHash ?? null);
+      return normalizedCommitHash;
+    } catch {
+      headCommitByGitRoot.set(normalizedGitRoot, null);
+      return undefined;
+    }
+  };
+
+  const tryResolveBrowseGitUrlForPath = (targetPath: string): string | undefined => {
+    const gitRoot = resolveTraceableGitRoot(targetPath);
+    const browseBaseUrl = resolveGitHubBrowseBaseUrl(gitRoot);
+    const commitHash = resolveHeadCommitHash(gitRoot);
+    if (!gitRoot || !browseBaseUrl || !commitHash) {
+      return undefined;
+    }
+    const relativePath = path.relative(gitRoot, targetPath).replace(/\\+/g, "/");
+    if (!relativePath || relativePath.startsWith("../")) {
+      return undefined;
+    }
+    return `${browseBaseUrl}/blob/${commitHash}/${relativePath}`;
+  };
+
+  const buildEnvelopeSchemaLine = (currentSchemaPath: string, outputFilePath: string): string => {
+    const continuationSchemaPath = path.join(path.dirname(currentSchemaPath), "tiinex.continuation.v1.schema.md");
+    return `- Envelope Schema: [tiinex.continuation.v1](${toRelativeMarkdownLinkTarget(outputFilePath, continuationSchemaPath)})`;
+  };
+
+  const buildLocalOriginLines = (fromFilePath: string, targetPath: string, indent = "  "): string[] => {
+    const lines = [
+      `${indent}- [relative](${toRelativeMarkdownLinkTarget(fromFilePath, targetPath)})`,
+      `${indent}- [absolute](${path.resolve(targetPath).replace(/\\+/g, "/")})`
+    ];
+    const browseGitUrl = tryResolveBrowseGitUrlForPath(targetPath);
+    if (browseGitUrl) {
+      lines.push(`${indent}- [browse + git](${browseGitUrl})`);
+    }
+    return lines;
+  };
+
+  const buildOriginLines = (fromFilePath: string, origin: TraceNodeOriginReference, indent = "  "): string[] => {
+    if (origin.kind === "file") {
+      return buildLocalOriginLines(fromFilePath, origin.filePath, indent);
+    }
+    return [`${indent}- [link](${origin.url.trim()})`];
+  };
+
+  const tryResolveSchemaTargetForNewTrace = (targetPath: string | undefined, baseFilePath: string, outputFilePath: string): { label: string; target: string } | undefined => {
+    const trimmedTarget = targetPath?.trim();
+    if (!trimmedTarget) {
+      return undefined;
+    }
+    if (/^https?:\/\//iu.test(trimmedTarget)) {
+      return { label: trimmedTarget, target: trimmedTarget };
+    }
+    const resolvedPath = resolveTraceableReferenceForCommand(baseFilePath, trimmedTarget);
+    if (!resolvedPath) {
+      return undefined;
+    }
+    return {
+      label: path.basename(resolvedPath),
+      target: toRelativeMarkdownLinkTarget(outputFilePath, resolvedPath)
+    };
+  };
+
+  type TraceableCreateTemplate = {
+    version?: number;
+    createTitle?: string;
+    summaryPrompt?: string;
+    summaryPlaceholder?: string;
+    whyPrompt?: string;
+    whyPlaceholder?: string;
+    bodyLines?: string[];
+  };
+
+  const TRACEABLE_CREATE_TEMPLATE_BLOCK_RE = /```traceable-create-template\s*\r?\n([\s\S]*?)```/giu;
+  const TRACEABLE_CREATE_TEMPLATE_FRONT_MATTER_RE = /^\s*---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n([\s\S]*))?$/u;
+
+  const DEFAULT_TRACEABLE_CREATE_TEMPLATES = new Map<string, TraceableCreateTemplate>([
+    ["tiinex.topic.v1", {
+      createTitle: "Create Topic",
+      summaryPrompt: "Enter a short title for the topic",
+      summaryPlaceholder: "What is this topic about?",
+      whyPrompt: "Optional: capture why this topic exists",
+      whyPlaceholder: "Why does this topic matter right now?",
+      bodyLines: [
+        "# {{summary}}",
+        "",
+        "{{summarySentence}}",
+        "",
+        "## Current Read",
+        "",
+        "Describe the current topic state, what is already known, and what this topic is trying to advance.",
+        "",
+        "## Design Direction",
+        "",
+        "Describe the direction this topic should take next.",
+        "",
+        "## Next Artifacts",
+        "",
+        "- Add the next concrete child topic, proof, task, or decision artifact."
+      ]
+    }],
+    ["tiinex.task.v1", {
+      createTitle: "Create Task",
+      summaryPrompt: "Enter a short title for the task",
+      summaryPlaceholder: "What concrete work needs to be done?",
+      whyPrompt: "Optional: capture why this task exists",
+      whyPlaceholder: "Why does this task matter right now?",
+      bodyLines: [
+        "# {{summary}}",
+        "",
+        "## Objective",
+        "",
+        "Describe the concrete work being asked for.",
+        "",
+        "## Done Criteria",
+        "",
+        "- Define what completion means for this task.",
+        "",
+        "## Scope",
+        "",
+        "- Capture boundaries, constraints, and non-goals.",
+        "",
+        "## Dependencies",
+        "",
+        "- List dependencies, blockers, or required artifacts when they exist."
+      ]
+    }]
+  ]);
+
+  const parseTraceableCreateTemplateFrontMatter = (frontMatter: string): Record<string, string> | undefined => {
+    const parsed: Record<string, string> = {};
+    for (const line of frontMatter.split(/\r?\n/u)) {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) {
+        continue;
+      }
+      const separatorIndex = trimmedLine.indexOf(":");
+      if (separatorIndex <= 0) {
+        return undefined;
+      }
+      const key = trimmedLine.slice(0, separatorIndex).trim();
+      const value = trimmedLine.slice(separatorIndex + 1).trim();
+      if (!key) {
+        return undefined;
+      }
+      parsed[key] = value;
+    }
+    return parsed;
+  };
+
+  const trimTrailingEmptyLines = (lines: string[]): string[] => {
+    const trimmed = [...lines];
+    while (trimmed.length > 0 && !trimmed[trimmed.length - 1]?.trim()) {
+      trimmed.pop();
+    }
+    return trimmed;
+  };
+
+  const coerceTraceableCreateTemplate = (value: Partial<TraceableCreateTemplate> | undefined): TraceableCreateTemplate | undefined => {
+    if (!value || typeof value !== "object") {
+      return undefined;
+    }
+    const bodyLines = Array.isArray(value.bodyLines)
+      ? value.bodyLines.filter((entry): entry is string => typeof entry === "string")
+      : undefined;
+    if (Array.isArray(value.bodyLines) && bodyLines?.length !== value.bodyLines.length) {
+      return undefined;
+    }
+    const version = typeof value.version === "number" ? value.version : undefined;
+    if (version !== undefined && version !== 1) {
+      return undefined;
+    }
+    return {
+      version,
+      createTitle: typeof value.createTitle === "string" ? value.createTitle : undefined,
+      summaryPrompt: typeof value.summaryPrompt === "string" ? value.summaryPrompt : undefined,
+      summaryPlaceholder: typeof value.summaryPlaceholder === "string" ? value.summaryPlaceholder : undefined,
+      whyPrompt: typeof value.whyPrompt === "string" ? value.whyPrompt : undefined,
+      whyPlaceholder: typeof value.whyPlaceholder === "string" ? value.whyPlaceholder : undefined,
+      bodyLines
+    };
+  };
+
+  const parseTraceableCreateTemplateBlock = (blockContent: string): TraceableCreateTemplate | undefined => {
+    const frontMatterMatch = blockContent.match(TRACEABLE_CREATE_TEMPLATE_FRONT_MATTER_RE);
+    if (frontMatterMatch) {
+      const frontMatter = parseTraceableCreateTemplateFrontMatter(frontMatterMatch[1]);
+      if (!frontMatter) {
+        return undefined;
+      }
+      const versionValue = frontMatter.version?.trim();
+      const bodyLines = trimTrailingEmptyLines((frontMatterMatch[2] || "").split(/\r?\n/u));
+      return coerceTraceableCreateTemplate({
+        version: versionValue ? Number(versionValue) : undefined,
+        createTitle: frontMatter.createTitle,
+        summaryPrompt: frontMatter.summaryPrompt,
+        summaryPlaceholder: frontMatter.summaryPlaceholder,
+        whyPrompt: frontMatter.whyPrompt,
+        whyPlaceholder: frontMatter.whyPlaceholder,
+        bodyLines
+      });
+    }
+    try {
+      return coerceTraceableCreateTemplate(JSON.parse(blockContent));
+    } catch {
+      return undefined;
+    }
+  };
+
+  const resolveTraceableCreateTemplate = async (schemaEntry: TraceableStructureSchemaEntry): Promise<TraceableCreateTemplate | undefined> => {
+    const defaultTemplate = DEFAULT_TRACEABLE_CREATE_TEMPLATES.get(schemaEntry.id);
+    let markdown: string | undefined;
+    try {
+      markdown = await fs.readFile(schemaEntry.path, "utf8");
+    } catch {
+      return defaultTemplate;
+    }
+    const matches = [...markdown.matchAll(TRACEABLE_CREATE_TEMPLATE_BLOCK_RE)];
+    const match = matches.at(-1);
+    if (!match) {
+      return defaultTemplate;
+    }
+    const parsedTemplate = parseTraceableCreateTemplateBlock(match[1]);
+    if (!parsedTemplate) {
+      output.appendLine(`TRACEABLE create-template parse failed for ${schemaEntry.path}: unsupported template block shape`);
+      return defaultTemplate;
+    }
+    return parsedTemplate;
+  };
+
+  const interpolateTraceableCreateTemplateLine = (
+    line: string,
+    input: {
+      schemaEntry: TraceableStructureSchemaEntry;
+      summary: string;
+      why?: string;
+      parentNode?: TraceableStructureNode;
+    }
+  ): string => {
+    const replacements: Record<string, string> = {
+      summary: input.summary.trim(),
+      summarySentence: sentenceFromSummary(input.summary),
+      why: input.why?.trim() || "Describe why this node exists.",
+      schemaId: input.schemaEntry.id,
+      schemaDisplayName: input.schemaEntry.displayName,
+      parentTraceDisplayPath: input.parentNode?.displayPath ?? "(root)"
+    };
+    return line.replace(/\{\{\s*([a-zA-Z][a-zA-Z0-9]*)\s*\}\}/gu, (_match, token: string) => {
+      return replacements[token] ?? "";
+    });
+  };
+
+  const renderTraceableCreateTemplateBody = (
+    template: TraceableCreateTemplate | undefined,
+    input: {
+      schemaEntry: TraceableStructureSchemaEntry;
+      summary: string;
+      why?: string;
+      parentNode?: TraceableStructureNode;
+    }
+  ): string[] => {
+    if (template?.bodyLines && template.bodyLines.length > 0) {
+      return template.bodyLines.map((line) => interpolateTraceableCreateTemplateLine(line, input));
+    }
+    if (input.schemaEntry.id === "tiinex.topic.v1") {
+      return [
+        `# ${input.summary.trim()}`,
+        "",
+        sentenceFromSummary(input.summary),
+        "",
+        "## Current Read",
+        "",
+        "Describe the current topic state, what is already known, and what this topic is trying to advance.",
+        "",
+        "## Design Direction",
+        "",
+        "Describe the direction this topic should take next.",
+        "",
+        "## Next Artifacts",
+        "",
+        "- Add the next concrete child topic, proof, task, or decision artifact."
+      ];
+    }
+    return [
+      "# Summary",
+      "",
+      input.summary.trim(),
+      "",
+      "## Why",
+      "",
+      input.why?.trim() || "Describe why this node exists.",
+      "",
+      "## Notes",
+      "",
+      `- Schema: ${input.schemaEntry.id}`,
+      input.parentNode ? `- Parent Trace: ${input.parentNode.displayPath}` : "- Parent Trace: (root)"
+    ];
+  };
+
+  const buildTraceNodeMarkdown = (input: {
+    filePath: string;
+    schemaEntry: TraceableStructureSchemaEntry;
+    summary: string;
+    why?: string;
+    template?: TraceableCreateTemplate;
+    parentNode?: TraceableStructureNode;
+    currentOrigin?: TraceNodeOriginReference;
+    workspaceRoots: string[];
+  }): string => {
+    const createdAt = formatUtcTraceTimestamp(new Date());
+    const lines: string[] = ["# Continuity Context", "", buildEnvelopeSchemaLine(input.schemaEntry.path, input.filePath)];
+    if (input.parentNode) {
+      lines.push("- Parent");
+      const parentSchemaLink = tryResolveSchemaTargetForNewTrace(input.parentNode.currentSchemaTarget, input.parentNode.path, input.filePath);
+      if (input.parentNode.currentSchemaId) {
+        lines.push(parentSchemaLink
+          ? `  - Parent Schema: [${input.parentNode.currentSchemaId}](${parentSchemaLink.target})`
+          : `  - Parent Schema: ${input.parentNode.currentSchemaId}`);
+      }
+      lines.push(`  - Trace: [${path.basename(input.parentNode.path)}](${computeStoredParentTracePath(input.parentNode.path, input.filePath, input.workspaceRoots)})`);
+      if (input.parentNode.currentCreatedAt) {
+        lines.push(`  - Created At: ${input.parentNode.currentCreatedAt}`);
+      }
+      lines.push("  - Origin:");
+      lines.push(...buildLocalOriginLines(input.filePath, input.parentNode.path, "    "));
+      lines.push("");
+    }
+    lines.push("- Current");
+    lines.push(`  - Current Schema: [${input.schemaEntry.id}](${toRelativeMarkdownLinkTarget(input.filePath, input.schemaEntry.path)})`);
+    lines.push(`  - Created At: ${createdAt}`);
+    lines.push(`  - Why: ${input.why?.trim() || "Describe why this node exists."}`);
+    lines.push(`  - Summary: ${input.summary.trim()}`);
+    if (!input.parentNode && input.currentOrigin) {
+      lines.push("  - Origin:");
+      lines.push(...buildOriginLines(input.filePath, input.currentOrigin, "    "));
+    }
+    lines.push("", "---", "", ...renderTraceableCreateTemplateBody(input.template, input));
+    return `${lines.join("\n")}\n`;
+  };
+
+  const collectTraceNodesInFolder = (
+    structureIndex: Awaited<ReturnType<typeof buildTraceableStructureIndex>>,
+    folderPath: string
+  ): TraceableStructureNode[] => {
+    const normalizedFolderPath = path.resolve(folderPath).toLowerCase();
+    return [...structureIndex.nodesByPathKey.values()]
+      .filter((node) => path.resolve(node.folderPath).toLowerCase() === normalizedFolderPath)
+      .sort((left, right) => (right.modifiedAt ?? 0) - (left.modifiedAt ?? 0) || left.path.localeCompare(right.path));
+  };
+
+  const findTraceNodeByFilePath = (
+    structureIndex: Awaited<ReturnType<typeof buildTraceableStructureIndex>>,
+    filePath: string
+  ): TraceableStructureNode | undefined => {
+    const normalizedFilePath = path.resolve(filePath).toLowerCase();
+    return [...structureIndex.nodesByPathKey.values()].find((node) => path.resolve(node.path).toLowerCase() === normalizedFilePath);
+  };
+
+  const promptForOriginFilePath = async (defaultFolderPath: string): Promise<string | undefined> => {
+    const pickedFiles = await vscode.window.showOpenDialog({
+      title: "Select Parent Or Origin File",
+      openLabel: "Use File",
+      canSelectFiles: true,
+      canSelectFolders: false,
+      canSelectMany: false,
+      defaultUri: vscode.Uri.file(defaultFolderPath)
+    });
+    return pickedFiles?.[0]?.fsPath;
+  };
+
+  const promptForOptionalParentOrOrigin = async (
+    structureIndex: Awaited<ReturnType<typeof buildTraceableStructureIndex>>,
+    defaultFolderPath: string
+  ): Promise<TraceNodeParentOrOriginResolution | undefined> => {
+    const originMode = await vscode.window.showQuickPick([
+      { label: "Select file", value: "file" as const, detail: "Choose any local file. .trace.md creates a child trace; other files become the current origin." },
+      { label: "Enter link", value: "url" as const, detail: "Use a URL as the current origin." },
+      { label: "No origin", value: "none" as const, detail: "Leave the new trace without an origin." }
+    ], {
+      title: "Create Trace Node",
+      placeHolder: "No parent trace was found here. Choose an optional origin for the new trace"
+    });
+    if (!originMode || originMode.value === "none") {
+      return {};
+    }
+    if (originMode.value === "file") {
+      const selectedPath = await promptForOriginFilePath(defaultFolderPath);
+      if (!selectedPath) {
+        return undefined;
+      }
+      if (selectedPath.toLowerCase().endsWith(".trace.md")) {
+        const selectedParentNode = findTraceNodeByFilePath(structureIndex, selectedPath);
+        if (!selectedParentNode) {
+          void vscode.window.showErrorMessage("The selected parent trace must be inside the current open workspace roots.");
+          return undefined;
+        }
+        return {
+          parentNode: selectedParentNode,
+          targetFolderPath: selectedParentNode.folderPath
+        };
+      }
+      return {
+        currentOrigin: { kind: "file", filePath: selectedPath }
+      };
+    }
+    const enteredUrl = (await vscode.window.showInputBox({
+      title: "Create Trace Node",
+      prompt: "Enter an origin link for the new trace",
+      placeHolder: "https://...",
+      validateInput: (candidate) => /^https?:\/\//iu.test(candidate.trim()) ? undefined : "Enter an absolute http or https URL."
+    }))?.trim();
+    return enteredUrl ? { currentOrigin: { kind: "url", url: enteredUrl } } : undefined;
+  };
+
+  const resolveFolderSuggestedParentNode = async (
+    structureIndex: Awaited<ReturnType<typeof buildTraceableStructureIndex>>,
+    targetFolderPath: string
+  ): Promise<TraceableStructureNode | undefined> => {
+    const parentFolderPath = path.dirname(targetFolderPath);
+    if (path.resolve(parentFolderPath).toLowerCase() === path.resolve(targetFolderPath).toLowerCase()) {
+      return undefined;
+    }
+    const candidates = collectTraceNodesInFolder(structureIndex, parentFolderPath);
+    if (candidates.length === 0) {
+      return undefined;
+    }
+    if (candidates.length === 1) {
+      return candidates[0];
+    }
+    const pickedParent = await vscode.window.showQuickPick([
+      ...candidates.map((candidate) => ({
+        label: path.basename(candidate.path),
+        description: candidate.currentSchemaId ?? candidate.displayPath,
+        detail: candidate.displaySummary ?? candidate.displayPath,
+        node: candidate
+      })),
+      {
+        label: "No parent trace",
+        description: "Create this trace without a parent trace.",
+        detail: "The new trace will not inherit a parent trace from the parent folder.",
+        node: undefined as TraceableStructureNode | undefined
+      }
+    ], {
+      title: "Create Trace Node",
+      placeHolder: "Choose a parent trace from the parent folder"
+    });
+    return pickedParent?.node;
+  };
+
+  const findWorkspaceFolderForPath = (
+    candidatePath: string,
+    workspaceFolders: ReadonlyArray<ReturnType<typeof getTraceableStructureWorkspaceFolders>[number]>
+  ): ReturnType<typeof getTraceableStructureWorkspaceFolders>[number] | undefined => {
+    const normalizedCandidatePath = path.resolve(candidatePath).toLowerCase();
+    return workspaceFolders.find((workspaceFolder) => {
+      const normalizedWorkspacePath = path.resolve(workspaceFolder.fsPath).toLowerCase();
+      return normalizedCandidatePath === normalizedWorkspacePath || normalizedCandidatePath.startsWith(`${normalizedWorkspacePath}${path.sep}`);
+    });
+  };
+
+  const resolveWorkspaceTopicFolder = async (workspaceFolderPath: string): Promise<string | undefined> => {
+    const topicFolderPath = path.join(workspaceFolderPath, ".topics");
+    try {
+      const stat = await fs.stat(topicFolderPath);
+      return stat.isDirectory() ? topicFolderPath : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const isWithinFolder = (candidatePath: string, containerPath: string): boolean => {
+    const normalizedCandidatePath = path.resolve(candidatePath).toLowerCase();
+    const normalizedContainerPath = path.resolve(containerPath).toLowerCase();
+    return normalizedCandidatePath === normalizedContainerPath || normalizedCandidatePath.startsWith(`${normalizedContainerPath}${path.sep}`);
+  };
+
+  const resolveDefaultNewTopicLocation = (resource?: vscode.Uri): "ask" | "topic-space" | "same-folder" => {
+    const configured = getProvenanceConfiguration(resource).get<string>(DEFAULT_NEW_TOPIC_LOCATION_SETTING, "topic-space").trim().toLowerCase();
+    return configured === "ask" || configured === "same-folder" || configured === "topic-space"
+      ? configured
+      : "topic-space";
+  };
+
+  const resolveTraceNodeCreationTarget = async (input: {
+    schemaEntry: TraceableStructureSchemaEntry;
+    selectedTarget: { targetFolderPath: string; parentNode?: TraceableStructureNode } | undefined;
+    workspaceFolders: ReadonlyArray<ReturnType<typeof getTraceableStructureWorkspaceFolders>[number]>;
+  }): Promise<{ targetFolderPath: string; selectedTraceParentNode?: TraceableStructureNode; explicitFolderChoice: boolean } | undefined> => {
+    const fallbackFolderPath = input.selectedTarget
+      ? undefined
+      : await promptForTraceNodeFolder();
+    const baseTargetFolderPath = input.selectedTarget?.targetFolderPath ?? fallbackFolderPath;
+    const explicitFolderChoice = Boolean(!input.selectedTarget && fallbackFolderPath);
+    if (!baseTargetFolderPath) {
+      return undefined;
+    }
+
+    if (input.schemaEntry.id !== "tiinex.topic.v1") {
+      return {
+        targetFolderPath: baseTargetFolderPath,
+        selectedTraceParentNode: input.selectedTarget?.parentNode,
+        explicitFolderChoice
+      };
+    }
+
+    const workspaceFolder = findWorkspaceFolderForPath(baseTargetFolderPath, input.workspaceFolders);
+    if (!workspaceFolder) {
+      return {
+        targetFolderPath: baseTargetFolderPath,
+        selectedTraceParentNode: input.selectedTarget?.parentNode,
+        explicitFolderChoice
+      };
+    }
+
+    const topicFolderPath = await resolveWorkspaceTopicFolder(workspaceFolder.fsPath);
+    if (explicitFolderChoice || !topicFolderPath || isWithinFolder(baseTargetFolderPath, topicFolderPath)) {
+      return {
+        targetFolderPath: baseTargetFolderPath,
+        selectedTraceParentNode: input.selectedTarget?.parentNode,
+        explicitFolderChoice
+      };
+    }
+
+    const defaultLocation = resolveDefaultNewTopicLocation(vscode.Uri.file(workspaceFolder.fsPath));
+    if (defaultLocation === "topic-space") {
+      return {
+        targetFolderPath: topicFolderPath,
+        selectedTraceParentNode: undefined,
+        explicitFolderChoice
+      };
+    }
+    if (defaultLocation === "same-folder") {
+      return {
+        targetFolderPath: baseTargetFolderPath,
+        selectedTraceParentNode: input.selectedTarget?.parentNode,
+        explicitFolderChoice
+      };
+    }
+
+    const locationPick = await vscode.window.showQuickPick([
+      {
+        label: ".topics",
+        description: path.relative(workspaceFolder.fsPath, topicFolderPath).replace(/\\+/g, "/") || ".topics",
+        detail: "Create this topic in the workspace topic space.",
+        targetFolderPath: topicFolderPath,
+        selectedTraceParentNode: undefined
+      },
+      {
+        label: "Same folder",
+        description: path.relative(workspaceFolder.fsPath, baseTargetFolderPath).replace(/\\+/g, "/") || workspaceFolder.name,
+        detail: "Create this topic beside the current selection.",
+        targetFolderPath: baseTargetFolderPath,
+        selectedTraceParentNode: input.selectedTarget?.parentNode
+      }
+    ], {
+      title: "Create Topic Trace Node",
+      placeHolder: "Choose where this topic should be created"
+    });
+    if (!locationPick) {
+      return undefined;
+    }
+    return {
+      targetFolderPath: locationPick.targetFolderPath,
+      selectedTraceParentNode: locationPick.selectedTraceParentNode,
+      explicitFolderChoice
+    };
+  };
+
+  const promptForTraceNodeFolder = async (defaultFolderPath?: string): Promise<string | undefined> => {
+    const pickedFolders = await vscode.window.showOpenDialog({
+      title: "Create Trace Node",
+      openLabel: "Use Folder",
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      defaultUri: defaultFolderPath ? vscode.Uri.file(defaultFolderPath) : undefined
+    });
+    return pickedFolders?.[0]?.fsPath;
+  };
+
+  const resolveSelectedTraceableCreateTarget = (
+    structureIndex: Awaited<ReturnType<typeof buildTraceableStructureIndex>>
+  ): { targetFolderPath: string; parentNode?: TraceableStructureNode } | undefined => {
+    const selection = getSelectedTraceableStructureSnapshot();
+    if (!selection) {
+      return undefined;
+    }
+    if (selection.kind === "trace" && selection.nodePathKey) {
+      const parentNode = structureIndex.nodesByPathKey.get(selection.nodePathKey);
+      if (!parentNode) {
+        return undefined;
+      }
+      return {
+        targetFolderPath: parentNode.folderPath,
+        parentNode
+      };
+    }
+    const targetFolderPath = selection.folderPath ?? selection.workspaceFolderPath;
+    return targetFolderPath ? { targetFolderPath } : undefined;
+  };
+
   const startNewTraceableChat = async (target?: vscode.Uri): Promise<void> => {
     const resolvedTarget = await resolveNewTraceableChatTarget(target);
     if (!resolvedTarget) {
@@ -3757,6 +5679,115 @@ export function activate(context: vscode.ExtensionContext): void {
       activeCarryForward: result.activeCarryForward
     });
     activeUnsavedTraceableAgentChatKey = resolvedTarget.uri.fsPath;
+  };
+
+  const startNewTraceableNodeFromView = async (requestedSchemaId?: string): Promise<void> => {
+    const workspaceFolders = getTraceableStructureWorkspaceFolders();
+    if (workspaceFolders.length === 0) {
+      void vscode.window.showErrorMessage("Create Trace Node requires at least one open workspace folder.");
+      return;
+    }
+
+    const structureIndex = await buildTraceableStructureIndex(workspaceFolders);
+    const schemaEntries = [...structureIndex.schemaEntries].sort(compareTraceableStructureSchemaEntries);
+    if (schemaEntries.length === 0) {
+      void vscode.window.showErrorMessage("No schema notes were found in the current multi-root workspace.");
+      return;
+    }
+
+    const rememberedSchemaId = context.workspaceState.get<string>(LAST_TRACEABLE_NODE_SCHEMA_ID_STATE_KEY)?.trim();
+    const selectedSchema = (requestedSchemaId?.trim()
+      ? schemaEntries.find((entry) => entry.id === requestedSchemaId.trim())
+      : undefined)
+      ?? (rememberedSchemaId ? schemaEntries.find((entry) => entry.id === rememberedSchemaId) : undefined)
+      ?? schemaEntries[0];
+    if (!selectedSchema) {
+      if (requestedSchemaId?.trim()) {
+        void vscode.window.showErrorMessage(`The requested schema ${requestedSchemaId.trim()} is not available in the current multi-root workspace.`);
+      }
+      return;
+    }
+
+    const createTemplate = await resolveTraceableCreateTemplate(selectedSchema);
+
+    const selectedTarget = resolveSelectedTraceableCreateTarget(structureIndex);
+    const resolvedCreateTarget = await resolveTraceNodeCreationTarget({
+      schemaEntry: selectedSchema,
+      selectedTarget,
+      workspaceFolders
+    });
+    if (!resolvedCreateTarget) {
+      return;
+    }
+    const targetFolder = resolvedCreateTarget.targetFolderPath;
+    if (!isPathWithinAnyWorkspaceRoot(targetFolder, workspaceFolders)) {
+      void vscode.window.showErrorMessage("Create Trace Node currently supports folders inside the open workspace roots only.");
+      return;
+    }
+
+    let effectiveTargetFolder = targetFolder;
+    let parentNode = resolvedCreateTarget.selectedTraceParentNode
+      ?? await resolveFolderSuggestedParentNode(structureIndex, effectiveTargetFolder);
+    let currentOrigin: TraceNodeOriginReference | undefined;
+    if (!parentNode) {
+      const parentOrOrigin = await promptForOptionalParentOrOrigin(structureIndex, path.dirname(effectiveTargetFolder));
+      if (parentOrOrigin === undefined) {
+        return;
+      }
+      if (parentOrOrigin.targetFolderPath) {
+        effectiveTargetFolder = parentOrOrigin.targetFolderPath;
+      }
+      parentNode = parentOrOrigin.parentNode;
+      currentOrigin = parentOrOrigin.currentOrigin;
+    }
+
+    const createTitle = createTemplate?.createTitle?.trim() || `Create ${selectedSchema.displayName}`;
+
+    const summary = (await vscode.window.showInputBox({
+      title: createTitle,
+      prompt: createTemplate?.summaryPrompt?.trim() || "Enter a short Summary for the new trace node",
+      placeHolder: createTemplate?.summaryPlaceholder?.trim() || "What is this node actually about?",
+      validateInput: (candidate) => candidate.trim() ? undefined : "A Summary is required to create a trace node."
+    }))?.trim();
+    if (!summary) {
+      return;
+    }
+
+    const why = (await vscode.window.showInputBox({
+      title: createTitle,
+      prompt: createTemplate?.whyPrompt?.trim() || "Optional: enter a Why note for the new trace node",
+      placeHolder: createTemplate?.whyPlaceholder?.trim() || "Why does this node exist?"
+    }))?.trim();
+
+    const existingEntries = await fs.readdir(effectiveTargetFolder, { withFileTypes: true }).catch(() => []);
+    const fileNameFormatOptions = getTraceableEvidenceFileNameFormatOptions();
+    const lineageParentNode = parentNode
+      && path.resolve(parentNode.folderPath).toLowerCase() === path.resolve(effectiveTargetFolder).toLowerCase()
+      ? parentNode
+      : undefined;
+    const lineageLabel = allocateNextTraceableLineageLabel(
+      existingEntries.filter((entry) => entry.isFile()).map((entry) => entry.name),
+      lineageParentNode?.parsedFileName.lineageLabel,
+      fileNameFormatOptions
+    );
+    const fileName = buildTraceableEvidenceFileName(lineageLabel, slugifyTraceNodeSummary(summary), fileNameFormatOptions);
+    const filePath = path.join(effectiveTargetFolder, fileName);
+    const markdown = buildTraceNodeMarkdown({
+      filePath,
+      schemaEntry: selectedSchema,
+      summary,
+      why,
+      template: createTemplate,
+      parentNode,
+      currentOrigin,
+      workspaceRoots: getTraceableWorkspaceRoots()
+    });
+
+    await vscode.workspace.fs.writeFile(vscode.Uri.file(filePath), new TextEncoder().encode(markdown));
+    await context.workspaceState.update(LAST_TRACEABLE_NODE_SCHEMA_ID_STATE_KEY, selectedSchema.id);
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+    await vscode.window.showTextDocument(document, { preview: false });
+    await vscode.commands.executeCommand("tiinex.aiProvenance.traceableStructure.refresh");
   };
 
   const setDefaultNewTraceableChatExportFolder = async (target?: vscode.Uri): Promise<void> => {
@@ -4139,19 +6170,34 @@ export function activate(context: vscode.ExtensionContext): void {
   };
   const refreshTraceableContinuityDiagnosticsForDocument = async (document: vscode.TextDocument): Promise<void> => {
     clearTraceableContinuityValidationTimer(document.uri.fsPath);
-    if (!isTraceableContinuityEligibleDocument(document)) {
+    const validationKind = getTraceableEditorValidationKindForFsPath(document.uri.fsPath);
+    if (!validationKind || document.uri.scheme !== "file" || document.languageId !== "markdown") {
       traceableContinuityDiagnostics.delete(document.uri);
       return;
     }
     try {
       const normalizedDocumentPath = path.resolve(document.uri.fsPath).toLowerCase();
-      const result = validateTraceableContinuityArtifactChainSync({
-        filePath: document.uri.fsPath,
-        readTextFileSync: (filePath) => path.resolve(filePath).toLowerCase() === normalizedDocumentPath
-          ? document.getText()
-          : readFileSync(filePath, "utf8")
-      });
-      traceableContinuityDiagnostics.set(document.uri, buildTraceableContinuityDiagnostics(document, result));
+      const readTextFileSync = (filePath: string): string => path.resolve(filePath).toLowerCase() === normalizedDocumentPath
+        ? document.getText()
+        : readFileSync(filePath, "utf8");
+      if (validationKind === "continuity-trace") {
+        const result = validateTraceableContinuityArtifactChainSync({
+          filePath: document.uri.fsPath,
+          readTextFileSync
+        });
+        traceableContinuityDiagnostics.set(document.uri, buildTraceableContinuityDiagnostics(document, result));
+        return;
+      }
+      const result = validationKind === "root-schema"
+        ? validateTraceableRootSchemaSync({
+          filePath: document.uri.fsPath,
+          readTextFileSync
+        })
+        : validateTraceableTopicSchemaSync({
+          filePath: document.uri.fsPath,
+          readTextFileSync
+        });
+      traceableContinuityDiagnostics.set(document.uri, buildTraceableSchemaDiagnostics(document, result));
     } catch (error) {
       traceableContinuityDiagnostics.set(document.uri, [new vscode.Diagnostic(
         createTopOfDocumentRange(document),
@@ -4181,6 +6227,33 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
   context.subscriptions.push(traceableContinuityDiagnostics);
+  context.subscriptions.push(vscode.languages.registerCodeActionsProvider({ language: "markdown", scheme: "file" }, {
+    provideCodeActions(document, _range, context) {
+      const validationKind = getTraceableEditorValidationKindForFsPath(document.uri.fsPath);
+      if (!validationKind) {
+        return undefined;
+      }
+      const actions: vscode.CodeAction[] = [];
+      const checksumDiagnostics = context.diagnostics.filter(isContinuityChecksumMismatchDiagnostic);
+      if (checksumDiagnostics.length > 0) {
+        const action = new vscode.CodeAction("Rotate continuity checksum", vscode.CodeActionKind.QuickFix);
+        action.command = {
+          command: ROTATE_TRACEABLE_CONTINUITY_CHECKSUM_COMMAND,
+          title: "Rotate continuity checksum",
+          arguments: [document.uri]
+        };
+        action.diagnostics = checksumDiagnostics;
+        action.isPreferred = true;
+        actions.push(action);
+      }
+      actions.push(...buildContinuityEnvelopeCodeActions(document, context.diagnostics));
+      actions.push(...buildSchemaLayoutCodeActions(document, context.diagnostics));
+      actions.push(...buildSchemaContractCodeActions(document, context.diagnostics));
+      return actions.length > 0 ? actions : undefined;
+    }
+  }, {
+    providedCodeActionKinds: [vscode.CodeActionKind.QuickFix]
+  }));
   context.subscriptions.push({
     dispose: () => {
       for (const timer of traceableContinuityValidationTimers.values()) {
@@ -4659,6 +6732,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   context.subscriptions.push(output);
+  context.subscriptions.push(...registerTraceableStructureTreeView(context));
   context.subscriptions.push(
     vscode.window.registerCustomEditorProvider(TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE, {
       async openCustomDocument(uri: vscode.Uri): Promise<vscode.CustomDocument> {
@@ -4879,6 +6953,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(NEW_TRACEABLE_CHAT_COMMAND, async (target?: vscode.Uri) => {
       await startNewTraceableChat(target);
     }),
+    vscode.commands.registerCommand(CREATE_TRACEABLE_CHAT_FROM_VIEW_COMMAND, async () => {
+      await startNewTraceableNodeFromView();
+    }),
+    ...TRACEABLE_NODE_SCHEMA_COMMANDS.map(({ command, schemaId }) => vscode.commands.registerCommand(command, async () => {
+      await startNewTraceableNodeFromView(schemaId);
+    })),
     vscode.commands.registerCommand(RESUME_TRACEABLE_CHAT_COMMAND, async (target?: vscode.Uri) => {
       await startNewTraceableChat(target);
     }),
@@ -4912,6 +6992,9 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       await vscode.window.showTextDocument(document, { preview: false });
       output.appendLine(`Validated continuity artifact: ${artifactUri.fsPath}`);
+    }),
+    vscode.commands.registerCommand(ROTATE_TRACEABLE_CONTINUITY_CHECKSUM_COMMAND, async (target?: vscode.Uri) => {
+      await rotateTraceableContinuityChecksum(output, target);
     }),
     vscode.commands.registerCommand(ADD_FILE_TO_TRACEABLE_CHAT_COMMAND, async (target?: vscode.Uri) => {
       await addFileToTraceableChat(target);
@@ -5050,6 +7133,27 @@ export function activate(context: vscode.ExtensionContext): void {
           ? Math.max(2000, Math.min(24000, Math.floor((options.tokenizationOptions?.tokenBudget ?? 0) * 4)))
           : 12000;
         return textResult(truncateTraceableViewOutput(rendered, budget));
+      }
+    }),
+    vscode.lm.registerTool(SHOW_TRACEABLE_TRACES_TOOL, {
+      prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<ResolvedShowTracesInput>): vscode.PreparedToolInvocation {
+        return {
+          invocationMessage: `Show traces${options.input.targetPath ? ` near ${JSON.stringify(options.input.targetPath)}` : " across the workspace"}${options.input.detailLevel ? ` as ${options.input.detailLevel}` : ""}`
+        };
+      },
+      async invoke(options: vscode.LanguageModelToolInvocationOptions<ResolvedShowTracesInput>): Promise<vscode.LanguageModelToolResult> {
+        const resolvedTargetPath = options.input.targetPath
+          ? await resolveTraceableOpenPath(options.input.targetPath)
+          : undefined;
+        return textResult(await renderShowTracesMarkdown({
+          workspaceFolders: getTraceableOpenWorkspaceFolders(),
+          resolvedTargetPath,
+          view: {
+            ...options.input,
+            detailLevel: options.input.detailLevel ?? "standard",
+            includeSchemas: options.input.includeSchemas ?? true
+          }
+        }));
       }
     }),
     vscode.lm.registerTool(TRANSFER_TRACE_TOOL, {

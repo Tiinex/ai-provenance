@@ -285,9 +285,17 @@ export interface TraceableBudgetPolicy {
   maxToolCalls?: number;
 }
 
+export interface TraceableParentOrigin {
+  relative?: string;
+  absolute?: string;
+  browseGit?: string;
+}
+
 export interface TraceableSubagentInput {
   userInput?: string;
   parentTracePath?: string;
+  parentCreatedAt?: string;
+  parentOrigin?: TraceableParentOrigin;
   parentFrame?: string;
   parentTask?: string;
   parentRoles?: string | string[];
@@ -449,6 +457,8 @@ export interface TraceableSubagentRunResult {
   expectedButMissing: TraceableSubagentMissingItem[];
   continuedFromParent?: boolean;
   parentTracePath?: string;
+  parentCreatedAt?: string;
+  parentOrigin?: TraceableParentOrigin;
   parentTraceChecksumSha256?: string;
   lineageDepth?: number;
   lineageLabel?: string;
@@ -715,6 +725,8 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
   const normalizedActiveCarryForward = normalizeTraceableCarryForwardState(input.activeCarryForward);
   const exportToFolder = input.exportToFolder?.trim();
   const parentTracePath = input.parentTracePath?.trim();
+  const parentCreatedAt = input.parentCreatedAt?.trim();
+  const parentOrigin = normalizeTraceableParentOrigin(input.parentOrigin);
   const parentFrame = resolveTraceableParentFrame(input);
   const request: Record<string, unknown> = {
     wrapperPolicy
@@ -733,6 +745,12 @@ export function buildTraceableSubagentRequestEnvelope(input: TraceableSubagentIn
 
   if (parentTracePath) {
     request.parentTracePath = parentTracePath;
+  }
+  if (parentCreatedAt) {
+    request.parentCreatedAt = parentCreatedAt;
+  }
+  if (parentOrigin) {
+    request.parentOrigin = parentOrigin;
   }
   if (input.parentTask?.trim()) {
     request.parentTask = input.parentTask.trim();
@@ -889,6 +907,38 @@ export function normalizeOpaqueDelegations(value: unknown): TraceableOpaqueDeleg
       toolName: typeof item.toolName === "string" ? item.toolName : "unknown",
       note: typeof item.note === "string" ? item.note : "Opaque delegation was reported without a note."
     }));
+}
+
+export function normalizeTraceableParentOrigin(value: TraceableParentOrigin | undefined): TraceableParentOrigin | undefined {
+  const relative = value?.relative?.trim();
+  const absolute = value?.absolute?.trim();
+  const browseGit = value?.browseGit?.trim();
+  if (!relative && !absolute && !browseGit) {
+    return undefined;
+  }
+  return {
+    ...(relative ? { relative } : {}),
+    ...(absolute ? { absolute } : {}),
+    ...(browseGit ? { browseGit } : {})
+  };
+}
+
+function formatTraceableParentOriginSummary(origin: TraceableParentOrigin | undefined, options?: TraceableMarkdownRenderOptions): string {
+  const normalized = normalizeTraceableParentOrigin(origin);
+  if (!normalized) {
+    return "-";
+  }
+  const parts: string[] = [];
+  if (normalized.relative) {
+    parts.push(`relative=${formatTraceablePathReference(normalized.relative, options, normalized.relative)}`);
+  }
+  if (normalized.absolute) {
+    parts.push(`absolute=${formatTraceablePathReference(normalized.absolute, options, normalized.absolute)}`);
+  }
+  if (normalized.browseGit) {
+    parts.push(`browse + git=${normalized.browseGit}`);
+  }
+  return parts.join(" | ");
 }
 
 export function normalizeStopReasonValue(value: unknown): TraceableStopReason | undefined {
@@ -1588,6 +1638,7 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
   const quickReadMissing = rewriteTraceableTextPathMentions(summarizeMissingSignal(result.expectedButMissing), result, options);
   const usageSummary = summarizeUsage(result);
   const elapsedSummary = formatElapsedMs(result.elapsedMs);
+  const parentOriginSummary = formatTraceableParentOriginSummary(result.parentOrigin, options);
   const attemptedStepCount = result.steps.filter((step) => step.status === "attempted").length;
   const completedStepsSummary = result.steps.length > 0
     ? attemptedStepCount > 0 && completedStepCount === 0
@@ -1624,6 +1675,8 @@ export function renderTraceableSubagentMarkdown(result: TraceableSubagentRunResu
     `- Final Summary: ${rewrittenFinalSummary}`,
     `- Continued From Parent: ${result.continuedFromParent ? "yes" : "no"}`,
     `- Parent Trace: ${result.parentTracePath ? formatTraceablePathReference(result.parentTracePath, options) : "-"}`,
+    `- Parent Created At: ${result.parentCreatedAt?.trim() || "-"}`,
+    `- Parent Origin: ${parentOriginSummary}`,
     `- Lineage: ${result.lineageLabel ? `${result.lineageLabel} (depth ${result.lineageDepth ?? "-"})` : "-"}`,
     `- Carry State: ${result.carryStateDisposition ?? (result.activeCarryForward ? "active" : result.recoverableCarryState ? "recoverable" : "-")}`,
     `- Sender Adaptation Entries: ${result.senderAdaptationState?.entries?.length ?? 0}`,

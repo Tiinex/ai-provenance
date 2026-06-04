@@ -93,7 +93,7 @@
   "schema": "tiinex.traceable-state.v1",
   "result": {
     "parentTracePath": "001.trace.md",
-    "parentTraceChecksumSha256": "_A-9c640zzTaZ-Sl2qtI-qcsAopqrLStcgqVeALB864",
+    "parentTraceChecksumSha256": "3jpAiBxiTWUnZUd8HUPTrtNkQmi_nSbxCHZRQpdKplI",
     "lineageLabel": "001-1",
     "lineageDepth": 2
   }
@@ -106,4 +106,4 @@
 
 - sha256-base64url-c14n-v1
   - Towards: [001.trace.md](001.trace.md)
-  - Value: vMxvPzmHhzY14RPCkbpPlEnU6gNGLNTRkJ-pw7VulMg
+  - Value: nvhLEdk3h4neusmqObX3IhmUOlnvjBYoC8kvGGG1l4w

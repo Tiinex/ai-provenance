@@ -26,6 +26,7 @@
     "onStartupFinished",
     "onLanguageModelTool:list_traceable_agents",
     "onLanguageModelTool:list_traceable_models",
+    "onLanguageModelTool:show_traceable_traces",
     "onLanguageModelTool:view_traceable_subagent",
     "onLanguageModelTool:run_traceable_subagent",
     "onLanguageModelTool:transfer_trace",
@@ -297,6 +298,45 @@
         }
       },
       {
+        "name": "show_traceable_traces",
+        "displayName": "Show Traces",
+        "userDescription": "Show a bounded trace-and-schema structure view rooted at the workspace, a folder, or one trace file.",
+        "modelDescription": "Show bounded `.trace.md` structure without broad manual file hunting. This tool is read-only and builds a compact structure index over the current workspace. When `targetPath` is omitted, it returns a workspace overview. When `targetPath` points to a folder, it returns trace entries rooted there. When `targetPath` points to one `.trace.md` artifact, it centers on that trace and returns parent, sibling, child, connected-lineage, and suspicious coordinate-gap context as the selected detail level allows. Use `detailLevel: \"compact\" | \"standard\" | \"full\"` to control verbosity, `includeSchemas` when schema-note context matters, and `maxItems` with `offset` to keep larger result sets bounded. Canonical usage: start with `detailLevel: \"compact\"` or `detailLevel: \"standard\"`, add a narrow `targetPath` when you already know the relevant folder or trace, and only use `full` when you need deeper lineage detail.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "showTraces",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "targetPath": {
+              "type": "string",
+              "description": "Optional absolute or workspace-relative folder path or `.trace.md` path to center the structure view. Omit to inspect the whole current workspace."
+            },
+            "detailLevel": {
+              "type": "string",
+              "description": "Bounded verbosity for the returned structure view.",
+              "enum": [
+                "compact",
+                "standard",
+                "full"
+              ]
+            },
+            "maxItems": {
+              "type": "number",
+              "description": "Maximum number of bounded items to include in paged lists such as trace entries, connected nodes, schema notes, or suspicious gaps."
+            },
+            "offset": {
+              "type": "number",
+              "description": "Optional zero-based start offset for paging list-like sections."
+            },
+            "includeSchemas": {
+              "type": "boolean",
+              "description": "When true, include schema-note context from discovered `.schemas` folders when available."
+            }
+          },
+          "required": []
+        }
+      },
+      {
         "name": "view_traceable_subagent",
         "displayName": "View Traceable Subagent",
         "userDescription": "Inspect a stored TRACEABLE evidence artifact with bounded output and optional reconstructed-view reveal.",
@@ -506,6 +546,84 @@
         "title": "Add File to Traceable Chat"
       },
       {
+        "command": "tiinex.aiProvenance.createTraceableChatFromView",
+        "title": "Node...",
+        "shortTitle": "Node",
+        "icon": "$(plus)"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.topic",
+        "title": "Topic"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.zip",
+        "title": "Zip"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.schema",
+        "title": "Definition"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.signal",
+        "title": "Signal"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.task",
+        "title": "Task"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.reduction",
+        "title": "Reduction"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.runtime",
+        "title": "Runtime"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.feedback",
+        "title": "Feedback"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.machineRuntime",
+        "title": "Machine Runtime"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.evidence",
+        "title": "Evidence"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.encrypted",
+        "title": "Encrypted"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.decision",
+        "title": "Decision"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.continuation",
+        "title": "Continuation"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.capability",
+        "title": "Capability"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.broken",
+        "title": "Broken"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.archive",
+        "title": "Archive"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.aiRuntime",
+        "title": "AI Runtime"
+      },
+      {
+        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.pointer",
+        "title": "Pointer"
+      },
+      {
         "command": "tiinex.aiProvenance.openTraceableEvidenceEditor",
         "title": "Open Reconstructed Traceable View",
         "shortTitle": "Open Traceable View",
@@ -525,9 +643,498 @@
         "title": "Reopen as Markdown Preview",
         "shortTitle": "Preview",
         "icon": "$(open-preview)"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.refresh",
+        "title": "Refresh Lineage",
+        "shortTitle": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.configure",
+        "title": "Configure Lineage",
+        "shortTitle": "Configure",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.toggleTreeView",
+        "title": "Toggle Tree View",
+        "shortTitle": "Tree View",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setTreeView",
+        "title": "Tree View"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setListView",
+        "title": "List View"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setSortMode",
+        "title": "Set Sort..."
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.sortModifiedNewest",
+        "title": "Newest Modified"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.sortModifiedOldest",
+        "title": "Oldest Modified"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.sortCreatedNewest",
+        "title": "Newest Created"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.sortCreatedOldest",
+        "title": "Oldest Created"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.toggleLeavesOnly",
+        "title": "Toggle Leaf Only",
+        "shortTitle": "Leaves",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.showAllTopics",
+        "title": "Show All"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.showLeafTopics",
+        "title": "Leaf Only"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.toggleIncludeSchemas",
+        "title": "Toggle Schema Notes",
+        "shortTitle": "Schemas",
+        "icon": "$(symbol-interface)"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.showSchemaNotes",
+        "title": "Schema Notes On"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.hideSchemaNotes",
+        "title": "Schema Notes Off"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.openMarkdownView",
+        "title": "Open Trace Markdown",
+        "shortTitle": "Open",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setDetailCompact",
+        "title": "Compact"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setDetailStandard",
+        "title": "Standard"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setDetailFull",
+        "title": "Full"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setTargetPath",
+        "title": "Set Target Path..."
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.clearTargetPath",
+        "title": "Clear Target Path"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setSchemaFilter",
+        "title": "Set Schema Filter..."
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.clearSchemaFilter",
+        "title": "Clear Schema Filter"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterCreated1h",
+        "title": "1h"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterCreated2h",
+        "title": "2h"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterCreated6h",
+        "title": "6h"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterCreated24h",
+        "title": "24h"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterCreatedToday",
+        "title": "Today"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterCreatedReset",
+        "title": "Reset"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterModified1h",
+        "title": "1h"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterModified2h",
+        "title": "2h"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterModified6h",
+        "title": "6h"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterModified24h",
+        "title": "24h"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterModifiedToday",
+        "title": "Today"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.filterModifiedReset",
+        "title": "Reset"
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setMaxItems",
+        "title": "Set Max Items..."
+      },
+      {
+        "command": "tiinex.aiProvenance.traceableStructure.setOffset",
+        "title": "Set Offset..."
+      }
+    ],
+    "submenus": [
+      {
+        "id": "tiinex.aiProvenance.traceableStructure.viewMenu",
+        "label": "View"
+      },
+      {
+        "id": "tiinex.aiProvenance.traceableStructure.createMenu",
+        "label": "New"
+      },
+      {
+        "id": "tiinex.aiProvenance.traceableStructure.detailMenu",
+        "label": "Detail"
+      },
+      {
+        "id": "tiinex.aiProvenance.traceableStructure.filterMenu",
+        "label": "Filters"
+      },
+      {
+        "id": "tiinex.aiProvenance.traceableStructure.sortMenu",
+        "label": "Sort"
+      },
+      {
+        "id": "tiinex.aiProvenance.traceableStructure.createdTimeMenu",
+        "label": "Created"
+      },
+      {
+        "id": "tiinex.aiProvenance.traceableStructure.modifiedTimeMenu",
+        "label": "Modified"
+      },
+      {
+        "id": "tiinex.aiProvenance.traceableStructure.boundsMenu",
+        "label": "Bounds"
       }
     ],
     "menus": {
+      "view/title": [
+        {
+          "command": "tiinex.aiProvenance.createTraceableChatFromView",
+          "when": "view == tiinex.aiProvenance.traceableStructure",
+          "group": "navigation@1"
+        },
+        {
+          "submenu": "tiinex.aiProvenance.traceableStructure.createMenu",
+          "when": "view == tiinex.aiProvenance.traceableStructure",
+          "group": "2_configuration@0"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.refresh",
+          "when": "view == tiinex.aiProvenance.traceableStructure",
+          "group": "navigation@3"
+        },
+        {
+          "submenu": "tiinex.aiProvenance.traceableStructure.viewMenu",
+          "when": "view == tiinex.aiProvenance.traceableStructure",
+          "group": "2_configuration@1"
+        },
+        {
+          "submenu": "tiinex.aiProvenance.traceableStructure.detailMenu",
+          "when": "view == tiinex.aiProvenance.traceableStructure",
+          "group": "2_configuration@2"
+        },
+        {
+          "submenu": "tiinex.aiProvenance.traceableStructure.sortMenu",
+          "when": "view == tiinex.aiProvenance.traceableStructure",
+          "group": "2_configuration@3"
+        },
+        {
+          "submenu": "tiinex.aiProvenance.traceableStructure.filterMenu",
+          "when": "view == tiinex.aiProvenance.traceableStructure",
+          "group": "2_configuration@4"
+        },
+        {
+          "submenu": "tiinex.aiProvenance.traceableStructure.boundsMenu",
+          "when": "view == tiinex.aiProvenance.traceableStructure",
+          "group": "2_configuration@5"
+        }
+      ],
+      "tiinex.aiProvenance.traceableStructure.viewMenu": [
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setTreeView",
+          "group": "1_view@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setListView",
+          "group": "1_view@2"
+        }
+      ],
+      "tiinex.aiProvenance.traceableStructure.createMenu": [
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.topic",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.topic",
+          "group": "1_schema@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.zip",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.zip",
+          "group": "1_schema@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.schema",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.schema",
+          "group": "1_schema@3"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.signal",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.signal",
+          "group": "1_schema@4"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.task",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.task",
+          "group": "1_schema@5"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.reduction",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.reduction",
+          "group": "1_schema@6"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.runtime",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.runtime",
+          "group": "1_schema@7"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.feedback",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.feedback",
+          "group": "1_schema@8"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.machineRuntime",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.machineRuntime",
+          "group": "1_schema@9"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.evidence",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.evidence",
+          "group": "1_schema@10"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.encrypted",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.encrypted",
+          "group": "1_schema@11"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.decision",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.decision",
+          "group": "1_schema@12"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.continuation",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.continuation",
+          "group": "1_schema@13"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.capability",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.capability",
+          "group": "1_schema@14"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.broken",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.broken",
+          "group": "1_schema@15"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.archive",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.archive",
+          "group": "1_schema@16"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.aiRuntime",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.aiRuntime",
+          "group": "1_schema@17"
+        },
+        {
+          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.pointer",
+          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.pointer",
+          "group": "1_schema@18"
+        }
+      ],
+      "tiinex.aiProvenance.traceableStructure.detailMenu": [
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setDetailCompact",
+          "group": "1_detail@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setDetailStandard",
+          "group": "1_detail@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setDetailFull",
+          "group": "1_detail@3"
+        }
+      ],
+      "tiinex.aiProvenance.traceableStructure.sortMenu": [
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.sortModifiedNewest",
+          "group": "1_sort@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.sortModifiedOldest",
+          "group": "1_sort@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.sortCreatedNewest",
+          "group": "1_sort@3"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.sortCreatedOldest",
+          "group": "1_sort@4"
+        }
+      ],
+      "tiinex.aiProvenance.traceableStructure.filterMenu": [
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.showAllTopics",
+          "group": "1_visibility@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.showLeafTopics",
+          "group": "1_visibility@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.showSchemaNotes",
+          "group": "2_schema@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.hideSchemaNotes",
+          "group": "2_schema@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setTargetPath",
+          "group": "3_target@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.clearTargetPath",
+          "group": "3_target@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setSchemaFilter",
+          "group": "4_filter@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.clearSchemaFilter",
+          "group": "4_filter@2"
+        },
+        {
+          "submenu": "tiinex.aiProvenance.traceableStructure.createdTimeMenu",
+          "group": "5_time@1"
+        },
+        {
+          "submenu": "tiinex.aiProvenance.traceableStructure.modifiedTimeMenu",
+          "group": "5_time@2"
+        }
+      ],
+      "tiinex.aiProvenance.traceableStructure.createdTimeMenu": [
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterCreated1h",
+          "group": "1_created@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterCreated2h",
+          "group": "1_created@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterCreated6h",
+          "group": "1_created@3"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterCreated24h",
+          "group": "1_created@4"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterCreatedToday",
+          "group": "1_created@5"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterCreatedReset",
+          "group": "1_created@6"
+        }
+      ],
+      "tiinex.aiProvenance.traceableStructure.modifiedTimeMenu": [
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterModified1h",
+          "group": "1_modified@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterModified2h",
+          "group": "1_modified@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterModified6h",
+          "group": "1_modified@3"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterModified24h",
+          "group": "1_modified@4"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterModifiedToday",
+          "group": "1_modified@5"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.filterModifiedReset",
+          "group": "1_modified@6"
+        }
+      ],
+      "tiinex.aiProvenance.traceableStructure.boundsMenu": [
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setMaxItems",
+          "group": "1_bounds@1"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.setOffset",
+          "group": "1_bounds@2"
+        },
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.refresh",
+          "group": "2_actions@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "tiinex.aiProvenance.traceableStructure.openMarkdownView",
+          "when": "view == tiinex.aiProvenance.traceableStructure && viewItem == trace",
+          "group": "inline@1"
+        }
+      ],
       "explorer/context": [
         {
           "command": "tiinex.aiProvenance.newTraceableChat",
@@ -646,6 +1253,12 @@
       ]
     },
     "views": {
+      "tiinexAiProvenanceLineage": [
+        {
+          "id": "tiinex.aiProvenance.traceableStructure",
+          "name": "Lineage"
+        }
+      ],
       "tiinexAiProvenanceTraceablePanel": [
         {
           "type": "webview",
@@ -657,6 +1270,13 @@
       ]
     },
     "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tiinexAiProvenanceLineage",
+          "title": "Lineage",
+          "icon": "assets/logo-transparent.png"
+        }
+      ],
       "panel": [
         {
           "id": "tiinexAiProvenanceTraceablePanel",
@@ -783,6 +1403,17 @@
             "default": "",
             "scope": "resource",
             "description": "Optional default export folder for New Traceable Chat when it starts from an `.agent.md` file. The command surface writes an absolute path so multi-root workspaces do not have to guess which repo a relative path belongs to. Relative values are only resolved automatically in single-root workspaces; an empty value means ask whether to pick a folder or start unsaved."
+          },
+          "tiinex.aiProvenance.defaultNewTraceableTopicLocation": {
+            "type": "string",
+            "enum": [
+              "topic-space",
+              "same-folder",
+              "ask"
+            ],
+            "default": "topic-space",
+            "scope": "resource",
+            "description": "Control where New Topic Trace Node creates root topic artifacts when a workspace has a `.topics` folder. `topic-space` prefers the workspace `.topics` folder, `same-folder` keeps the currently selected folder, and `ask` prompts between those two locations when they differ."
           }
         }
       },

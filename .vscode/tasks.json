@@ -47,6 +47,61 @@
 			}
 		},
 		{
+			"label": "refresh ai provenance schema continuity integrity",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"scripts/refresh-traceable-continuity-integrity.mjs",
+				"../docs/.topics/.schemas/tiinex.definition.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.continuation.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.topic.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.task.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.decision.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.evidence.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.signal.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.runtime.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.archive.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.capability.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.reduction.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.encrypted.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.zip.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.ai.runtime.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.machine.runtime.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.pointer.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.broken.v1.schema.md"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "refresh root schema continuity integrity",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"scripts/refresh-traceable-continuity-integrity.mjs",
+				"../docs/.topics/.schemas/tiinex.root.v1.schema.md"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
+			"label": "refresh topic schema continuity integrity",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"scripts/refresh-traceable-continuity-integrity.mjs",
+				"../docs/.topics/.schemas/tiinex.topic.v1.schema.md"
+			],
+			"presentation": {
+				"reveal": "always",
+				"panel": "dedicated"
+			}
+		},
+		{
 			"label": "release check ai provenance vscode extension",
 			"dependsOrder": "sequence",
 			"dependsOn": [

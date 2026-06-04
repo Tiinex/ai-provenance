@@ -3,11 +3,11 @@
 - Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.continuation.v1.md)
 - Parent
   - Parent Schema: [tiinex.decision.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.decision.v1.md)
-  - Created At: 2026-06-02 00:20:00
-  - Trace: [001-1.trace.md](001-1.trace.md)
+  - Created At: 2026-05-30 00:20:00
+  - Trace: [001-1-finding-taxonomy.trace.md](001-1-finding-taxonomy.trace.md)
   - Origin:
-    - [relative](001-1.trace.md)
-    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001-1.trace.md)
+    - [relative](001-1-finding-taxonomy.trace.md)
+    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001-1-finding-taxonomy.trace.md)
 - Current
   - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.evidence.v1.md)
   - Created At: 2026-06-02 22:32:04
@@ -57,5 +57,5 @@
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [001-1.trace.md](001-1.trace.md)
-  - Value: d7ldgzCNCVHAU9woL7sPpC5YABjRmWQzd0IdA5CY5CU
+  - Towards: [001-1-finding-taxonomy.trace.md](001-1-finding-taxonomy.trace.md)
+  - Value: 290Z_NqmkN-9YdwsFmv_UeyeONQkwji0bw2JBe_gVJo
