@@ -63,6 +63,7 @@ import {
 } from "./traceableOpenPath.js";
 import {
   computeTraceableContinuityChecksumSha256,
+  computeTargetedTraceableContinuityChecksumSha256,
   parseTraceableContinuityMarkdown,
   renderTraceableContinuityValidationMarkdown,
   validateTraceableContinuityArtifactChainSync
@@ -108,7 +109,7 @@ import {
 } from "./traceableMutationPlan";
 
 const {
-  computeTargetedTraceableContinuityChecksumSha256,
+  computeTargetedTraceableContinuityChecksumSha256: computeTargetedSchemaNoteContinuityChecksumSha256,
   parseSchemaNoteMarkdown
 } = require("./traceableSchemaValidationShared.js") as {
   computeTargetedTraceableContinuityChecksumSha256: (
@@ -162,7 +163,6 @@ const DEFAULT_NEW_TOPIC_LOCATION_SETTING = "defaultNewTraceableTopicLocation";
 const TRACEABLE_NODE_SCHEMA_COMMANDS = [
   { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.topic", schemaId: "tiinex.topic.v1", title: "Topic" },
   { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.zip", schemaId: "tiinex.zip.v1", title: "Zip" },
-  { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.schema", schemaId: "tiinex.definition.v1", title: "Definition" },
   { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.signal", schemaId: "tiinex.signal.v1", title: "Signal" },
   { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.task", schemaId: "tiinex.task.v1", title: "Task" },
   { command: "tiinex.aiProvenance.createTraceableNodeFromView.schema.reduction", schemaId: "tiinex.reduction.v1", title: "Reduction" },
@@ -523,18 +523,34 @@ function buildSchemaLayoutCodeActions(
 function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagnostics: readonly vscode.Diagnostic[]): vscode.CodeAction[] {
   const actions: vscode.CodeAction[] = [];
   const lines = Array.from({ length: document.lineCount }, (_, index) => document.lineAt(index).text);
+  const seenRefreshActionKeys = new Set<string>();
+  const seenFooterTowardsModes = new Set<"self" | "target">();
+  const parsed = parseTraceableContinuityMarkdown(document.getText());
+  const footerTowardsMode: "self" | "target" = (
+    parsed.parentCreatedAt?.trim()
+    || parsed.parentTrace?.target?.trim()
+    || parsed.parentSchema?.target?.trim()
+    || parsed.parentSchema?.label?.trim()
+    || parsed.parentOrigin?.relative?.trim()
+    || parsed.parentOrigin?.absolute?.trim()
+    || parsed.parentOrigin?.browseGit?.trim()
+  ) ? "target" : "self";
   for (const diagnostic of diagnostics) {
     const diagnosticCode = normalizeDiagnosticCode(diagnostic.code);
     const refreshFieldKey = getTraceablePermalinkRefreshFieldKey(lines, diagnostic.range.start.line);
     if ((diagnosticCode && isRefreshableTraceablePermalinkDiagnosticCode(diagnosticCode)) || isRefreshableTraceablePermalinkFieldKey(refreshFieldKey)) {
-      const action = new vscode.CodeAction("Refresh permalink from latest", vscode.CodeActionKind.QuickFix);
-      action.command = {
-        command: REFRESH_TRACEABLE_PERMALINK_FROM_LATEST_COMMAND,
-        title: "Refresh permalink from latest",
-        arguments: [document.uri, diagnostic.range.start.line, diagnosticCode]
-      };
-      action.diagnostics = [diagnostic];
-      actions.push(action);
+      const refreshActionKey = `${refreshFieldKey ?? diagnosticCode ?? "unknown"}:${diagnostic.range.start.line}`;
+      if (!seenRefreshActionKeys.has(refreshActionKey)) {
+        seenRefreshActionKeys.add(refreshActionKey);
+        const action = new vscode.CodeAction("Refresh permalink from latest", vscode.CodeActionKind.QuickFix);
+        action.command = {
+          command: REFRESH_TRACEABLE_PERMALINK_FROM_LATEST_COMMAND,
+          title: "Refresh permalink from latest",
+          arguments: [document.uri, diagnostic.range.start.line, diagnosticCode]
+        };
+        action.diagnostics = [diagnostic];
+        actions.push(action);
+      }
     }
     if (diagnosticCode === "continuity-checksum-missing") {
       const edit = createInsertContinuityIntegrityFooterEdit(document);
@@ -550,19 +566,22 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
     if (diagnosticCode === "continuity-footer-self-required-without-parent"
       || diagnosticCode === "continuity-footer-towards-permalink-required"
       || diagnosticCode === "continuity-footer-towards-unreadable") {
-      const edit = createSetContinuityFooterTowardsEdit(document);
-      if (!edit) {
-        continue;
+      if (!seenFooterTowardsModes.has(footerTowardsMode)) {
+        const edit = createSetContinuityFooterTowardsEdit(document);
+        if (!edit) {
+          continue;
+        }
+        seenFooterTowardsModes.add(footerTowardsMode);
+        const action = new vscode.CodeAction(
+          footerTowardsMode === "self"
+            ? "Replace footer Towards with self"
+            : "Replace footer Towards target",
+          vscode.CodeActionKind.QuickFix
+        );
+        action.edit = edit;
+        action.diagnostics = [diagnostic];
+        actions.push(action);
       }
-      const action = new vscode.CodeAction(
-        diagnosticCode === "continuity-footer-self-required-without-parent"
-          ? "Replace footer Towards with self"
-          : "Replace footer Towards target",
-        vscode.CodeActionKind.QuickFix
-      );
-      action.edit = edit;
-      action.diagnostics = [diagnostic];
-      actions.push(action);
       continue;
     }
     if (diagnosticCode === "continuity-current-created-at-missing") {
@@ -598,6 +617,17 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
           : "Replace Parent Created At from parent trace",
         vscode.CodeActionKind.QuickFix
       );
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "traceable-parent-checksum-mismatch") {
+      const edit = createSetTraceableParentChecksumEdit(document);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction("Replace stored parent checksum from parent trace", vscode.CodeActionKind.QuickFix);
       action.edit = edit;
       action.diagnostics = [diagnostic];
       actions.push(action);
@@ -2855,6 +2885,35 @@ function findTraceableDiagnosticLineRange(
   return undefined;
 }
 
+function findTraceableDiagnosticLineRangeInSection(
+  document: vscode.TextDocument,
+  sectionHeading: string,
+  predicate: (lineText: string) => boolean
+): vscode.Range | undefined {
+  let inSection = false;
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const line = document.lineAt(lineIndex);
+    const trimmed = line.text.trim();
+    if (!inSection) {
+      if (trimmed === sectionHeading) {
+        inSection = true;
+      }
+      continue;
+    }
+    if (/^#\s+/u.test(trimmed) && trimmed !== sectionHeading) {
+      break;
+    }
+    if (!predicate(line.text)) {
+      continue;
+    }
+    return new vscode.Range(
+      new vscode.Position(lineIndex, 0),
+      new vscode.Position(lineIndex, Math.max(line.text.length, 1))
+    );
+  }
+  return undefined;
+}
+
 function collectDocumentMarkdownHeadings(document: vscode.TextDocument): Array<{ level: number; text: string; lineIndex: number }> {
   const headings: Array<{ level: number; text: string; lineIndex: number }> = [];
   let inFence = false;
@@ -3172,6 +3231,90 @@ function readTraceablePermalinkTargetMarkdownForDocument(document: vscode.TextDo
   } catch {
     return undefined;
   }
+}
+
+function readTraceableLocalTargetMarkdownForDocument(document: vscode.TextDocument, reference: string): string | undefined {
+  const trimmed = reference.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const resolvedPath = path.isAbsolute(trimmed)
+    ? path.resolve(trimmed)
+    : path.resolve(path.dirname(document.uri.fsPath), trimmed);
+  try {
+    return readFileSync(resolvedPath, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function collectTraceableParentReferenceTargets(document: vscode.TextDocument): {
+  parentTraceTarget?: string;
+  parentOriginRelative?: string;
+  parentOriginAbsolute?: string;
+  parentOriginBrowseGitTarget?: string;
+} {
+  let parentTraceTarget: string | undefined;
+  let parentOriginRelative: string | undefined;
+  let parentOriginAbsolute: string | undefined;
+  let parentOriginBrowseGitTarget: string | undefined;
+  let inParentBlock = false;
+  let inParentOriginBlock = false;
+
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text;
+    const trimmed = lineText.trim();
+    if (trimmed === "- Parent") {
+      inParentBlock = true;
+      inParentOriginBlock = false;
+      continue;
+    }
+    if (inParentBlock && !lineText.startsWith("  ") && trimmed) {
+      break;
+    }
+    if (!inParentBlock) {
+      continue;
+    }
+    if (trimmed === "- Origin:") {
+      inParentOriginBlock = true;
+      continue;
+    }
+    if (trimmed.startsWith("- Trace:")) {
+      parentTraceTarget = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentTraceTarget;
+      inParentOriginBlock = false;
+      continue;
+    }
+    if (!inParentOriginBlock) {
+      continue;
+    }
+    if (trimmed.startsWith("- [relative](")) {
+      parentOriginRelative = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentOriginRelative;
+      continue;
+    }
+    if (trimmed.startsWith("- [absolute](")) {
+      parentOriginAbsolute = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentOriginAbsolute;
+      continue;
+    }
+    if (trimmed.startsWith("- [browse + git](")) {
+      parentOriginBrowseGitTarget = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentOriginBrowseGitTarget;
+      continue;
+    }
+  }
+
+  return {
+    parentTraceTarget,
+    parentOriginRelative,
+    parentOriginAbsolute,
+    parentOriginBrowseGitTarget
+  };
+}
+
+function readTraceableParentArtifactMarkdownForDocument(document: vscode.TextDocument): string | undefined {
+  const references = collectTraceableParentReferenceTargets(document);
+  return (references.parentTraceTarget ? readTraceableLocalTargetMarkdownForDocument(document, references.parentTraceTarget) : undefined)
+    ?? (references.parentOriginRelative ? readTraceableLocalTargetMarkdownForDocument(document, references.parentOriginRelative) : undefined)
+    ?? (references.parentOriginAbsolute ? readTraceableLocalTargetMarkdownForDocument(document, references.parentOriginAbsolute) : undefined)
+    ?? (references.parentOriginBrowseGitTarget ? readTraceablePermalinkTargetMarkdownForDocument(document, references.parentOriginBrowseGitTarget) : undefined);
 }
 
 function normalizeGitHubRepoSlugFromRemoteUrl(remoteUrl: string): string | undefined {
@@ -3652,7 +3795,18 @@ function createInsertContinuityIntegrityFooterEdit(document: vscode.TextDocument
       ? `${endOfLine}${endOfLine}`
       : `${endOfLine}${endOfLine}`;
   const footerWithPlaceholder = `${separatorPrefix}---${endOfLine}${endOfLine}# Continuity Integrity${endOfLine}${endOfLine}- sha256-base64url-c14n-v1${endOfLine}  - Towards: [${label}](${target})${endOfLine}  - Value: PLACEHOLDER`;
-  const checksum = computeTraceableContinuityChecksumSha256(`${currentText}${footerWithPlaceholder}`);
+  const checksum = computeTargetedTraceableContinuityChecksumSha256(
+    document.uri.fsPath,
+    `${currentText}${footerWithPlaceholder}`,
+    { towardsTarget: target },
+    (filePath: string) => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(document.uri.fsPath)
+      ? `${currentText}${footerWithPlaceholder}`
+      : readFileSync(filePath, "utf8"),
+    getTraceableOpenWorkspaceFolders()
+  );
+  if (!checksum) {
+    return undefined;
+  }
   const footer = footerWithPlaceholder.replace("PLACEHOLDER", checksum);
   const edit = new vscode.WorkspaceEdit();
   const lastLine = Math.max(document.lineCount - 1, 0);
@@ -3717,7 +3871,19 @@ function createSetContinuityFooterTowardsEdit(document: vscode.TextDocument): vs
   const valueIndent = valueLine.match(/^\s*/u)?.[0] ?? "";
   currentLines[towardsLineIndex] = `${towardsIndent}- Towards: [${label}](${target})`;
   currentLines[valueLineIndex] = `${valueIndent}- Value: PLACEHOLDER`;
-  const checksum = computeTraceableContinuityChecksumSha256(currentLines.join("\n"));
+  const nextMarkdown = currentLines.join("\n");
+  const checksum = computeTargetedTraceableContinuityChecksumSha256(
+    document.uri.fsPath,
+    nextMarkdown,
+    { towardsTarget: target },
+    (filePath: string) => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(document.uri.fsPath)
+      ? nextMarkdown
+      : readFileSync(filePath, "utf8"),
+    getTraceableOpenWorkspaceFolders()
+  );
+  if (!checksum) {
+    return undefined;
+  }
   currentLines[valueLineIndex] = `${valueIndent}- Value: ${checksum}`;
   const edit = new vscode.WorkspaceEdit();
   edit.replace(document.uri, document.lineAt(towardsLineIndex).range, currentLines[towardsLineIndex]);
@@ -3728,8 +3894,6 @@ function createSetContinuityFooterTowardsEdit(document: vscode.TextDocument): vs
 function createSetContinuityParentCreatedAtEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
   let parentCreatedAtLineIndex: number | undefined;
   let parentSchemaLineIndex: number | undefined;
-  let parentOriginBrowseGitTarget: string | undefined;
-  let parentTraceTarget: string | undefined;
   let inParentBlock = false;
   for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
     const lineText = document.lineAt(lineIndex).text;
@@ -3752,22 +3916,9 @@ function createSetContinuityParentCreatedAtEdit(document: vscode.TextDocument): 
       parentSchemaLineIndex = lineIndex;
       continue;
     }
-    if (trimmed.startsWith("- Trace:")) {
-      parentTraceTarget = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentTraceTarget;
-      continue;
-    }
-    if (trimmed.startsWith("- [browse + git](")) {
-      parentOriginBrowseGitTarget = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentOriginBrowseGitTarget;
-    }
   }
 
-  const parentTraceMarkdown = parentTraceTarget
-    ? readFileSync(path.resolve(path.dirname(document.uri.fsPath), parentTraceTarget), "utf8")
-    : undefined;
-  const fallbackParentMarkdown = !parentTraceMarkdown && parentOriginBrowseGitTarget
-    ? readTraceablePermalinkTargetMarkdownForDocument(document, parentOriginBrowseGitTarget)
-    : undefined;
-  const parentCreatedAt = parseTraceableContinuityMarkdown(parentTraceMarkdown ?? fallbackParentMarkdown ?? "").currentCreatedAt;
+  const parentCreatedAt = parseTraceableContinuityMarkdown(readTraceableParentArtifactMarkdownForDocument(document) ?? "").currentCreatedAt;
   if (!parentCreatedAt) {
     return undefined;
   }
@@ -3787,11 +3938,66 @@ function createSetContinuityParentCreatedAtEdit(document: vscode.TextDocument): 
   return edit;
 }
 
+function createSetTraceableParentChecksumEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
+  let checksumLineIndex: number | undefined;
+  let inTraceableStateSection = false;
+  let inFence = false;
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text;
+    const trimmed = lineText.trim();
+    if (!inTraceableStateSection) {
+      if (trimmed === "## Traceable State") {
+        inTraceableStateSection = true;
+      }
+      continue;
+    }
+    if (!inFence && /^#\s+/u.test(trimmed)) {
+      break;
+    }
+    if (trimmed.startsWith("```")) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) {
+      continue;
+    }
+    if (!lineText.includes('"parentTraceChecksumSha256"')) {
+      continue;
+    }
+    checksumLineIndex = lineIndex;
+    break;
+  }
+  if (checksumLineIndex === undefined) {
+    return undefined;
+  }
+
+  const markdown = document.getText();
+  const validation = validateTraceableContinuityArtifactChainSync({
+    filePath: document.uri.fsPath,
+    maxDepth: 1,
+    workspaceRoots: getTraceableOpenWorkspaceFolders(),
+    readTextFileSync: (filePath) => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(document.uri.fsPath)
+      ? markdown
+      : readFileSync(filePath, "utf8")
+  });
+  const nextChecksum = validation.nodes[0]?.traceableParentIntegrity?.actualParentTraceChecksumSha256;
+  if (!nextChecksum) {
+    return undefined;
+  }
+
+  const line = document.lineAt(checksumLineIndex);
+  const replacement = line.text.replace(/("parentTraceChecksumSha256"\s*:\s*")([^"]*)(")/u, `$1${nextChecksum}$3`);
+  if (replacement === line.text) {
+    return undefined;
+  }
+  const edit = new vscode.WorkspaceEdit();
+  edit.replace(document.uri, line.range, replacement);
+  return edit;
+}
+
 function createSetTopicSchemaParentCreatedAtEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
   let parentCreatedAtLineIndex: number | undefined;
   let parentSchemaLineIndex: number | undefined;
-  let parentOriginBrowseGitTarget: string | undefined;
-  let parentTraceTarget: string | undefined;
   let inParentBlock = false;
   for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
     const lineText = document.lineAt(lineIndex).text;
@@ -3814,22 +4020,9 @@ function createSetTopicSchemaParentCreatedAtEdit(document: vscode.TextDocument):
       parentSchemaLineIndex = lineIndex;
       continue;
     }
-    if (trimmed.startsWith("- Trace:")) {
-      parentTraceTarget = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentTraceTarget;
-      continue;
-    }
-    if (trimmed.startsWith("- [browse + git](")) {
-      parentOriginBrowseGitTarget = trimmed.match(/\((.*?)\)/u)?.[1]?.trim() || parentOriginBrowseGitTarget;
-    }
   }
 
-  const parentTraceMarkdown = parentTraceTarget
-    ? readFileSync(path.resolve(path.dirname(document.uri.fsPath), parentTraceTarget), "utf8")
-    : undefined;
-  const fallbackParentMarkdown = !parentTraceMarkdown && parentOriginBrowseGitTarget
-    ? readTraceablePermalinkTargetMarkdownForDocument(document, parentOriginBrowseGitTarget)
-    : undefined;
-  const parentCreatedAt = parseSchemaNoteMarkdown(parentTraceMarkdown ?? fallbackParentMarkdown ?? "").currentCreatedAt;
+  const parentCreatedAt = parseSchemaNoteMarkdown(readTraceableParentArtifactMarkdownForDocument(document) ?? "").currentCreatedAt;
   if (!parentCreatedAt) {
     return undefined;
   }
@@ -3905,7 +4098,9 @@ function createInsertTopicSchemaParentOriginEdit(document: vscode.TextDocument, 
     return undefined;
   };
   const tryResolveTopicSchemaParentOriginBrowseGitTarget = (linkTarget: string): string => {
-    const resolvedTargetPath = path.resolve(path.dirname(document.uri.fsPath), linkTarget);
+    const resolvedTargetPath = path.isAbsolute(linkTarget)
+      ? path.resolve(linkTarget)
+      : path.resolve(path.dirname(document.uri.fsPath), linkTarget);
     const gitRoot = resolveTraceableGitRoot(resolvedTargetPath);
     if (!gitRoot) {
       return "PASTE_COMMIT_PINNED_PERMALINK_HERE";
@@ -3923,14 +4118,20 @@ function createInsertTopicSchemaParentOriginEdit(document: vscode.TextDocument, 
       return "PASTE_COMMIT_PINNED_PERMALINK_HERE";
     }
   };
+  const parentReferences = collectTraceableParentReferenceTargets(document);
+  const localParentReference = parentReferences.parentTraceTarget
+    ?? parentReferences.parentOriginRelative
+    ?? parentReferences.parentOriginAbsolute;
+  const browseGitTarget = localParentReference
+    ? tryResolveTopicSchemaParentOriginBrowseGitTarget(localParentReference)
+    : parentReferences.parentOriginBrowseGitTarget ?? "PASTE_COMMIT_PINNED_PERMALINK_HERE";
   for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
     const lineText = document.lineAt(lineIndex).text;
     if (!lineText.trim().startsWith("- Trace:")) {
       continue;
     }
     const traceTargetMatch = lineText.match(/\((.*?)\)/u);
-    const traceTarget = traceTargetMatch?.[1]?.trim() || "parent.trace.md";
-    const browseGitTarget = tryResolveTopicSchemaParentOriginBrowseGitTarget(traceTarget);
+    const traceTarget = traceTargetMatch?.[1]?.trim() || parentReferences.parentOriginRelative || "parent.trace.md";
     const edit = new vscode.WorkspaceEdit();
     if (!onlyBrowseGitLine) {
       const insertion = [
@@ -4140,15 +4341,15 @@ function getTraceableDiagnosticRange(
   switch (finding.code) {
     case "continuity-checksum-missing":
     case "continuity-checksum-mismatch":
-      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Value:"))
-        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Towards:"))
+      return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Value:"))
+        ?? findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Towards:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "continuity-footer-self-required-without-parent":
     case "continuity-footer-towards-permalink-required":
     case "continuity-footer-towards-unreadable":
-      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Towards:"))
-        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Value:"))
+      return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Towards:"))
+        ?? findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Value:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "traceable-envelope-schema-permalink-required":
@@ -4184,13 +4385,28 @@ function getTraceableDiagnosticRange(
     case "traceable-parent-schema-permalink-required":
     case "traceable-parent-schema-missing":
     case "traceable-parent-schema-unreadable":
-    case "traceable-parent-origin-unpinned-browse-git":
     case "traceable-parent-schema-mismatch":
-    case "traceable-parent-unreadable-parent":
-    case "traceable-parent-checksum-mismatch":
-    case "traceable-parent-cycle-detected":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Parent Schema:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Parent")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "traceable-parent-origin-unpinned-browse-git":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- [browse + git]"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Origin:")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Parent")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "traceable-parent-unreadable-parent":
+    case "traceable-parent-cycle-detected":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.includes('"parentTracePath"'))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "## Traceable State")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Trace:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "traceable-parent-checksum-mismatch":
+      return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Value:"))
+        ?? findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Towards:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Trace:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.includes('"parentTraceChecksumSha256"'))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "## Traceable State")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "schema-validation-friendly-shape-missing":
       return findTraceableDiagnosticLineRange(document, (lineText) => /^#\s+/u.test(lineText.trim()))
@@ -4232,7 +4448,7 @@ function getTraceableSchemaDiagnosticRange(
 ): vscode.Range | undefined {
   switch (finding.code) {
     case "continuity-checksum-mismatch":
-      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Value:"))
+      return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Value:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity");
     case "continuity-current-created-at-missing":
     case "continuity-current-created-at-invalid":
@@ -4357,7 +4573,7 @@ function getTraceableSchemaDiagnosticRange(
     case "evidence-schema-footer-target-not-permalink":
     case "pointer-schema-footer-target-mismatch":
     case "pointer-schema-footer-target-not-permalink":
-      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Towards:"))
+      return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Towards:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity");
     case "root-schema-validation-contract-missing":
     case "root-schema-contract-duplicate-groups":
@@ -4511,13 +4727,19 @@ async function rotateTraceableContinuityChecksum(output: vscode.OutputChannel, t
     ? markdown
     : readFileSync(filePath, "utf8");
   const nextChecksum = artifactUri.fsPath.endsWith(".schema.md")
-    ? computeTargetedTraceableContinuityChecksumSha256(
+    ? computeTargetedSchemaNoteContinuityChecksumSha256(
       artifactUri.fsPath,
       markdown,
       parseSchemaNoteMarkdown(markdown).footerIntegrity,
       readTextFileSync
     )
-    : computeTraceableContinuityChecksumSha256(markdown);
+    : computeTargetedTraceableContinuityChecksumSha256(
+      artifactUri.fsPath,
+      markdown,
+      parseTraceableContinuityMarkdown(markdown).footerIntegrity,
+      readTextFileSync,
+      getTraceableOpenWorkspaceFolders()
+    ) ?? computeTraceableContinuityChecksumSha256(markdown);
   if (!nextChecksum) {
     void vscode.window.showErrorMessage("Could not resolve the declared continuity integrity target for the current schema note.");
     return;
@@ -5851,8 +6073,8 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const buildEnvelopeSchemaLine = (currentSchemaPath: string, outputFilePath: string): string => {
-    const continuationSchemaPath = path.join(path.dirname(currentSchemaPath), "tiinex.continuation.v1.schema.md");
-    return `- Envelope Schema: [tiinex.continuation.v1](${toRelativeMarkdownLinkTarget(outputFilePath, continuationSchemaPath)})`;
+    const continuationSchemaPath = path.join(path.dirname(currentSchemaPath), "tiinex.root.v1.schema.md");
+    return `- Envelope Schema: [tiinex.root.v1](${toRelativeMarkdownLinkTarget(outputFilePath, continuationSchemaPath)})`;
   };
 
   const buildLocalOriginLines = (fromFilePath: string, targetPath: string, indent = "  "): string[] => {

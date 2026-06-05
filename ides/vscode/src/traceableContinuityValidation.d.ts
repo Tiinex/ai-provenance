@@ -50,8 +50,7 @@ export interface TraceableContinuityFinding {
     | "traceable-parent-unreadable-parent"
     | "traceable-parent-checksum-mismatch"
     | "traceable-parent-cycle-detected"
-    | "schema-definition-core-contract-missing"
-    | "schema-machine-validation-contract-missing"
+    | "schema-note-core-contract-missing"
     | "schema-validation-contract-duplicate-groups"
     | "schema-validation-contract-category-list-missing"
     | "schema-validation-contract-unlabeled-list"
@@ -98,7 +97,7 @@ export interface TraceableContinuityValidationResult {
   nodes: Array<{
     filePath: string;
     backwardLink: {
-      source: "traceable-state-parent" | "parent-trace" | "parent-origin-relative" | "external-only" | "none";
+      source: "traceable-state-parent" | "parent-trace" | "parent-origin-relative" | "parent-origin-absolute" | "external-only" | "none";
       rawTarget?: string;
       resolvedPath?: string;
     };
@@ -180,6 +179,13 @@ export interface ParsedTraceableContinuityMarkdown {
 
 export function canonicalizeTraceableContinuityChecksumSource(markdown: string): string;
 export function computeTraceableContinuityChecksumSha256(markdown: string): string;
+export function computeTargetedTraceableContinuityChecksumSha256(
+  filePath: string | undefined,
+  markdown: string,
+  footerIntegrity: { method?: string; towardsLabel?: string; towardsTarget?: string; value?: string } | undefined,
+  readTextFileSync?: (filePath: string) => string,
+  workspaceRoots?: Array<{ name?: string; fsPath: string }>
+): string | undefined;
 export function evaluateTraceableDirectParentIntegrityCoreSync(
   input: EvaluateTraceableDirectParentIntegrityCoreInput,
   options?: { readTextFileSync?: (filePath: string) => string }

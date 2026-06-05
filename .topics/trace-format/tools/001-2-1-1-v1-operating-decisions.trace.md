@@ -1,6 +1,6 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Parent Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.evidence.v1.schema.md)
   - Created At: 2026-05-29 01:37:57

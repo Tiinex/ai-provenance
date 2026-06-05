@@ -1,6 +1,6 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-05-28 21:48:32
@@ -136,11 +136,11 @@ What it shows:
 
 ### Evidence 6
 
-- Source: `tiinex.continuation.v1.schema.md`
+- Source: `tiinex.root.v1.schema.md`
 - Origin:
-  - [relative](../../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
-  - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
-  - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - [relative](../../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
+  - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.root.v1.schema.md)
+  - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.root.v1.schema.md)
 - Representation: schema contract
 - Supports: ancestry, parent blocks, browseable targets, and footer semantics
   already have a shared envelope contract that repair findings can judge against

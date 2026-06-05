@@ -560,10 +560,6 @@
         "title": "Zip"
       },
       {
-        "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.schema",
-        "title": "Definition"
-      },
-      {
         "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.signal",
         "title": "Signal"
       },
@@ -908,19 +904,14 @@
           "group": "1_schema@2"
         },
         {
-          "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.schema",
-          "when": "tiinex.aiProvenance.traceableStructure.createAllowed.schema",
-          "group": "1_schema@3"
-        },
-        {
           "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.signal",
           "when": "tiinex.aiProvenance.traceableStructure.createAllowed.signal",
-          "group": "1_schema@4"
+          "group": "1_schema@3"
         },
         {
           "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.task",
           "when": "tiinex.aiProvenance.traceableStructure.createAllowed.task",
-          "group": "1_schema@5"
+          "group": "1_schema@4"
         },
         {
           "command": "tiinex.aiProvenance.createTraceableNodeFromView.schema.reduction",

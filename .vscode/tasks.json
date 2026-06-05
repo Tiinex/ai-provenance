@@ -53,7 +53,7 @@
 			"args": [
 				"scripts/refresh-traceable-continuity-integrity.mjs",
 				"../docs/.topics/.schemas/tiinex.definition.v1.schema.md",
-				"../docs/.topics/.schemas/tiinex.continuation.v1.schema.md",
+				"../docs/.topics/.schemas/tiinex.root.v1.schema.md",
 				"../docs/.topics/.schemas/tiinex.topic.v1.schema.md",
 				"../docs/.topics/.schemas/tiinex.task.v1.schema.md",
 				"../docs/.topics/.schemas/tiinex.decision.v1.schema.md",

@@ -1,6 +1,6 @@
-import path from "node:path";
+const path = require("node:path");
 
-export function planStandaloneMoveRetainedDescendantRewrites(input) {
+function planStandaloneMoveRetainedDescendantRewrites(input) {
   const destinationPath = path.resolve(input.destinationPath);
   return [...input.directChildren]
     .sort((left, right) => left.lineageLabel.localeCompare(right.lineageLabel))
@@ -12,3 +12,7 @@ export function planStandaloneMoveRetainedDescendantRewrites(input) {
       parentPathOverride: destinationPath
     }));
 }
+
+module.exports = {
+  planStandaloneMoveRetainedDescendantRewrites
+};

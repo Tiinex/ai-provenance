@@ -96,7 +96,7 @@ const { fileURLToPath } = require("node:url");
 
 /**
  * @typedef {{
- *   source: "traceable-state-parent" | "parent-trace" | "parent-origin-relative" | "external-only" | "none",
+ *   source: "traceable-state-parent" | "parent-trace" | "parent-origin-relative" | "parent-origin-absolute" | "external-only" | "none",
  *   rawTarget?: string,
  *   resolvedPath?: string
  * }} TraceableBackwardParentLink
@@ -767,9 +767,8 @@ function canReadResolvedSchemaPermalink(filePath, reference, readTextFileSync, w
     if (revisionPathReadable !== true) {
       continue;
     }
-    const resolvedPath = path.resolve(repoRoot, ...permalink.relativePath.split("/"));
     try {
-      readTextFileSync(resolvedPath);
+      execFileSync("git", ["-C", repoRoot, "show", `${permalink.revision}:${permalink.relativePath}`], { encoding: "utf8" });
       return true;
     } catch {
       continue;
@@ -803,6 +802,15 @@ function chooseBackwardLink(filePath, parsed) {
       source: "parent-origin-relative",
       rawTarget: parentOriginRelative,
       resolvedPath: resolvedParentOriginRelative
+    };
+  }
+  const parentOriginAbsolute = trimToUndefined(parsed.parentOrigin?.absolute);
+  const resolvedParentOriginAbsolute = parentOriginAbsolute ? resolveLocalReference(filePath, parentOriginAbsolute) : undefined;
+  if (resolvedParentOriginAbsolute) {
+    return {
+      source: "parent-origin-absolute",
+      rawTarget: parentOriginAbsolute,
+      resolvedPath: resolvedParentOriginAbsolute
     };
   }
   if (parentTraceTarget || trimToUndefined(parsed.parentOrigin?.browseGit) || trimToUndefined(parsed.parentOrigin?.absolute)) {
@@ -983,12 +991,24 @@ function collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileS
 
   const footerTowardsTarget = trimToUndefined(node.parsed.footerIntegrity?.towardsTarget);
   const footerTowardsLabel = trimToUndefined(node.parsed.footerIntegrity?.towardsLabel);
-  if (!hasParentSignal(node.parsed) && footerTowardsTarget && footerTowardsTarget !== "self" && footerTowardsLabel !== "self") {
+  const currentOriginTargets = [
+    trimToUndefined(node.parsed.currentOrigin?.relative),
+    trimToUndefined(node.parsed.currentOrigin?.absolute),
+    trimToUndefined(node.parsed.currentOrigin?.browseGit)
+  ].filter(Boolean);
+  const footerTargetsDeclaredCurrentOrigin = footerTowardsTarget
+    ? currentOriginTargets.includes(footerTowardsTarget)
+    : false;
+  if (!hasParentSignal(node.parsed)
+    && footerTowardsTarget
+    && footerTowardsTarget !== "self"
+    && footerTowardsLabel !== "self"
+    && !footerTargetsDeclaredCurrentOrigin) {
     findings.push({
       code: "continuity-footer-self-required-without-parent",
       category: "continuity-integrity",
       filePath: node.filePath,
-      message: "Ordinary trace artifacts without parent signal should use self as the continuity footer Towards target.",
+      message: "Ordinary trace artifacts without parent signal should use self as the continuity footer Towards target unless they validate a declared Current Origin target.",
       severity: "error",
       surfaces: ["problems", "report"]
     });
@@ -1038,7 +1058,7 @@ function collectSchemaNoteStructureFindings(node) {
       missingParts.push("at least one contract-bearing section such as Required Structure, Required Fields, Required Body Expectations, or Envelope Expectations");
     }
     findings.push({
-      code: "schema-definition-core-contract-missing",
+      code: "schema-note-core-contract-missing",
       category: "schema-note-structure",
       filePath: node.filePath,
       message: `Schema notes in .topics/.schemas should include ${missingParts.join(" and ")}.`,
@@ -1048,16 +1068,6 @@ function collectSchemaNoteStructureFindings(node) {
   }
 
   if (levelTwoHeadings.has("validation-friendly shape")) {
-    if (schemaIdentity === "tiinex.definition.v1" && !levelTwoHeadings.has("machine validation contract")) {
-      findings.push({
-        code: "schema-machine-validation-contract-missing",
-        category: "schema-note-structure",
-        filePath: node.filePath,
-        message: "The shared definition root should include a Machine Validation Contract section so later schema notes can reuse the same machine-facing rule set.",
-        severity: "error",
-        surfaces: ["problems", "report"]
-      });
-    }
     return findings;
   }
   findings.push({
@@ -1068,16 +1078,6 @@ function collectSchemaNoteStructureFindings(node) {
     severity: "warning",
     surfaces: ["problems", "report"]
   });
-  if (schemaIdentity === "tiinex.definition.v1" && !levelTwoHeadings.has("machine validation contract")) {
-    findings.push({
-      code: "schema-machine-validation-contract-missing",
-      category: "schema-note-structure",
-      filePath: node.filePath,
-      message: "The shared definition root should include a Machine Validation Contract section so later schema notes can reuse the same machine-facing rule set.",
-      severity: "error",
-      surfaces: ["problems", "report"]
-    });
-  }
   return findings;
 }
 
@@ -1352,7 +1352,7 @@ function validateRuntimeTraceStructure(parsed) {
   };
 }
 
-function evaluateContinuityIntegrity(markdown, footerIntegrity) {
+function evaluateContinuityIntegrity(markdown, footerIntegrity, options = {}) {
   if (!footerIntegrity?.method && !footerIntegrity?.value) {
     return { status: "missing" };
   }
@@ -1364,7 +1364,13 @@ function evaluateContinuityIntegrity(markdown, footerIntegrity) {
       storedValue: footerIntegrity?.value
     };
   }
-  const actualValue = computeTraceableContinuityChecksumSha256(markdown);
+  const actualValue = computeTargetedTraceableContinuityChecksumSha256(
+    options.filePath,
+    markdown,
+    footerIntegrity,
+    options.readTextFileSync,
+    options.workspaceRoots
+  );
   const storedValue = trimToUndefined(footerIntegrity.value);
   if (!storedValue) {
     return {
@@ -1418,16 +1424,73 @@ function canonicalizeTraceableContinuityChecksumSource(markdown) {
   const normalizedNewlines = markdown.replace(/\r\n?/gu, "\n");
   const withoutTrailingWhitespace = normalizedNewlines.replace(/[ \t]+$/gmu, "").trimEnd();
   const lines = withoutTrailingWhitespace.split("\n");
-  if (lines.length <= 1) {
-    return "";
+  const integrityHeadingIndex = lines.findIndex((line) => line.trim() === "# Continuity Integrity");
+  if (integrityHeadingIndex >= 0) {
+    return lines.slice(0, integrityHeadingIndex).join("\n");
   }
-  return lines.slice(0, -1).join("\n");
+  return withoutTrailingWhitespace;
 }
 
 function computeTraceableContinuityChecksumSha256(markdown) {
   return createHash("sha256")
     .update(canonicalizeTraceableContinuityChecksumSource(markdown), "utf8")
     .digest("base64url");
+}
+
+function readTraceableContinuityTargetMarkdown(filePath, target, readTextFileSync, workspaceRoots) {
+  const trimmedTarget = trimToUndefined(target);
+  if (!trimmedTarget || trimmedTarget === "self") {
+    return undefined;
+  }
+  if (!trimToUndefined(filePath)) {
+    return undefined;
+  }
+  if (isExternalUrl(trimmedTarget)) {
+    const permalink = parseGitHubSchemaPermalink(trimmedTarget);
+    if (!permalink) {
+      return undefined;
+    }
+    for (const repoRoot of listCandidateRepoRoots(filePath, permalink.repoName, workspaceRoots)) {
+      const revisionKnown = defaultGitRevisionExistsSync(repoRoot, permalink.revision);
+      if (revisionKnown !== true) {
+        continue;
+      }
+      const revisionPathReadable = defaultGitRevisionPathReadableSync(repoRoot, permalink.revision, permalink.relativePath);
+      if (revisionPathReadable !== true) {
+        continue;
+      }
+      try {
+        return execFileSync("git", ["-C", repoRoot, "show", `${permalink.revision}:${permalink.relativePath}`], { encoding: "utf8" });
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  }
+  const resolvedPath = resolveLocalReference(filePath, trimmedTarget);
+  if (!resolvedPath) {
+    return undefined;
+  }
+  try {
+    return readTextFileSync(resolvedPath);
+  } catch {
+    return undefined;
+  }
+}
+
+function computeTargetedTraceableContinuityChecksumSha256(filePath, markdown, footerIntegrity, readTextFileSync, workspaceRoots) {
+  const target = trimToUndefined(footerIntegrity?.towardsTarget);
+  if (!target || target === "self") {
+    return computeTraceableContinuityChecksumSha256(markdown);
+  }
+  if (!trimToUndefined(filePath)) {
+    return undefined;
+  }
+  if (typeof readTextFileSync !== "function") {
+    return undefined;
+  }
+  const targetMarkdown = readTraceableContinuityTargetMarkdown(filePath, target, readTextFileSync, workspaceRoots);
+  return targetMarkdown ? computeTraceableContinuityChecksumSha256(targetMarkdown) : undefined;
 }
 
 function evaluateTraceableDirectParentIntegrityCoreSync(input, options = {}) {
@@ -1505,6 +1568,7 @@ function evaluateTraceableDirectParentIntegrityCoreSync(input, options = {}) {
 function validateTraceableContinuityArtifactChainSync(input) {
   const readTextFileSync = typeof input.readTextFileSync === "function" ? input.readTextFileSync : (filePath) => readFileSync(filePath, "utf8");
   const maxDepth = Number.isInteger(input.maxDepth) && input.maxDepth > 0 ? input.maxDepth : 32;
+  const workspaceRoots = Array.isArray(input.workspaceRoots) ? input.workspaceRoots : [];
   const rootFilePath = path.resolve(input.filePath);
   const nodes = [];
   const visited = new Set();
@@ -1531,9 +1595,7 @@ function validateTraceableContinuityArtifactChainSync(input) {
     const parsed = parseTraceableContinuityMarkdown(markdown);
     const backwardLink = chooseBackwardLink(currentFilePath, parsed);
     const currentSchemaIdentity = extractSchemaIdentity(parsed.currentSchema);
-    const selfRootSchemaNote = currentSchemaIdentity === "tiinex.definition.v1"
-      && normalizePathForComparison(backwardLink.resolvedPath) === normalizedCurrentPath;
-    const traceableParentIntegrity = parsed.traceableState?.parentTracePath && !selfRootSchemaNote
+    const traceableParentIntegrity = parsed.traceableState?.parentTracePath
       ? evaluateTraceableDirectParentIntegrityCoreSync({
         childFilePath: currentFilePath,
         resolvedParentTracePath: resolveLocalReference(currentFilePath, parsed.traceableState.parentTracePath),
@@ -1546,16 +1608,15 @@ function validateTraceableContinuityArtifactChainSync(input) {
       filePath: currentFilePath,
       parsed,
       backwardLink,
-      continuityIntegrity: evaluateContinuityIntegrity(markdown, parsed.footerIntegrity),
+      continuityIntegrity: evaluateContinuityIntegrity(markdown, parsed.footerIntegrity, {
+        filePath: currentFilePath,
+        readTextFileSync,
+        workspaceRoots
+      }),
       traceableParentIntegrity,
       runtimeTraceStructure: validateRuntimeTraceStructure(parsed)
     };
     nodes.push(node);
-
-    if (selfRootSchemaNote) {
-      stoppedBecause = "complete";
-      break;
-    }
 
     if (!backwardLink.resolvedPath) {
       stoppedBecause = backwardLink.source === "external-only" ? "external-parent" : "complete";
@@ -1933,6 +1994,7 @@ function renderTraceableContinuityValidationMarkdown(result) {
 module.exports = {
   canonicalizeTraceableContinuityChecksumSource,
   computeTraceableContinuityChecksumSha256,
+  computeTargetedTraceableContinuityChecksumSha256,
   evaluateTraceableDirectParentIntegrityCoreSync,
   parseTraceableContinuityMarkdown,
   renderTraceableContinuityValidationMarkdown,

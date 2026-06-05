@@ -44,7 +44,6 @@ const TRACEABLE_CREATE_MENU_CONTEXT_PREFIX = "tiinex.aiProvenance.traceableStruc
 const TRACEABLE_CREATE_MENU_SCHEMA_CONTEXTS = [
   { schemaId: "tiinex.topic.v1", contextKey: "topic" },
   { schemaId: "tiinex.zip.v1", contextKey: "zip" },
-  { schemaId: "tiinex.definition.v1", contextKey: "schema" },
   { schemaId: "tiinex.signal.v1", contextKey: "signal" },
   { schemaId: "tiinex.task.v1", contextKey: "task" },
   { schemaId: "tiinex.reduction.v1", contextKey: "reduction" },
@@ -73,9 +72,8 @@ const TRACEABLE_CREATE_MENU_ALWAYS_ALLOWED_SCHEMA_IDS = new Set<string>([
 ]);
 
 const TRACEABLE_CREATE_MENU_ALLOWED_BY_PARENT_SCHEMA = new Map<string, readonly string[]>([
-  ["tiinex.topic.v1", ["tiinex.signal.v1", "tiinex.task.v1", "tiinex.definition.v1", "tiinex.capability.v1"]],
+  ["tiinex.topic.v1", ["tiinex.signal.v1", "tiinex.task.v1", "tiinex.capability.v1"]],
   ["tiinex.zip.v1", ["tiinex.task.v1"]],
-  ["tiinex.definition.v1", ["tiinex.topic.v1", "tiinex.definition.v1", "tiinex.task.v1", "tiinex.capability.v1"]],
   ["tiinex.signal.v1", ["tiinex.task.v1"]],
   ["tiinex.task.v1", ["tiinex.runtime.v1", "tiinex.machine.runtime.v1", "tiinex.ai.runtime.v1", "tiinex.broken.v1"]],
   ["tiinex.reduction.v1", ["tiinex.task.v1"]],

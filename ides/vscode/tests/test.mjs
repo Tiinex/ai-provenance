@@ -12,6 +12,7 @@ import {
 import { planStandaloneMoveRetainedDescendantRewrites } from "../src/traceableStandaloneMoveRetainedDescendants.js";
 import {
   computeTraceableContinuityChecksumSha256,
+  computeTargetedTraceableContinuityChecksumSha256,
   parseTraceableContinuityMarkdown,
   renderTraceableContinuityValidationMarkdown,
   validateTraceableContinuityArtifactChainSync
@@ -57,9 +58,32 @@ function testStandaloneMoveRetainedDescendantRewrites() {
   }], "Standalone move descendants should stay in place and only rewrite their parent reference to the moved node.");
 }
 
-function finalizeContinuityIntegrity(markdown) {
-  const digest = computeTraceableContinuityChecksumSha256(markdown);
+function finalizeContinuityIntegrity(markdown, options = {}) {
+  const footerIntegrity = parseTraceableContinuityMarkdown(markdown).footerIntegrity;
+  const readTextFileSync = typeof options.readTextFileSync === "function"
+    ? options.readTextFileSync
+    : (filePath) => readFileSync(filePath, "utf8");
+  const digest = computeTargetedTraceableContinuityChecksumSha256(
+    options.filePath,
+    markdown,
+    footerIntegrity,
+    readTextFileSync,
+    options.workspaceRoots
+  ) ?? computeTraceableContinuityChecksumSha256(markdown);
   return markdown.replace(/(- Value:\s+)([^\r\n]+)/u, `$1${digest}`);
+}
+
+function createFixtureReadTextFileSync(fileMap) {
+  return (filePath) => {
+    const markdown = fileMap.get(path.resolve(filePath));
+    if (markdown) {
+      return markdown;
+    }
+    if (/\.schema\.md$/iu.test(filePath)) {
+      return "# Schema Fixture\n";
+    }
+    throw new Error(`Missing test fixture ${filePath}`);
+  };
 }
 
 function excludeSchemaTargetReadabilityFindings(findings) {
@@ -84,10 +108,11 @@ function testContinuityValidationCoreWithLocalFixtureChain() {
   const parentPath = path.join(tempRoot, "001-parent.trace.md");
   const childPath = path.join(tempRoot, "001-1-child.trace.md");
   const fileMap = new Map();
+  const testReadTextFileSync = createFixtureReadTextFileSync(fileMap);
 
   const parentMarkdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -107,13 +132,13 @@ function testContinuityValidationCoreWithLocalFixtureChain() {
 
 - sha256-base64url-c14n-v1
   - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
-  - Value: PLACEHOLDER`);
+  - Value: PLACEHOLDER`, { filePath: parentPath, readTextFileSync: testReadTextFileSync });
 
   fileMap.set(path.resolve(parentPath), parentMarkdown);
 
   const childMarkdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -139,22 +164,13 @@ function testContinuityValidationCoreWithLocalFixtureChain() {
 
 - sha256-base64url-c14n-v1
   - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
-  - Value: PLACEHOLDER`);
+  - Value: PLACEHOLDER`, { filePath: childPath, readTextFileSync: testReadTextFileSync });
 
   fileMap.set(path.resolve(childPath), childMarkdown);
 
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: childPath,
-    readTextFileSync: (filePath) => {
-      const markdown = fileMap.get(path.resolve(filePath));
-      if (markdown) {
-        return markdown;
-      }
-      if (/\.schema\.md$/iu.test(filePath)) {
-        return "# Schema Fixture\n";
-      }
-      throw new Error(`Missing test fixture ${filePath}`);
-    }
+    readTextFileSync: testReadTextFileSync
   });
 
   assert.equal(result.nodes.length, 2, "Continuity validator should follow a local parent trace chain backwards.");
@@ -169,10 +185,11 @@ function testValidatorFindsParentSchemaMismatch() {
   const parentPath = path.join(tempRoot, "001-parent.trace.md");
   const childPath = path.join(tempRoot, "001-1-child.trace.md");
   const fileMap = new Map();
+  const testReadTextFileSync = createFixtureReadTextFileSync(fileMap);
 
   const parentMarkdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -192,13 +209,13 @@ function testValidatorFindsParentSchemaMismatch() {
 
 - sha256-base64url-c14n-v1
   - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
-  - Value: PLACEHOLDER`);
+  - Value: PLACEHOLDER`, { filePath: parentPath, readTextFileSync: testReadTextFileSync });
   const parentChecksum = computeTraceableContinuityChecksumSha256(parentMarkdown);
   fileMap.set(path.resolve(parentPath), parentMarkdown);
 
   const childMarkdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Parent Schema: [tiinex.feedback.v1](../../docs/.topics/.schemas/tiinex.feedback.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -238,18 +255,12 @@ function testValidatorFindsParentSchemaMismatch() {
 
 - sha256-base64url-c14n-v1
   - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
-  - Value: PLACEHOLDER`);
+  - Value: PLACEHOLDER`, { filePath: childPath, readTextFileSync: testReadTextFileSync });
   fileMap.set(path.resolve(childPath), childMarkdown);
 
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: childPath,
-    readTextFileSync: (filePath) => {
-      const markdown = fileMap.get(path.resolve(filePath));
-      if (!markdown) {
-        throw new Error(`Missing test fixture ${filePath}`);
-      }
-      return markdown;
-    }
+    readTextFileSync: testReadTextFileSync
   });
 
   assert.equal(result.nodes.length, 2, "Continuity validator should still follow the local parent trace chain backwards.");
@@ -263,10 +274,11 @@ function testValidatorFindsUnpinnedBrowseGitParentOrigin() {
   const parentPath = path.join(tempRoot, "001-parent.trace.md");
   const childPath = path.join(tempRoot, "001-1-child.trace.md");
   const fileMap = new Map();
+  const testReadTextFileSync = createFixtureReadTextFileSync(fileMap);
 
   const parentMarkdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -286,13 +298,13 @@ function testValidatorFindsUnpinnedBrowseGitParentOrigin() {
 
 - sha256-base64url-c14n-v1
   - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
-  - Value: PLACEHOLDER`);
+  - Value: PLACEHOLDER`, { filePath: parentPath, readTextFileSync: testReadTextFileSync });
   const parentChecksum = computeTraceableContinuityChecksumSha256(parentMarkdown);
   fileMap.set(path.resolve(parentPath), parentMarkdown);
 
   const childMarkdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -333,18 +345,12 @@ function testValidatorFindsUnpinnedBrowseGitParentOrigin() {
 
 - sha256-base64url-c14n-v1
   - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
-  - Value: PLACEHOLDER`);
+  - Value: PLACEHOLDER`, { filePath: childPath, readTextFileSync: testReadTextFileSync });
   fileMap.set(path.resolve(childPath), childMarkdown);
 
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: childPath,
-    readTextFileSync: (filePath) => {
-      const markdown = fileMap.get(path.resolve(filePath));
-      if (!markdown) {
-        throw new Error(`Missing test fixture ${filePath}`);
-      }
-      return markdown;
-    }
+    readTextFileSync: testReadTextFileSync
   });
 
   assert.equal(result.nodes.length, 2, "Continuity validator should still follow the local parent trace chain backwards.");
@@ -357,7 +363,7 @@ function testValidatorFindsMissingValidationFriendlyShape() {
   const artifactPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", ".test-temp", "validation-friendly-shape", "001-schema-note.trace.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.evidence.v1](../../docs/.topics/.schemas/tiinex.evidence.v1.schema.md)
   - Created At: 2026-05-30 00:00:02
@@ -397,7 +403,7 @@ function testValidatorFindsInvalidContinuityHeaderTimestamps() {
   const artifactPath = path.join(packageRoot, ".test-temp", "continuity-invalid-created-at", "001-invalid-created-at.trace.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-13-40 99:99:99
@@ -449,7 +455,7 @@ function testValidatorFindsMissingContinuityHeaderFields() {
   const artifactPath = path.join(packageRoot, ".test-temp", "continuity-missing-required-fields", "001-missing-header-fields.trace.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Trace: [001-parent.trace.md](001-parent.trace.md)
   - Origin:
@@ -504,7 +510,7 @@ function testValidatorFindsMissingTaskStructure() {
   const artifactPath = path.join(packageRoot, ".test-temp", "task-structure-missing", "001-missing-task-structure.trace.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.task.v1](../../docs/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-06-03 00:00:00
@@ -537,7 +543,7 @@ function testValidatorAcceptsTabIndentedCurrentContinuityFields() {
   const artifactPath = path.join(packageRoot, ".test-temp", "tab-indented-current-fields", "001-tab-indented.trace.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
 	- Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
 	- Created At: 2026-06-03 00:00:00
@@ -575,7 +581,7 @@ function testValidatorFindsUnreadableOrdinaryTraceSchemaTargets() {
   const artifactPath = path.join(packageRoot, ".test-temp", "ordinary-trace-schema-targets-permalink-required", "001-permalink-required.trace.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.md)
 - Parent
   - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.md)
   - Created At: 2026-06-01 03:15:00
@@ -847,6 +853,66 @@ This prevents traces from looking pinned while still pointing nowhere.
   assert.ok(result.findings.some((finding) => finding.code === "continuity-footer-self-required-without-parent"), "Validator should require self as footer Towards when an ordinary trace has no parent signal.");
 }
 
+function testValidatorAllowsFooterTargetMatchingCurrentOriginWithoutParent() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "continuity-current-origin-footer-match", "001-current-origin-footer-match.trace.md");
+  const validDocsRevision = "0e6d169685d56c913cb890ba568a96b366ebd4bf";
+  const originPermalink = "https://github.com/Tiinex/.github/blob/12651d4ba629243f4177de6e22dc35a778a269c6/.topics/kickstarter/001-1-1-sigma.trace.md";
+  const docsRoot = path.resolve(packageRoot, "..", "..", "..", "docs");
+  const githubRoot = path.resolve(packageRoot, "..", "..", "..", ".github");
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/${validDocsRevision}/.topics/.schemas/tiinex.root.v1.schema.md)
+- Current
+  - Current Schema: [tiinex.pointer.v1](https://github.com/Tiinex/docs/blob/1b7514e9db81a46c319e9aff6ca4c4449bda7f0d/.topics/.schemas/tiinex.pointer.v1.schema.md)
+  - Created At: 2026-06-05 12:30:00
+  - Summary: Parentless pointer fixture whose footer validates the declared current origin.
+  - Origin:
+    - [browse + git](${originPermalink})
+
+---
+
+# Pointer
+
+This fixture keeps one thin hop toward a declared current origin.
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [browse + git](${originPermalink})
+  - Value: PLACEHOLDER`, {
+    filePath: artifactPath,
+    workspaceRoots: [
+      { name: "docs", fsPath: docsRoot },
+      { name: ".github", fsPath: githubRoot }
+    ]
+  });
+
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: (filePath) => {
+      if (path.resolve(filePath) === path.resolve(artifactPath)) {
+        return markdown;
+      }
+      if (isUnderPath(filePath, docsRoot) || isUnderPath(filePath, githubRoot)) {
+        return readFileSync(filePath, "utf8");
+      }
+      throw new Error(`Missing test fixture ${filePath}`);
+    },
+    workspaceRoots: [
+      { name: "docs", fsPath: docsRoot },
+      { name: ".github", fsPath: githubRoot }
+    ],
+    maxDepth: 1
+  });
+
+  assert.ok(!result.findings.some((finding) => finding.code === "continuity-footer-self-required-without-parent"), "Validator should allow a parentless ordinary trace to validate a declared Current Origin target.");
+  assert.ok(!result.findings.some((finding) => finding.code === "traceable-current-origin-browse-git-unreadable"), "Validator should treat readable commit-pinned Current Origin permalinks as readable.");
+  assert.ok(!result.findings.some((finding) => finding.code === "continuity-footer-towards-unreadable"), "Validator should treat readable footer Towards permalinks as readable.");
+  assert.ok(!result.findings.some((finding) => finding.severity === "error"), "Validator should accept a parentless pointer whose footer matches its declared Current Origin.");
+}
+
 function testValidatorFindsPermalinkWhoseRevisionExistsButPathDoesNot() {
   const artifactPath = path.join(packageRoot, ".test-temp", "continuity-schema-permalink-missing-at-revision", "001-schema-permalink-missing-at-revision.trace.md");
   const validDocsRevision = "0e6d169685d56c913cb890ba568a96b366ebd4bf";
@@ -958,7 +1024,7 @@ function testRootSchemaValidatorRequiresRootEnvelopeSchema() {
   const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.root.v1.schema.md");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     "- Envelope Schema: [tiinex.root.v1](tiinex.root.v1.schema.md)",
-    "- Envelope Schema: [tiinex.continuation.v1](tiinex.continuation.v1.schema.md)"
+    "- Envelope Schema: [tiinex.topic.v1](tiinex.topic.v1.schema.md)"
   );
   const result = validateTraceableRootSchemaSync({
     filePath: schemaPath,
@@ -1192,11 +1258,11 @@ function testModernSchemaNoteValidationContractCountsAsCoreContract() {
   const artifactPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", ".test-temp", "schema-validation-contract", "001-modern-schema-note.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Parent Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
   - Created At: 2026-06-04 00:00:00
-  - Trace: [tiinex.continuation.v1.schema.md](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Trace: [tiinex.root.v1.schema.md](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-06-04 00:00:01
@@ -1231,7 +1297,7 @@ Rules
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [tiinex.continuation.v1.schema.md](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Towards: [tiinex.root.v1.schema.md](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
   - Value: PLACEHOLDER`);
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: artifactPath,
@@ -1240,7 +1306,7 @@ Rules
   });
 
   assert.ok(
-    !result.findings.some((finding) => finding.code === "schema-definition-core-contract-missing"),
+    !result.findings.some((finding) => finding.code === "schema-note-core-contract-missing"),
     "Modern schema notes with Schema Validation Contract should satisfy the shared core-contract check."
   );
   assert.ok(
@@ -1253,11 +1319,11 @@ function testModernSchemaNoteValidationContractRejectsStarBullets() {
   const artifactPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", ".test-temp", "schema-validation-contract", "001-modern-schema-note-invalid.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Parent Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
   - Created At: 2026-06-04 00:00:00
-  - Trace: [tiinex.continuation.v1.schema.md](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Trace: [tiinex.root.v1.schema.md](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-06-04 00:00:01
@@ -1292,7 +1358,7 @@ Rules
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [tiinex.continuation.v1.schema.md](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Towards: [tiinex.root.v1.schema.md](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
   - Value: PLACEHOLDER`);
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: artifactPath,
@@ -1411,11 +1477,41 @@ function testPointerSchemaValidatorAcceptsCommittedSchema() {
   );
 }
 
+function testRuntimeSchemaContinuityAcceptsCommittedSchema() {
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.runtime.v1.schema.md");
+  const result = validateTraceableContinuityArtifactChainSync({ filePath: schemaPath, maxDepth: 1 });
+
+  assert.equal(result.nodes[0]?.parsed.currentSchema?.label, "tiinex.runtime.v1", "The continuity validator should recover tiinex.runtime.v1 as the current schema id.");
+  assert.equal(result.nodes[0]?.parsed.parentSchema?.label, "tiinex.root.v1", "The runtime base schema should continue from tiinex.root.v1.");
+  assert.equal(result.nodes[0]?.continuityIntegrity.status, "verified", "The committed runtime base schema should verify its continuity footer.");
+  assert.ok(!result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"), "The runtime base schema should not report a continuity checksum mismatch.");
+}
+
+function testMachineRuntimeSchemaContinuityAcceptsCommittedSchema() {
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.machine.runtime.v1.schema.md");
+  const result = validateTraceableContinuityArtifactChainSync({ filePath: schemaPath, maxDepth: 1 });
+
+  assert.equal(result.nodes[0]?.parsed.currentSchema?.label, "tiinex.machine.runtime.v1", "The continuity validator should recover tiinex.machine.runtime.v1 as the current schema id.");
+  assert.equal(result.nodes[0]?.parsed.parentSchema?.label, "tiinex.runtime.v1", "The machine runtime schema should continue from tiinex.runtime.v1.");
+  assert.equal(result.nodes[0]?.continuityIntegrity.status, "verified", "The committed machine runtime schema should verify its continuity footer.");
+  assert.ok(!result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"), "The machine runtime schema should not report a continuity checksum mismatch.");
+}
+
+function testAiRuntimeSchemaContinuityAcceptsCommittedSchema() {
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.ai.runtime.v1.schema.md");
+  const result = validateTraceableContinuityArtifactChainSync({ filePath: schemaPath, maxDepth: 1 });
+
+  assert.equal(result.nodes[0]?.parsed.currentSchema?.label, "tiinex.ai.runtime.v1", "The continuity validator should recover tiinex.ai.runtime.v1 as the current schema id.");
+  assert.equal(result.nodes[0]?.parsed.parentSchema?.label, "tiinex.machine.runtime.v1", "The AI runtime schema should continue from tiinex.machine.runtime.v1.");
+  assert.equal(result.nodes[0]?.continuityIntegrity.status, "verified", "The committed AI runtime schema should verify its continuity footer.");
+  assert.ok(!result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"), "The AI runtime schema should not report a continuity checksum mismatch.");
+}
+
 function testTopicSchemaValidatorRequiresRootEnvelopeSchema() {
   const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     "- Envelope Schema: [tiinex.root.v1](tiinex.root.v1.schema.md)",
-    "- Envelope Schema: [tiinex.continuation.v1](tiinex.continuation.v1.schema.md)"
+    "- Envelope Schema: [tiinex.topic.v1](tiinex.topic.v1.schema.md)"
   );
   const result = validateTraceableTopicSchemaSync({
     filePath: schemaPath,
@@ -1921,11 +2017,11 @@ function testArtifactCreationContractRejectsStarBullets() {
   const artifactPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", ".test-temp", "artifact-creation-contract", "001-topic-schema-invalid.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Parent Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
   - Created At: 2026-06-04 00:00:00
-  - Trace: [tiinex.continuation.v1.schema.md](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Trace: [tiinex.root.v1.schema.md](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-06-04 00:00:01
@@ -1972,7 +2068,7 @@ Rules
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [tiinex.continuation.v1.schema.md](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Towards: [tiinex.root.v1.schema.md](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
   - Value: PLACEHOLDER`);
   const result = validateTraceableTopicSchemaSync({
     filePath: artifactPath,
@@ -2003,11 +2099,11 @@ function testArtifactCreationContractRejectsPlusBullets() {
   const artifactPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", ".test-temp", "artifact-creation-contract", "001-topic-schema-invalid.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Parent Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
   - Created At: 2026-06-04 00:00:00
-  - Trace: [tiinex.continuation.v1.schema.md](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Trace: [tiinex.root.v1.schema.md](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-06-04 00:00:01
@@ -2054,7 +2150,7 @@ Rules
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [tiinex.continuation.v1.schema.md](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - Towards: [tiinex.root.v1.schema.md](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
   - Value: PLACEHOLDER`);
   const result = validateTraceableTopicSchemaSync({
     filePath: artifactPath,
@@ -2070,7 +2166,7 @@ Rules
 function testParseContinuityHeaderMetadataFields() {
   const parsed = parseTraceableContinuityMarkdown(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-06-03 03:10:00
@@ -2124,7 +2220,7 @@ function testContinuityValidationProducesNormalizedFindings() {
   const artifactPath = path.join(tempRoot, "001-mismatch.trace.md");
   const markdown = `# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -2153,65 +2249,11 @@ This body intentionally does not match the stored footer checksum.
   assert.ok(result.findings.some((finding) => finding.surfaces.includes("problems")), "Normalized continuity findings should declare whether they belong on Problems surfaces.");
 }
 
-function testSchemaDefinitionRootSelfValidates() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.definition.v1.schema.md");
-  const result = validateTraceableContinuityArtifactChainSync({
-    filePath: schemaPath,
-    maxDepth: 2
-  });
-
-  assert.equal(result.findings.length, 0, "The shared schema-definition root should self-validate without findings.");
-  assert.equal(result.stoppedBecause, "complete", "The shared schema-definition root should stop cleanly at its canonical self-rooting anchor.");
-}
-
-function testSchemaNoteCoreContractFindingForBaseSchemaNote() {
-  const artifactPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", ".test-temp", "schema-core-contract", "001-base-schema-note.md");
-  const markdown = finalizeContinuityIntegrity(`# Continuity Context
-
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
-- Current
-  - Current Schema: [tiinex.definition.v1](../../docs/.topics/.schemas/tiinex.definition.v1.schema.md)
-  - Created At: 2026-06-02 00:00:00
-  - Summary: Base schema-note fixture.
-
----
-
-# Base Schema Note Fixture
-
-## Summary
-
-- Fixture: base schema note
-
-## Required Structure
-
-- Fixture: includes a normal contract-bearing section so only the root machine contract rule is under test
-
-## Validation-Friendly Shape
-
-- Fixture: intentionally missing a contract-bearing section
-
----
-
-# Continuity Integrity
-
-- sha256-base64url-c14n-v1
-  - Towards: [tiinex.definition.v1.schema.md](../../docs/.topics/.schemas/tiinex.definition.v1.schema.md)
-  - Value: PLACEHOLDER`);
-  const result = validateTraceableContinuityArtifactChainSync({
-    filePath: artifactPath,
-    readTextFileSync: () => markdown,
-    maxDepth: 1
-  });
-
-  assert.ok(result.findings.some((finding) => finding.code === "schema-machine-validation-contract-missing"), "Schema-note validation should surface the missing root machine validation contract for tiinex.definition.v1.");
-  assert.equal(result.findings.length, 1, "Only the root machine-validation-contract issue should be surfaced for this schema-root fixture.");
-}
-
 function testSchemaNoteCoreContractFindingForSubSchemaNote() {
   const artifactPath = path.join(packageRoot, "..", "..", ".topics", ".schemas", ".test-temp", "schema-core-contract", "001-sub-schema-note.md");
   const markdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.evidence.v1](../../docs/.topics/.schemas/tiinex.evidence.v1.schema.md)
   - Created At: 2026-06-02 00:00:00
@@ -2242,7 +2284,7 @@ function testSchemaNoteCoreContractFindingForSubSchemaNote() {
     maxDepth: 1
   });
 
-  assert.ok(result.findings.some((finding) => finding.code === "schema-definition-core-contract-missing"), "Schema-note validation should surface a missing core contract section for a sub-schema note family.");
+  assert.ok(result.findings.some((finding) => finding.code === "schema-note-core-contract-missing"), "Schema-note validation should surface a missing core contract section for a sub-schema note family.");
   assert.equal(result.findings.length, 1, "Only the core schema-note contract issue should be surfaced for this sub-schema fixture.");
 }
 
@@ -2251,10 +2293,11 @@ function testValidatorPolicyKeepsLegacyNoChecksumInternal() {
   const parentPath = path.join(tempRoot, "001-parent.trace.md");
   const childPath = path.join(tempRoot, "001-1-child.trace.md");
   const fileMap = new Map();
+  const testReadTextFileSync = createFixtureReadTextFileSync(fileMap);
 
   const parentMarkdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -2274,12 +2317,12 @@ function testValidatorPolicyKeepsLegacyNoChecksumInternal() {
 
 - sha256-base64url-c14n-v1
   - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
-  - Value: PLACEHOLDER`);
+  - Value: PLACEHOLDER`, { filePath: parentPath, readTextFileSync: testReadTextFileSync });
   fileMap.set(path.resolve(parentPath), parentMarkdown);
 
   const childMarkdown = finalizeContinuityIntegrity(`# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
   - Parent Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -2318,18 +2361,12 @@ function testValidatorPolicyKeepsLegacyNoChecksumInternal() {
 
 - sha256-base64url-c14n-v1
   - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
-  - Value: PLACEHOLDER`);
+  - Value: PLACEHOLDER`, { filePath: childPath, readTextFileSync: testReadTextFileSync });
   fileMap.set(path.resolve(childPath), childMarkdown);
 
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: childPath,
-    readTextFileSync: (filePath) => {
-      const markdown = fileMap.get(path.resolve(filePath));
-      if (!markdown) {
-        throw new Error(`Missing test fixture ${filePath}`);
-      }
-      return markdown;
-    }
+    readTextFileSync: testReadTextFileSync
   });
 
   assert.equal(result.nodes[0].traceableParentIntegrity?.status, "legacy-no-checksum", "Missing direct-parent checksum should remain an internal legacy status, not a surfaced Problems finding.");
@@ -2341,7 +2378,7 @@ function testValidatorPolicyKeepsUnsupportedFooterMethodsOutOfProblems() {
   const artifactPath = path.join(tempRoot, "001-unsupported.trace.md");
   const markdown = `# Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](../../docs/.topics/.schemas/tiinex.root.v1.schema.md)
 - Current
   - Current Schema: [tiinex.topic.v1](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
   - Created At: 2026-05-30 00:00:00
@@ -2388,6 +2425,7 @@ async function main() {
   testValidatorFindsMissingTopicStructure();
   testValidatorFindsUnreadableParentTraceTarget();
   testValidatorFindsUnreadableCurrentOriginAndFooterPermalinks();
+  testValidatorAllowsFooterTargetMatchingCurrentOriginWithoutParent();
   testValidatorFindsPermalinkWhoseRevisionExistsButPathDoesNot();
   testTaskSchemaNoteDoesNotTriggerTaskArtifactRule();
   testCurrentValidatorTaskLeafSatisfiesTaskStructureRule();
@@ -2405,6 +2443,8 @@ async function main() {
   testRootSchemaValidationContractRejectsDuplicateNamedDeclarations();
   testRootSchemaValidatorWarnsUnexpectedEnvelopeFields();
   testRootSchemaValidatorUsesRootDeclaredEnvelopeFieldLists();
+  testRootSchemaValidatorRejectsUnexpectedSectionHeadings();
+  testRootSchemaValidatorFlagsMissingExpectedSectionHeading();
   testModernSchemaNoteValidationContractCountsAsCoreContract();
   testModernSchemaNoteValidationContractRejectsStarBullets();
   testPortedTopicSchemaSelfValidatesWhenChecksumIsRefreshed();
@@ -2413,6 +2453,9 @@ async function main() {
   testTaskSchemaValidatorAcceptsCommittedSchema();
   testEvidenceSchemaValidatorAcceptsCommittedSchema();
   testPointerSchemaValidatorAcceptsCommittedSchema();
+  testRuntimeSchemaContinuityAcceptsCommittedSchema();
+  testMachineRuntimeSchemaContinuityAcceptsCommittedSchema();
+  testAiRuntimeSchemaContinuityAcceptsCommittedSchema();
   testTopicSchemaValidatorRequiresRootEnvelopeSchema();
   testTopicSchemaValidatorRequiresReadableEnvelopeSchemaTarget();
   testTopicSchemaValidatorRequiresReadableParentSchemaTarget();
@@ -2444,6 +2487,7 @@ async function main() {
   testParseContinuityHeaderMetadataFields();
   testRenderContinuityValidationMarkdown();
   testContinuityValidationProducesNormalizedFindings();
+  testSchemaNoteCoreContractFindingForSubSchemaNote();
   testValidatorPolicyKeepsLegacyNoChecksumInternal();
   testValidatorPolicyKeepsUnsupportedFooterMethodsOutOfProblems();
   runSchemaCompatibilityFixtures(packageRoot);

@@ -453,10 +453,11 @@ function canonicalizeTraceableContinuityChecksumSource(markdown) {
   const normalizedNewlines = markdown.replace(/\r\n?/gu, "\n");
   const withoutTrailingWhitespace = normalizedNewlines.replace(/[ \t]+$/gmu, "").trimEnd();
   const lines = withoutTrailingWhitespace.split("\n");
-  if (lines.length <= 1) {
-    return "";
+  const integrityHeadingIndex = lines.findIndex((line) => line.trim() === "# Continuity Integrity");
+  if (integrityHeadingIndex >= 0) {
+    return lines.slice(0, integrityHeadingIndex).join("\n");
   }
-  return lines.slice(0, -1).join("\n");
+  return withoutTrailingWhitespace;
 }
 
 function computeTraceableContinuityChecksumSha256(markdown) {
