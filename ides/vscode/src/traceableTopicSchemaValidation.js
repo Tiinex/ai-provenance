@@ -1,6 +1,4 @@
 const path = require("node:path");
-const { existsSync } = require("node:fs");
-const { execFileSync } = require("node:child_process");
 const {
   addContractSectionShapeFindings,
   collectContractVocabularyFindings,
@@ -97,66 +95,6 @@ function canReadResolvedSchemaPath(resolvedSchemaPath, readTextFileSync) {
   }
 }
 
-function resolveGitRootForPath(filePath) {
-  let currentPath = path.dirname(path.resolve(filePath));
-  while (true) {
-    if (existsSync(path.join(currentPath, ".git"))) {
-      return currentPath;
-    }
-    const parentPath = path.dirname(currentPath);
-    if (parentPath === currentPath) {
-      return undefined;
-    }
-    currentPath = parentPath;
-  }
-}
-
-function normalizeGitHubBrowseBaseUrl(remoteUrl) {
-  const trimmed = typeof remoteUrl === "string" ? remoteUrl.trim() : "";
-  if (!trimmed) {
-    return undefined;
-  }
-  const sshMatch = trimmed.match(/^git@github\.com:(.+?)(?:\.git)?$/iu);
-  if (sshMatch) {
-    return `https://github.com/${sshMatch[1]}`;
-  }
-  const httpsMatch = trimmed.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/iu);
-  if (httpsMatch) {
-    return `https://github.com/${httpsMatch[1]}`;
-  }
-  return undefined;
-}
-
-function tryResolveBrowseGitUrlForPath(targetPath) {
-  const gitRoot = resolveGitRootForPath(targetPath);
-  if (!gitRoot) {
-    return undefined;
-  }
-  try {
-    const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
-    const browseBaseUrl = normalizeGitHubBrowseBaseUrl(remoteUrl);
-    const commitHash = execFileSync("git", ["-C", gitRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-    if (!browseBaseUrl || !/^[0-9a-f]{40}$/iu.test(commitHash)) {
-      return undefined;
-    }
-    const relativePath = path.relative(gitRoot, targetPath).replace(/\\+/gu, "/");
-    if (!relativePath || relativePath.startsWith("../")) {
-      return undefined;
-    }
-    return `${browseBaseUrl}/blob/${commitHash}/${relativePath}`;
-  } catch {
-    return undefined;
-  }
-}
-
-function resolveExpectedParentOriginBrowseGitUrl(filePath, relativeTarget) {
-  const resolvedTargetPath = resolveRelativeSchemaPath(filePath, relativeTarget);
-  if (!resolvedTargetPath) {
-    return undefined;
-  }
-  return tryResolveBrowseGitUrlForPath(resolvedTargetPath);
-}
-
 function resolveExpectedParentCreatedAt(filePath, parsed, readTextFileSync) {
   const resolvedParentTracePath = resolveRelativeSchemaPath(filePath, parsed.parentTrace?.target);
   if (!resolvedParentTracePath) {
@@ -181,7 +119,6 @@ function validateTraceableTopicSchemaSync(input) {
   const currentSchemaPath = resolveRelativeSchemaPath(input.filePath, parsed.currentSchema?.target);
   const declaredParentSchemaPath = resolveRelativeSchemaPath(input.filePath, parsed.parentSchema?.target);
   const parentSchemaPath = resolveRelativeSchemaPath(input.filePath, parsed.parentTrace?.target);
-  const expectedParentOriginBrowseGitUrl = resolveExpectedParentOriginBrowseGitUrl(input.filePath, parsed.parentOrigin?.relative);
   const expectedParentCreatedAt = resolveExpectedParentCreatedAt(input.filePath, parsed, input.readTextFileSync);
   const unknownContractSeverity = parentSchemaPath ? "error" : "warning";
   const declaredContractCategoryLabels = parsed.schemaValidationContract?.groups
@@ -334,14 +271,6 @@ function validateTraceableTopicSchemaSync(input) {
         category: "schema-note-lineage",
         filePath: input.filePath,
         message: "The topic schema Parent Origin browse + git target is not commit-pinned.",
-        severity: "error"
-      });
-    } else if (expectedParentOriginBrowseGitUrl && parsed.parentOrigin.browseGit !== expectedParentOriginBrowseGitUrl) {
-      findings.push({
-        code: "topic-schema-parent-origin-browse-git-mismatch",
-        category: "schema-note-lineage",
-        filePath: input.filePath,
-        message: `The topic schema Parent Origin browse + git target must match the relative origin target at the current commit: ${expectedParentOriginBrowseGitUrl}.`,
         severity: "error"
       });
     }

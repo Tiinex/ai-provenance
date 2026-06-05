@@ -60,6 +60,7 @@ function finalizeContinuityIntegrity(markdown) {
 
 function excludeSchemaTargetReadabilityFindings(findings) {
   return findings.filter((finding) => ![
+    "continuity-footer-self-required-without-parent",
     "traceable-envelope-schema-permalink-required",
     "traceable-envelope-schema-unreadable",
     "traceable-current-schema-permalink-required",
@@ -67,6 +68,11 @@ function excludeSchemaTargetReadabilityFindings(findings) {
     "traceable-parent-schema-permalink-required",
     "traceable-parent-schema-unreadable"
   ].includes(finding.code));
+}
+
+function isUnderPath(candidatePath, rootPath) {
+  const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function testContinuityValidationCoreWithLocalFixtureChain() {
@@ -768,6 +774,69 @@ function testValidatorFindsUnreadableParentTraceTarget() {
   });
 
   assert.ok(result.findings.some((finding) => finding.code === "traceable-parent-trace-unreadable"), "Validator should surface Parent Trace targets that cannot be read.");
+}
+
+function testValidatorFindsUnreadableCurrentOriginAndFooterPermalinks() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "continuity-current-origin-and-footer-unreadable", "001-current-origin-and-footer-unreadable.trace.md");
+  const brokenRevision = "0000000000000000000000000000000000000000";
+  const validDocsRevision = "0e6d169685d56c913cb890ba568a96b366ebd4bf";
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/${validDocsRevision}/.topics/.schemas/tiinex.root.v1.schema.md)
+- Current
+  - Current Schema: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/${validDocsRevision}/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Created At: 2026-06-02 22:38:22
+  - Summary: Broken Current Origin and footer permalink fixture.
+  - Origin:
+    - [browse + git](https://github.com/Tiinex/.github/blob/${brokenRevision}/.topics/rfc/001-1-1-1.trace.md)
+
+---
+
+# Broken Current Origin And Footer Permalink Fixture
+
+## Current Read
+
+This fixture uses commit-pinned links that cannot be resolved for Current Origin and footer Towards.
+
+## Design Direction
+
+Ordinary trace validation should reject unreadable Current Origin and footer permalinks.
+
+## Relevance
+
+This prevents traces from looking pinned while still pointing nowhere.
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [tiinex.topic.v1](https://github.com/Tiinex/docs/blob/${brokenRevision}/.topics/.schemas/tiinex.topic.v1.schema.md)
+  - Value: PLACEHOLDER`);
+  const docsRoot = path.resolve(packageRoot, "..", "..", "..", "docs");
+  const githubRoot = path.resolve(packageRoot, "..", "..", "..", ".github");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: (filePath) => {
+      if (path.resolve(filePath) === path.resolve(artifactPath)) {
+        return markdown;
+      }
+      if (isUnderPath(filePath, docsRoot) || isUnderPath(filePath, githubRoot)) {
+        return "# stub";
+      }
+      throw new Error(`Missing test fixture ${filePath}`);
+    },
+    workspaceRoots: [
+      { name: "docs", fsPath: docsRoot },
+      { name: ".github", fsPath: githubRoot }
+    ],
+    gitRevisionExistsSync: (_repoRoot, revision) => revision !== brokenRevision,
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-current-origin-browse-git-unreadable"), "Validator should surface Current Origin browse + git permalinks that cannot be resolved.");
+  assert.ok(result.findings.some((finding) => finding.code === "continuity-footer-towards-unreadable"), "Validator should surface footer Towards permalinks that cannot be resolved.");
+  assert.ok(result.findings.some((finding) => finding.code === "continuity-footer-self-required-without-parent"), "Validator should require self as footer Towards when an ordinary trace has no parent signal.");
 }
 
 function testTaskSchemaNoteDoesNotTriggerTaskArtifactRule() {
@@ -2191,6 +2260,7 @@ async function main() {
   testValidatorFindsMissingContinuityIntegrityFooter();
   testValidatorFindsMissingTopicStructure();
   testValidatorFindsUnreadableParentTraceTarget();
+  testValidatorFindsUnreadableCurrentOriginAndFooterPermalinks();
   testTaskSchemaNoteDoesNotTriggerTaskArtifactRule();
   testCurrentValidatorTaskLeafSatisfiesTaskStructureRule();
   testRuntimeTraceStructureValidationAgainstTransferFixture();
@@ -2577,7 +2647,7 @@ async function main() {
   assert.ok(extensionSource.includes("Latest Carry Package"), "Traceable extension source is missing the latest-carry-package picker label.");
   assert.ok(extensionSource.includes('vscode.workspace.onWillRenameFiles') && extensionSource.includes('vscode.workspace.onDidRenameFiles') && extensionSource.includes('traceableRenameMoveRewriteBehavior') && extensionSource.includes('confirmTraceableRenameMoveRewrite') && extensionSource.includes('performTraceableStagedFileMoveOperation') && extensionSource.includes('runTraceableOwnedMoveOperation') && extensionSource.includes('pendingTraceableRewriteRenames'), "Traceable extension source is missing the trace-aware rename/move wiring across staged lineage moves and host-owned alone rewrites.");
   assert.ok(extensionSource.includes('const RETURN_TO_PARENT_TRACE_ELIGIBLE_CONTEXT = "tiinex.aiProvenance.returnToParentEligibleResources";') && extensionSource.includes('buildTraceableExplorerResourceContextKeys(resource: vscode.Uri)') && extensionSource.includes('const uriPath = resource.path;') && extensionSource.includes('const decodedUriPath = decodeURIComponent(uriPath);') && extensionSource.includes('refreshReturnToParentTraceEligibleContext') && extensionSource.includes('vscode.workspace.findFiles("**/*.trace.md")'), "Traceable extension source should keep the return-to-parent eligibility context computation available for Explorer gating and command-side lineage checks.");
-  assert.ok(extensionSource.includes('topic-schema-parent-origin-missing') && extensionSource.includes('topic-schema-parent-origin-browse-git-missing') && extensionSource.includes('topic-schema-parent-origin-unpinned-browse-git') && extensionSource.includes('topic-schema-parent-created-at-missing') && extensionSource.includes('topic-schema-parent-created-at-invalid') && extensionSource.includes('topic-schema-parent-created-at-mismatch') && extensionSource.includes('topic-schema-footer-target-mismatch') && extensionSource.includes('topic-schema-footer-target-not-permalink') && extensionSource.includes('topic-schema-lineage-unexpected-envelope-field') && extensionSource.includes('topic-schema-envelope-schema-mismatch') && extensionSource.includes('topic-schema-envelope-schema-unreadable') && extensionSource.includes('topic-schema-parent-schema-unreadable') && extensionSource.includes('topic-schema-current-schema-unreadable') && extensionSource.includes('root-schema-envelope-schema-mismatch') && extensionSource.includes('root-schema-envelope-schema-unreadable') && extensionSource.includes('root-schema-current-schema-unreadable') && extensionSource.includes('function createInsertTopicSchemaParentOriginEdit(') && extensionSource.includes('function createSetTopicSchemaParentCreatedAtEdit(') && extensionSource.includes('function createSetTopicSchemaFooterTowardsEdit(') && extensionSource.includes('function createInsertContinuityIntegrityFooterEdit(') && extensionSource.includes('function createSetContinuityParentCreatedAtEdit(') && extensionSource.includes('Insert Parent Created At from parent trace') && extensionSource.includes('Replace Parent Created At from parent trace') && extensionSource.includes('Insert Continuity Integrity footer') && extensionSource.includes('Insert Parent Origin scaffold') && extensionSource.includes('Insert browse + git permalink scaffold') && extensionSource.includes('Replace footer Towards permalink'), "Traceable extension source should map schema-envelope, footer-target, parent-created-at, and Parent Origin diagnostics to the right lines and expose scaffold quick fixes for missing or drifted origin metadata across both schema notes and ordinary traces.");
+  assert.ok(extensionSource.includes('topic-schema-parent-origin-missing') && extensionSource.includes('topic-schema-parent-origin-browse-git-missing') && extensionSource.includes('topic-schema-parent-origin-unpinned-browse-git') && extensionSource.includes('topic-schema-parent-created-at-missing') && extensionSource.includes('topic-schema-parent-created-at-invalid') && extensionSource.includes('topic-schema-parent-created-at-mismatch') && extensionSource.includes('topic-schema-footer-target-mismatch') && extensionSource.includes('topic-schema-footer-target-not-permalink') && extensionSource.includes('topic-schema-lineage-unexpected-envelope-field') && extensionSource.includes('topic-schema-envelope-schema-mismatch') && extensionSource.includes('topic-schema-envelope-schema-unreadable') && extensionSource.includes('topic-schema-parent-schema-unreadable') && extensionSource.includes('topic-schema-current-schema-unreadable') && extensionSource.includes('root-schema-envelope-schema-mismatch') && extensionSource.includes('root-schema-envelope-schema-unreadable') && extensionSource.includes('root-schema-current-schema-unreadable') && extensionSource.includes('function createInsertTopicSchemaParentOriginEdit(') && extensionSource.includes('function createSetTopicSchemaParentCreatedAtEdit(') && extensionSource.includes('function createSetTopicSchemaFooterTowardsEdit(') && extensionSource.includes('function createInsertContinuityIntegrityFooterEdit(') && extensionSource.includes('function createSetContinuityParentCreatedAtEdit(') && extensionSource.includes('function createRefreshTraceablePermalinkFromLatestEdit(') && extensionSource.includes('REFRESH_TRACEABLE_PERMALINK_FROM_LATEST_COMMAND') && extensionSource.includes('Refresh permalink from latest') && extensionSource.includes('Insert Parent Created At from parent trace') && extensionSource.includes('Replace Parent Created At from parent trace') && extensionSource.includes('Insert Continuity Integrity footer') && extensionSource.includes('Insert Parent Origin scaffold') && extensionSource.includes('Insert browse + git permalink scaffold') && extensionSource.includes('Replace footer Towards permalink'), "Traceable extension source should map schema-envelope, footer-target, parent-created-at, and Parent Origin diagnostics to the right lines, expose scaffold quick fixes for missing or drifted origin metadata across both schema notes and ordinary traces, and offer a latest-origin permalink refresh fix for equivalent permalink diagnostics.");
   assert.ok(extensionSource.includes('computeTargetedTraceableContinuityChecksumSha256') && extensionSource.includes('parseSchemaNoteMarkdown(markdown).footerIntegrity') && extensionSource.includes('artifactUri.fsPath.endsWith(".schema.md")'), "Traceable extension checksum rotation should use the declared footer target when rotating schema-note checksums.");
   assert.ok(extensionSource.includes('const returnToParentTraceWatcher = vscode.workspace.createFileSystemWatcher("**/*.trace.md");') && extensionSource.includes('onDidSaveTextDocument((document) => {') && extensionSource.includes('onDidChangeWorkspaceFolders(() => {'), "Traceable extension source should keep the return-to-parent eligibility context refreshed as trace files change.");
   assert.ok(extensionSource.includes('function getConfiguredTraceableDefaultMoveAction(resource?: vscode.Uri): TraceableDefaultFileAction {') && extensionSource.includes('function getConfiguredTraceableMovePromptOutcome(') && extensionSource.includes('pickPreferredTraceableLineageScope'), "Traceable extension source is missing the configurable default move action readers and lineage-scope preference helper.");

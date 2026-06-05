@@ -26,10 +26,15 @@ export interface TraceableContinuityFinding {
   code:
     | "continuity-checksum-missing"
     | "continuity-checksum-mismatch"
+    | "continuity-footer-self-required-without-parent"
+    | "continuity-footer-towards-permalink-required"
+    | "continuity-footer-towards-unreadable"
     | "continuity-current-created-at-missing"
     | "continuity-current-created-at-invalid"
     | "traceable-envelope-schema-permalink-required"
     | "traceable-envelope-schema-unreadable"
+    | "traceable-current-origin-browse-git-permalink-required"
+    | "traceable-current-origin-browse-git-unreadable"
     | "traceable-current-schema-permalink-required"
     | "traceable-current-schema-unreadable"
     | "traceable-parent-missing-parent"
@@ -116,10 +121,13 @@ export interface TraceableContinuityValidationResult {
       currentSchema?: { id?: string; target?: string; label?: string };
       parentSchema?: { id?: string; target?: string; label?: string };
       parentCreatedAt?: string;
+      parentTrace?: { label?: string; target?: string };
+      parentOrigin?: { relative?: string; absolute?: string; browseGit?: string };
+      currentOrigin?: { relative?: string; absolute?: string; browseGit?: string };
       currentCreatedAt?: string;
       currentWhy?: string;
       currentSummary?: string;
-      footerIntegrity?: { method?: string; towardsTarget?: string; value?: string };
+      footerIntegrity?: { method?: string; towardsLabel?: string; towardsTarget?: string; value?: string };
       schemaValidationContract?: {
         present: boolean;
         groups: Array<{
@@ -163,10 +171,11 @@ export interface ParsedTraceableContinuityMarkdown {
   parentCreatedAt?: string;
   parentTrace?: { label?: string; target?: string };
   parentOrigin?: { relative?: string; absolute?: string; browseGit?: string };
+  currentOrigin?: { relative?: string; absolute?: string; browseGit?: string };
   currentCreatedAt?: string;
   currentWhy?: string;
   currentSummary?: string;
-  footerIntegrity?: { method?: string; towardsTarget?: string; value?: string };
+  footerIntegrity?: { method?: string; towardsLabel?: string; towardsTarget?: string; value?: string };
 }
 
 export function canonicalizeTraceableContinuityChecksumSource(markdown: string): string;

@@ -64,6 +64,7 @@ const { fileURLToPath } = require("node:url");
  *   parentCreatedAt?: string,
  *   parentTrace?: { label?: string, target?: string },
  *   parentOrigin?: { relative?: string, absolute?: string, browseGit?: string },
+ *   currentOrigin?: { relative?: string, absolute?: string, browseGit?: string },
  *   currentCreatedAt?: string,
  *   currentWhy?: string,
  *   currentSummary?: string,
@@ -341,6 +342,7 @@ function parseContinuityContext(lines) {
     parentCreatedAt: undefined,
     parentTrace: undefined,
     parentOrigin: {},
+    currentOrigin: {},
     currentCreatedAt: undefined,
     currentWhy: undefined,
     currentSummary: undefined,
@@ -350,6 +352,7 @@ function parseContinuityContext(lines) {
   let inContinuityContext = false;
   let currentTopLevel = undefined;
   let inParentOrigin = false;
+  let inCurrentOrigin = false;
 
   for (const line of lines) {
     if (!inContinuityContext) {
@@ -371,16 +374,25 @@ function parseContinuityContext(lines) {
     if (/^-\s+Parent\s*$/u.test(line)) {
       currentTopLevel = "parent";
       inParentOrigin = false;
+      inCurrentOrigin = false;
       continue;
     }
     if (/^-\s+Current\s*$/u.test(line)) {
       currentTopLevel = "current";
       inParentOrigin = false;
+      inCurrentOrigin = false;
       continue;
     }
 
     if (currentTopLevel === "parent" && /^(?: {2,}|\t+)-\s+Origin:\s*$/u.test(line)) {
       inParentOrigin = true;
+      inCurrentOrigin = false;
+      continue;
+    }
+
+    if (currentTopLevel === "current" && /^(?: {2,}|\t+)-\s+Origin:\s*$/u.test(line)) {
+      inCurrentOrigin = true;
+      inParentOrigin = false;
       continue;
     }
 
@@ -389,18 +401,21 @@ function parseContinuityContext(lines) {
       if (parentSchemaValue) {
         result.parentSchema = extractMarkdownLink(parentSchemaValue);
         inParentOrigin = false;
+        inCurrentOrigin = false;
         continue;
       }
       const parentCreatedAtValue = extractNestedLabeledValue(line, "Created At");
       if (parentCreatedAtValue) {
         result.parentCreatedAt = parentCreatedAtValue;
         inParentOrigin = false;
+        inCurrentOrigin = false;
         continue;
       }
       const parentTraceValue = extractNestedLabeledValue(line, "Trace");
       if (parentTraceValue) {
         result.parentTrace = extractMarkdownLink(parentTraceValue);
         inParentOrigin = false;
+        inCurrentOrigin = false;
         continue;
       }
       if (inParentOrigin) {
@@ -419,21 +434,36 @@ function parseContinuityContext(lines) {
       const currentSchemaValue = extractNestedLabeledValue(line, "Current Schema");
       if (currentSchemaValue) {
         result.currentSchema = extractMarkdownLink(currentSchemaValue);
+        inCurrentOrigin = false;
         continue;
       }
       const currentCreatedAtValue = extractNestedLabeledValue(line, "Created At");
       if (currentCreatedAtValue) {
         result.currentCreatedAt = currentCreatedAtValue;
+        inCurrentOrigin = false;
         continue;
       }
       const currentWhyValue = extractNestedLabeledValue(line, "Why");
       if (currentWhyValue) {
         result.currentWhy = currentWhyValue;
+        inCurrentOrigin = false;
         continue;
       }
       const currentSummaryValue = extractNestedLabeledValue(line, "Summary");
       if (currentSummaryValue) {
         result.currentSummary = currentSummaryValue;
+        inCurrentOrigin = false;
+        continue;
+      }
+      if (inCurrentOrigin) {
+        const originMatch = line.match(/^(?: {4,}|\t{2,})-\s+\[(relative|absolute|browse \+ git)\]\((.*?)\)\s*$/u);
+        if (originMatch) {
+          const key = originMatch[1] === "browse + git"
+            ? "browseGit"
+            : originMatch[1];
+          result.currentOrigin[key] = trimToUndefined(originMatch[2]);
+          continue;
+        }
       }
     }
   }
@@ -894,6 +924,63 @@ function collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileS
       });
     }
   }
+
+  const currentOriginBrowseGit = trimToUndefined(node.parsed.currentOrigin?.browseGit);
+  if (currentOriginBrowseGit) {
+    if (!parseGitHubSchemaPermalink(currentOriginBrowseGit)) {
+      findings.push({
+        code: "traceable-current-origin-browse-git-permalink-required",
+        category: "continuity-integrity",
+        filePath: node.filePath,
+        message: "Current Origin browse + git must use a commit-pinned permalink on ordinary trace artifacts.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    } else if (!canReadResolvedSchemaPermalink(node.filePath, currentOriginBrowseGit, readTextFileSync, workspaceRoots, gitRevisionExistsSync)) {
+      findings.push({
+        code: "traceable-current-origin-browse-git-unreadable",
+        category: "continuity-integrity",
+        filePath: node.filePath,
+        message: "Current Origin browse + git points to a permalink that could not be resolved against the local repo/workspace state.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    }
+  }
+
+  const footerTowardsTarget = trimToUndefined(node.parsed.footerIntegrity?.towardsTarget);
+  const footerTowardsLabel = trimToUndefined(node.parsed.footerIntegrity?.towardsLabel);
+  if (!hasParentSignal(node.parsed) && footerTowardsTarget && footerTowardsTarget !== "self" && footerTowardsLabel !== "self") {
+    findings.push({
+      code: "continuity-footer-self-required-without-parent",
+      category: "continuity-integrity",
+      filePath: node.filePath,
+      message: "Ordinary trace artifacts without parent signal should use self as the continuity footer Towards target.",
+      severity: "error",
+      surfaces: ["problems", "report"]
+    });
+  }
+  if (footerTowardsTarget && isExternalUrl(footerTowardsTarget)) {
+    if (!parseGitHubSchemaPermalink(footerTowardsTarget)) {
+      findings.push({
+        code: "continuity-footer-towards-permalink-required",
+        category: "continuity-integrity",
+        filePath: node.filePath,
+        message: "Continuity footer Towards must use a commit-pinned permalink when it targets an external artifact.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    } else if (!canReadResolvedSchemaPermalink(node.filePath, footerTowardsTarget, readTextFileSync, workspaceRoots, gitRevisionExistsSync)) {
+      findings.push({
+        code: "continuity-footer-towards-unreadable",
+        category: "continuity-integrity",
+        filePath: node.filePath,
+        message: "Continuity footer Towards points to a permalink that could not be resolved against the local repo/workspace state.",
+        severity: "error",
+        surfaces: ["problems", "report"]
+      });
+    }
+  }
   return findings;
 }
 
@@ -1282,6 +1369,7 @@ function parseTraceableContinuityMarkdown(markdown) {
     parentCreatedAt: context.parentCreatedAt,
     parentTrace: context.parentTrace,
     parentOrigin: context.parentOrigin,
+    currentOrigin: context.currentOrigin,
     currentCreatedAt: context.currentCreatedAt,
     currentWhy: context.currentWhy,
     currentSummary: context.currentSummary,
