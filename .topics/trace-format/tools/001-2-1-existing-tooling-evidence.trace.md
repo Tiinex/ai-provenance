@@ -1,15 +1,15 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.continuation.v1.md)
+- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.continuation.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.task.v1.md)
+  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-05-28 21:48:32
   - Trace: [001-2-schema-lineage-repair.trace.md](001-2-schema-lineage-repair.trace.md)
   - Origin:
     - [relative](001-2-schema-lineage-repair.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/tools/001-2-schema-lineage-repair.trace.md)
 - Current
-  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.evidence.v1.md)
+  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.evidence.v1.schema.md)
   - Created At: 2026-05-29 01:37:57
   - Why: Preserves the concrete references that currently justify a bounded V1 schema-lineage repair solution and its current confidence limits.
   - Summary: Evidence slice showing that existing code, contract artifacts, and repeated docs repairs are enough for audit-plus-proposal V1 but not for broad auto-apply.
@@ -118,11 +118,11 @@ What it shows:
 
 ### Evidence 5
 
-- Source: `tiinex.schema.v1.md`
+- Source: `tiinex.schema.v1.schema.md`
 - Origin:
-  - [relative](../../../docs/.topics/.schemas/tiinex.schema.v1.md)
-  - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.schema.v1.md)
-  - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.schema.v1.md)
+  - [relative](../../../docs/.topics/.schemas/tiinex.schema.v1.schema.md)
+  - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.schema.v1.schema.md)
+  - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.schema.v1.schema.md)
 - Representation: schema contract
 - Supports: schema-bearing fields and origin blocks already have enough shared
   rules that a V1 audit can detect meaningful deviations
@@ -136,11 +136,11 @@ What it shows:
 
 ### Evidence 6
 
-- Source: `tiinex.continuation.v1.md`
+- Source: `tiinex.continuation.v1.schema.md`
 - Origin:
-  - [relative](../../../docs/.topics/.schemas/tiinex.continuation.v1.md)
-  - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.continuation.v1.md)
-  - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.continuation.v1.md)
+  - [relative](../../../docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.continuation.v1.schema.md)
+  - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.continuation.v1.schema.md)
 - Representation: schema contract
 - Supports: ancestry, parent blocks, browseable targets, and footer semantics
   already have a shared envelope contract that repair findings can judge against
@@ -157,16 +157,16 @@ What it shows:
 
 - Source: `docs/.topics` manual repair set
 - Repair Cases:
-  - `tiinex.archive.v1.md`
+  - `tiinex.archive.v1.schema.md`
     - Origin:
-      - [relative](../../../docs/.topics/.schemas/tiinex.archive.v1.md)
-      - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.archive.v1.md)
-      - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.archive.v1.md)
-  - `tiinex.zip.v1.md`
+      - [relative](../../../docs/.topics/.schemas/tiinex.archive.v1.schema.md)
+      - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.archive.v1.schema.md)
+      - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.archive.v1.schema.md)
+  - `tiinex.zip.v1.schema.md`
     - Origin:
-      - [relative](../../../docs/.topics/.schemas/tiinex.zip.v1.md)
-      - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.zip.v1.md)
-      - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.zip.v1.md)
+      - [relative](../../../docs/.topics/.schemas/tiinex.zip.v1.schema.md)
+      - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.zip.v1.schema.md)
+      - [browse + git](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.zip.v1.schema.md)
   - `kickstarter/001.trace.md`
     - Origin:
       - [relative](../../../docs/.topics/kickstarter/001.trace.md)

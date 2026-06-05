@@ -9,7 +9,7 @@
     - [relative](../001.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001.trace.md)
 - Current
-  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.task.v1.md)
+  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-06-03 02:18:04
   - Why: Collects the remaining validator-format improvements into one bounded task before any validator split or code change.
   - Summary: Task leaf for validator interop-profile hardening and schema-versus-adapter separation.
@@ -273,8 +273,8 @@ Out of scope for now:
   - [relative](../001.trace.md)
   - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001.trace.md)
 - schema under review:
-  - [relative](../../../../docs/.topics/.schemas/tiinex.schema.v1.md)
-  - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.schema.v1.md)
+  - [relative](../../../../docs/.topics/.schemas/tiinex.schema.v1.schema.md)
+  - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.schema.v1.schema.md)
 - source-model evidence:
   - [OpenLineage evidence leaf](../export-and-import/OpenLineage/001.trace.md)
   - [ChatGPT platform note](001-3-message-from-chatgpt-platform.trace.md)

@@ -32,7 +32,7 @@ family.
 
 The current ai-provenance runtime should keep one owned schema:
 
-- [tiinex.runtime.trace.v1](../.schemas/tiinex.runtime.trace.v1.md)
+- [tiinex.runtime.trace.v1](../.schemas/tiinex.runtime.trace.v1.schema.md)
 
 The repeated TRACEABLE export shape is now treated as the concrete body that
 this schema must describe more sharply.
@@ -94,7 +94,7 @@ from Tiinex runtime exports, so they should stay child-owned for now.
 ## Naming Read
 
 The current name
-[tiinex.runtime.trace.v1](../.schemas/tiinex.runtime.trace.v1.md) remains a bit
+[tiinex.runtime.trace.v1](../.schemas/tiinex.runtime.trace.v1.schema.md) remains a bit
 broad, but it is still the better maintained home for the current
 ai-provenance runtime export shape than a second TRACEABLE-specific schema.
 

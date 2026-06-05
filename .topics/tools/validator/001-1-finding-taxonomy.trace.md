@@ -9,7 +9,7 @@
     - [relative](001.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001.trace.md)
 - Current
-  - Current Schema: [tiinex.decision.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.decision.v1.md)
+  - Current Schema: [tiinex.decision.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.decision.v1.schema.md)
   - Created At: 2026-05-30 00:20:00
   - Why: Fixes the first operational meaning of continuity-validator findings so the core and Problems surface stop drifting apart.
   - Summary: Decision child defining the current machine finding taxonomy, category boundaries, and default surface policy for continuity validation.

@@ -1,15 +1,15 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.continuation.v1.md)
+- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.continuation.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.task.v1.md)
+  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-05-28 21:23:20
   - Trace: [001.trace.md](001.trace.md)
   - Origin:
     - [relative](001.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/tools/001.trace.md)
 - Current
-  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.task.v1.md)
+  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-05-28 21:31:52
   - Why: Carries the bounded task of resolving commit-pinned GitHub blob links to local workspace files in markdown preview when the same repo is already open.
   - Summary: Task for a markdown preview resolver that maps matching GitHub blob links to local workspace targets.

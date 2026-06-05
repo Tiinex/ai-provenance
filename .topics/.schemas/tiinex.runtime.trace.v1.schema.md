@@ -1,16 +1,16 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.continuation.v1.md)
+- Envelope Schema: [tiinex.continuation.v1](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.continuation.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.ai.runtime.v1](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.md)
+  - Parent Schema: [tiinex.ai.runtime.v1](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.schema.md)
   - Created At: 2026-05-29 23:21:06
-  - Trace: [tiinex.ai.runtime.v1.md](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.md)
+  - Trace: [tiinex.ai.runtime.v1.schema.md](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.schema.md)
   - Origin:
-    - [relative](../../../docs/.topics/.schemas/tiinex.ai.runtime.v1.md)
-    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.ai.runtime.v1.md)
-    - [browse + git](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.md)
+    - [relative](../../../docs/.topics/.schemas/tiinex.ai.runtime.v1.schema.md)
+    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/docs/.topics/.schemas/tiinex.ai.runtime.v1.schema.md)
+    - [browse + git](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.schema.md)
 - Current
-  - Current Schema: [tiinex.runtime.trace.v1](tiinex.runtime.trace.v1.md)
+  - Current Schema: [tiinex.runtime.trace.v1](tiinex.runtime.trace.v1.schema.md)
   - Created At: 2026-05-28 19:01:45
   - Summary: Shared schema for current Tiinex runtime-generated AI trace and evidence exports, layered on top of the broader AI runtime contract.
 
@@ -18,7 +18,7 @@
 
 # tiinex.runtime.trace.v1
 - Status: provisional runtime schema note
-- Schema Definition: [tiinex.schema.v1](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.schema.v1.md)
+- Schema Definition: [tiinex.schema.v1](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.schema.v1.schema.md)
 - Origin:
   - [relative](../trace-format/001.trace.md)
   - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/001.trace.md)
@@ -153,7 +153,7 @@ Recommended envelope-side companions are:
 
 ## Schema Layer
 
-This schema is a narrower child of [tiinex.ai.runtime.v1](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.md).
+This schema is a narrower child of [tiinex.ai.runtime.v1](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.schema.md).
 
 It should only add current ai-provenance-runtime-specific semantics above the
 broader AI runtime layer rather than re-owning the whole generic runtime export space.
@@ -269,5 +269,5 @@ It also should not be treated as the generic runtime base when the broader
 # Continuity Integrity
 
 - sha256-base64url-c14n-v1
-  - Towards: [tiinex.ai.runtime.v1.md](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.md)
+  - Towards: [tiinex.ai.runtime.v1.schema.md](https://github.com/Tiinex/docs/blob/f87360aea750afe382aabae1fd208556a8fc99bd/.topics/.schemas/tiinex.ai.runtime.v1.schema.md)
   - Value: T2RD5-nrFEAXOvshHwsTNNlliZNUe4dbXoPsBWUY3BE
