@@ -17,6 +17,10 @@ import {
   validateTraceableContinuityArtifactChainSync
 } from "../src/traceableContinuityValidation.js";
 import { validateTraceableRootSchemaSync } from "../src/traceableRootSchemaValidation.js";
+import { validateTraceableDecisionSchemaSync } from "../src/traceableDecisionSchemaValidation.js";
+import { validateTraceableEvidenceSchemaSync } from "../src/traceableEvidenceSchemaValidation.js";
+import { validateTraceablePointerSchemaSync } from "../src/traceablePointerSchemaValidation.js";
+import { validateTraceableTaskSchemaSync } from "../src/traceableTaskSchemaValidation.js";
 import { validateTraceableTopicSchemaSync } from "../src/traceableTopicSchemaValidation.js";
 import { runSchemaCompatibilityFixtures } from "./schemaCompatibilityFixtures.mjs";
 
@@ -1284,6 +1288,74 @@ function testSubschemaValidatorAcceptsRotatedChecksum() {
   );
 }
 
+function testDecisionSchemaValidatorAcceptsCommittedSchema() {
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.decision.v1.schema.md");
+  const result = validateTraceableDecisionSchemaSync({ filePath: schemaPath });
+
+  assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The decision validator should treat the root schema as the active envelope schema for the maintained decision schema.");
+  assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The decision validator should still follow the root parent schema for the maintained decision schema.");
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained decision schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.ok(
+    !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
+    "The decision validator should accept the committed decision schema once its continuity checksum has been rotated."
+  );
+  assert.ok(
+    !result.findings.some((finding) => finding.code.startsWith("decision-schema-") || finding.code === "decision-schema-parent-root-invalid"),
+    "The current ported decision schema should pass the standalone decision validator on structure and root lineage."
+  );
+}
+
+function testTaskSchemaValidatorAcceptsCommittedSchema() {
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.task.v1.schema.md");
+  const result = validateTraceableTaskSchemaSync({ filePath: schemaPath });
+
+  assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The task validator should treat the root schema as the active envelope schema for the maintained task schema.");
+  assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The task validator should still follow the root parent schema for the maintained task schema.");
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained task schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.ok(
+    !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
+    "The task validator should accept the committed task schema once its continuity checksum has been rotated."
+  );
+  assert.ok(
+    !result.findings.some((finding) => finding.code.startsWith("task-schema-") || finding.code === "task-schema-parent-root-invalid"),
+    "The current ported task schema should pass the standalone task validator on structure and root lineage."
+  );
+}
+
+function testEvidenceSchemaValidatorAcceptsCommittedSchema() {
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.evidence.v1.schema.md");
+  const result = validateTraceableEvidenceSchemaSync({ filePath: schemaPath });
+
+  assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The evidence validator should treat the root schema as the active envelope schema for the maintained evidence schema.");
+  assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The evidence validator should still follow the root parent schema for the maintained evidence schema.");
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained evidence schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.ok(
+    !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
+    "The evidence validator should accept the committed evidence schema once its continuity checksum has been rotated."
+  );
+  assert.ok(
+    !result.findings.some((finding) => finding.code.startsWith("evidence-schema-") || finding.code === "evidence-schema-parent-root-invalid"),
+    "The current ported evidence schema should pass the standalone evidence validator on structure and root lineage."
+  );
+}
+
+function testPointerSchemaValidatorAcceptsCommittedSchema() {
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.pointer.v1.schema.md");
+  const result = validateTraceablePointerSchemaSync({ filePath: schemaPath });
+
+  assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The pointer validator should treat the root schema as the active envelope schema for the maintained pointer schema.");
+  assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The pointer validator should still follow the root parent schema for the maintained pointer schema.");
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained pointer schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.ok(
+    !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
+    "The pointer validator should accept the committed pointer schema once its continuity checksum has been rotated."
+  );
+  assert.ok(
+    !result.findings.some((finding) => finding.code.startsWith("pointer-schema-") || finding.code === "pointer-schema-parent-root-invalid"),
+    "The current ported pointer schema should pass the standalone pointer validator on structure and root lineage."
+  );
+}
+
 function testTopicSchemaValidatorRequiresRootEnvelopeSchema() {
   const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
   const markdown = readFileSync(schemaPath, "utf8").replace(
@@ -2281,6 +2353,10 @@ async function main() {
   testModernSchemaNoteValidationContractRejectsStarBullets();
   testPortedTopicSchemaSelfValidatesWhenChecksumIsRefreshed();
   testSubschemaValidatorAcceptsRotatedChecksum();
+  testDecisionSchemaValidatorAcceptsCommittedSchema();
+  testTaskSchemaValidatorAcceptsCommittedSchema();
+  testEvidenceSchemaValidatorAcceptsCommittedSchema();
+  testPointerSchemaValidatorAcceptsCommittedSchema();
   testTopicSchemaValidatorRequiresRootEnvelopeSchema();
   testTopicSchemaValidatorRequiresReadableEnvelopeSchemaTarget();
   testTopicSchemaValidatorRequiresReadableParentSchemaTarget();

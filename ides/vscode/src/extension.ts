@@ -68,6 +68,10 @@ import {
   validateTraceableContinuityArtifactChainSync
 } from "./traceableContinuityValidation.js";
 import { validateTraceableRootSchemaSync, type TraceableSchemaValidationResult } from "./traceableRootSchemaValidation.js";
+import { validateTraceableDecisionSchemaSync } from "./traceableDecisionSchemaValidation.js";
+import { validateTraceableEvidenceSchemaSync } from "./traceableEvidenceSchemaValidation.js";
+import { validateTraceablePointerSchemaSync } from "./traceablePointerSchemaValidation.js";
+import { validateTraceableTaskSchemaSync } from "./traceableTaskSchemaValidation.js";
 import { validateTraceableTopicSchemaSync } from "./traceableTopicSchemaValidation.js";
 import { getTraceableEvidenceFileNameFormatOptions } from "./traceableEvidenceFileNameConfig";
 import {
@@ -451,8 +455,16 @@ function buildSchemaLayoutCodeActions(
   if (
     diagnosticCodes.has("root-schema-layout-title-mismatch")
     || diagnosticCodes.has("topic-schema-layout-title-mismatch")
+    || diagnosticCodes.has("decision-schema-layout-title-mismatch")
+    || diagnosticCodes.has("task-schema-layout-title-mismatch")
+    || diagnosticCodes.has("evidence-schema-layout-title-mismatch")
+    || diagnosticCodes.has("pointer-schema-layout-title-mismatch")
     || diagnosticCodes.has("root-schema-layout-unexpected-heading")
     || diagnosticCodes.has("topic-schema-layout-unexpected-heading")
+    || diagnosticCodes.has("decision-schema-layout-unexpected-heading")
+    || diagnosticCodes.has("task-schema-layout-unexpected-heading")
+    || diagnosticCodes.has("evidence-schema-layout-unexpected-heading")
+    || diagnosticCodes.has("pointer-schema-layout-unexpected-heading")
   ) {
     const edit = createNormalizeSchemaDisplayHeadingEdit(document);
     if (edit) {
@@ -462,8 +474,16 @@ function buildSchemaLayoutCodeActions(
         const code = normalizeDiagnosticCode(diagnostic.code);
         return code === "root-schema-layout-title-mismatch"
           || code === "topic-schema-layout-title-mismatch"
+          || code === "decision-schema-layout-title-mismatch"
+          || code === "task-schema-layout-title-mismatch"
+          || code === "evidence-schema-layout-title-mismatch"
+          || code === "pointer-schema-layout-title-mismatch"
           || code === "root-schema-layout-unexpected-heading"
-          || code === "topic-schema-layout-unexpected-heading";
+          || code === "topic-schema-layout-unexpected-heading"
+          || code === "decision-schema-layout-unexpected-heading"
+          || code === "task-schema-layout-unexpected-heading"
+          || code === "evidence-schema-layout-unexpected-heading"
+          || code === "pointer-schema-layout-unexpected-heading";
       });
       action.isPreferred = true;
       actions.push(action);
@@ -472,7 +492,12 @@ function buildSchemaLayoutCodeActions(
 
   for (const diagnostic of diagnostics) {
     const diagnosticCode = normalizeDiagnosticCode(diagnostic.code);
-    if (diagnosticCode !== "root-schema-layout-missing-heading" && diagnosticCode !== "topic-schema-layout-missing-heading") {
+    if (diagnosticCode !== "root-schema-layout-missing-heading"
+      && diagnosticCode !== "topic-schema-layout-missing-heading"
+      && diagnosticCode !== "decision-schema-layout-missing-heading"
+      && diagnosticCode !== "task-schema-layout-missing-heading"
+      && diagnosticCode !== "evidence-schema-layout-missing-heading"
+      && diagnosticCode !== "pointer-schema-layout-missing-heading") {
       continue;
     }
     const finding = validationResult.findings.find((candidate) => candidate.code === diagnosticCode && candidate.message === diagnostic.message);
@@ -576,13 +601,17 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
       actions.push(action);
       continue;
     }
-    if (diagnosticCode === "topic-schema-parent-created-at-missing" || diagnosticCode === "topic-schema-parent-created-at-invalid" || diagnosticCode === "topic-schema-parent-created-at-mismatch") {
+    if (diagnosticCode === "topic-schema-parent-created-at-missing" || diagnosticCode === "topic-schema-parent-created-at-invalid" || diagnosticCode === "topic-schema-parent-created-at-mismatch"
+      || diagnosticCode === "decision-schema-parent-created-at-missing" || diagnosticCode === "decision-schema-parent-created-at-invalid" || diagnosticCode === "decision-schema-parent-created-at-mismatch"
+      || diagnosticCode === "task-schema-parent-created-at-missing" || diagnosticCode === "task-schema-parent-created-at-invalid" || diagnosticCode === "task-schema-parent-created-at-mismatch"
+      || diagnosticCode === "evidence-schema-parent-created-at-missing" || diagnosticCode === "evidence-schema-parent-created-at-invalid" || diagnosticCode === "evidence-schema-parent-created-at-mismatch"
+      || diagnosticCode === "pointer-schema-parent-created-at-missing" || diagnosticCode === "pointer-schema-parent-created-at-invalid" || diagnosticCode === "pointer-schema-parent-created-at-mismatch") {
       const edit = createSetTopicSchemaParentCreatedAtEdit(document);
       if (!edit) {
         continue;
       }
       const action = new vscode.CodeAction(
-        diagnosticCode === "topic-schema-parent-created-at-missing"
+        diagnosticCode === "topic-schema-parent-created-at-missing" || diagnosticCode === "decision-schema-parent-created-at-missing" || diagnosticCode === "task-schema-parent-created-at-missing" || diagnosticCode === "evidence-schema-parent-created-at-missing" || diagnosticCode === "pointer-schema-parent-created-at-missing"
           ? "Insert Parent Created At from parent trace"
           : "Replace Parent Created At from parent trace",
         vscode.CodeActionKind.QuickFix
@@ -592,7 +621,7 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
       actions.push(action);
       continue;
     }
-    if (diagnosticCode === "topic-schema-parent-origin-missing") {
+    if (diagnosticCode === "topic-schema-parent-origin-missing" || diagnosticCode === "decision-schema-parent-origin-missing" || diagnosticCode === "task-schema-parent-origin-missing" || diagnosticCode === "evidence-schema-parent-origin-missing" || diagnosticCode === "pointer-schema-parent-origin-missing") {
       const edit = createInsertTopicSchemaParentOriginEdit(document, false);
       if (!edit) {
         continue;
@@ -603,7 +632,7 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
       actions.push(action);
       continue;
     }
-    if (diagnosticCode === "topic-schema-parent-origin-browse-git-missing") {
+    if (diagnosticCode === "topic-schema-parent-origin-browse-git-missing" || diagnosticCode === "decision-schema-parent-origin-browse-git-missing" || diagnosticCode === "task-schema-parent-origin-browse-git-missing" || diagnosticCode === "evidence-schema-parent-origin-browse-git-missing" || diagnosticCode === "pointer-schema-parent-origin-browse-git-missing") {
       const edit = createInsertTopicSchemaParentOriginEdit(document, true);
       if (!edit) {
         continue;
@@ -614,7 +643,11 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
       actions.push(action);
       continue;
     }
-    if (diagnosticCode === "topic-schema-parent-origin-unpinned-browse-git" || diagnosticCode === "topic-schema-parent-origin-browse-git-mismatch") {
+    if (diagnosticCode === "topic-schema-parent-origin-unpinned-browse-git" || diagnosticCode === "topic-schema-parent-origin-browse-git-mismatch"
+      || diagnosticCode === "decision-schema-parent-origin-unpinned-browse-git" || diagnosticCode === "decision-schema-parent-origin-browse-git-mismatch"
+      || diagnosticCode === "task-schema-parent-origin-unpinned-browse-git" || diagnosticCode === "task-schema-parent-origin-browse-git-mismatch"
+      || diagnosticCode === "evidence-schema-parent-origin-unpinned-browse-git" || diagnosticCode === "evidence-schema-parent-origin-browse-git-mismatch"
+      || diagnosticCode === "pointer-schema-parent-origin-unpinned-browse-git" || diagnosticCode === "pointer-schema-parent-origin-browse-git-mismatch") {
       const edit = createInsertTopicSchemaParentOriginEdit(document, true);
       if (!edit) {
         continue;
@@ -625,7 +658,11 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
       actions.push(action);
       continue;
     }
-    if (diagnosticCode === "topic-schema-footer-target-mismatch" || diagnosticCode === "topic-schema-footer-target-not-permalink") {
+    if (diagnosticCode === "topic-schema-footer-target-mismatch" || diagnosticCode === "topic-schema-footer-target-not-permalink"
+      || diagnosticCode === "decision-schema-footer-target-mismatch" || diagnosticCode === "decision-schema-footer-target-not-permalink"
+      || diagnosticCode === "task-schema-footer-target-mismatch" || diagnosticCode === "task-schema-footer-target-not-permalink"
+      || diagnosticCode === "evidence-schema-footer-target-mismatch" || diagnosticCode === "evidence-schema-footer-target-not-permalink"
+      || diagnosticCode === "pointer-schema-footer-target-mismatch" || diagnosticCode === "pointer-schema-footer-target-not-permalink") {
       const edit = createSetTopicSchemaFooterTowardsEdit(document);
       if (!edit) {
         continue;
@@ -2757,7 +2794,7 @@ async function renderTraceableEvidenceSurfaceFromFile(input: {
   });
 }
 
-type TraceableEditorValidationKind = "continuity-trace" | "root-schema" | "topic-schema";
+type TraceableEditorValidationKind = "continuity-trace" | "root-schema" | "topic-schema" | "decision-schema" | "task-schema" | "evidence-schema" | "pointer-schema";
 
 function getTraceableEditorValidationKindForFsPath(fsPath: string): TraceableEditorValidationKind | undefined {
   const normalized = path.resolve(fsPath);
@@ -2770,6 +2807,18 @@ function getTraceableEditorValidationKindForFsPath(fsPath: string): TraceableEdi
   }
   if (normalizedLower.endsWith("tiinex.topic.v1.schema.md")) {
     return "topic-schema";
+  }
+  if (normalizedLower.endsWith("tiinex.decision.v1.schema.md")) {
+    return "decision-schema";
+  }
+  if (normalizedLower.endsWith("tiinex.task.v1.schema.md")) {
+    return "task-schema";
+  }
+  if (normalizedLower.endsWith("tiinex.evidence.v1.schema.md")) {
+    return "evidence-schema";
+  }
+  if (normalizedLower.endsWith("tiinex.pointer.v1.schema.md")) {
+    return "pointer-schema";
   }
   return undefined;
 }
@@ -2835,6 +2884,14 @@ function getExpectedSchemaDisplayHeading(validationKind: TraceableEditorValidati
       return "Root";
     case "topic-schema":
       return "Topic";
+    case "decision-schema":
+      return "Decision";
+    case "task-schema":
+      return "Task";
+    case "evidence-schema":
+      return "Evidence";
+    case "pointer-schema":
+      return "Pointer";
     default:
       return undefined;
   }
@@ -2848,9 +2905,22 @@ function getSchemaValidationResultForDocument(document: vscode.TextDocument): Tr
   const readTextFileSync = (filePath: string): string => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(document.uri.fsPath)
     ? document.getText()
     : readFileSync(filePath, "utf8");
-  return validationKind === "root-schema"
-    ? validateTraceableRootSchemaSync({ filePath: document.uri.fsPath, readTextFileSync })
-    : validateTraceableTopicSchemaSync({ filePath: document.uri.fsPath, readTextFileSync });
+  if (validationKind === "root-schema") {
+    return validateTraceableRootSchemaSync({ filePath: document.uri.fsPath, readTextFileSync });
+  }
+  if (validationKind === "topic-schema") {
+    return validateTraceableTopicSchemaSync({ filePath: document.uri.fsPath, readTextFileSync });
+  }
+  if (validationKind === "task-schema") {
+    return validateTraceableTaskSchemaSync({ filePath: document.uri.fsPath, readTextFileSync });
+  }
+  if (validationKind === "evidence-schema") {
+    return validateTraceableEvidenceSchemaSync({ filePath: document.uri.fsPath, readTextFileSync });
+  }
+  if (validationKind === "pointer-schema") {
+    return validateTraceablePointerSchemaSync({ filePath: document.uri.fsPath, readTextFileSync });
+  }
+  return validateTraceableDecisionSchemaSync({ filePath: document.uri.fsPath, readTextFileSync });
 }
 
 function createNormalizeSchemaDisplayHeadingEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
@@ -3153,7 +3223,35 @@ function isRefreshableTraceablePermalinkDiagnosticCode(code: string): boolean {
     "topic-schema-parent-origin-unpinned-browse-git",
     "topic-schema-parent-origin-browse-git-mismatch",
     "topic-schema-footer-target-mismatch",
-    "topic-schema-footer-target-not-permalink"
+    "topic-schema-footer-target-not-permalink",
+    "decision-schema-envelope-schema-unreadable",
+    "decision-schema-current-schema-unreadable",
+    "decision-schema-parent-schema-unreadable",
+    "decision-schema-parent-origin-unpinned-browse-git",
+    "decision-schema-parent-origin-browse-git-mismatch",
+    "decision-schema-footer-target-mismatch",
+    "decision-schema-footer-target-not-permalink",
+    "task-schema-envelope-schema-unreadable",
+    "task-schema-current-schema-unreadable",
+    "task-schema-parent-schema-unreadable",
+    "task-schema-parent-origin-unpinned-browse-git",
+    "task-schema-parent-origin-browse-git-mismatch",
+    "task-schema-footer-target-mismatch",
+    "task-schema-footer-target-not-permalink",
+    "evidence-schema-envelope-schema-unreadable",
+    "evidence-schema-current-schema-unreadable",
+    "evidence-schema-parent-schema-unreadable",
+    "evidence-schema-parent-origin-unpinned-browse-git",
+    "evidence-schema-parent-origin-browse-git-mismatch",
+    "evidence-schema-footer-target-mismatch",
+    "evidence-schema-footer-target-not-permalink",
+    "pointer-schema-envelope-schema-unreadable",
+    "pointer-schema-current-schema-unreadable",
+    "pointer-schema-parent-schema-unreadable",
+    "pointer-schema-parent-origin-unpinned-browse-git",
+    "pointer-schema-parent-origin-browse-git-mismatch",
+    "pointer-schema-footer-target-mismatch",
+    "pointer-schema-footer-target-not-permalink"
   ].includes(code);
 }
 
@@ -4013,6 +4111,14 @@ function getTraceableSchemaDiagnosticRange(
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "topic-schema-envelope-schema-mismatch":
     case "topic-schema-envelope-schema-unreadable":
+    case "decision-schema-envelope-schema-mismatch":
+    case "decision-schema-envelope-schema-unreadable":
+    case "task-schema-envelope-schema-mismatch":
+    case "task-schema-envelope-schema-unreadable":
+    case "evidence-schema-envelope-schema-mismatch":
+    case "evidence-schema-envelope-schema-unreadable":
+    case "pointer-schema-envelope-schema-mismatch":
+    case "pointer-schema-envelope-schema-unreadable":
     case "root-schema-envelope-schema-mismatch":
     case "root-schema-envelope-schema-unreadable":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Envelope Schema:"))
@@ -4021,43 +4127,107 @@ function getTraceableSchemaDiagnosticRange(
     case "root-schema-current-schema-unreadable":
     case "topic-schema-current-schema-mismatch":
     case "topic-schema-current-schema-unreadable":
+    case "decision-schema-current-schema-mismatch":
+    case "decision-schema-current-schema-unreadable":
+    case "task-schema-current-schema-mismatch":
+    case "task-schema-current-schema-unreadable":
+    case "evidence-schema-current-schema-mismatch":
+    case "evidence-schema-current-schema-unreadable":
+    case "pointer-schema-current-schema-mismatch":
+    case "pointer-schema-current-schema-unreadable":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Current Schema:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "root-schema-parent-present":
     case "topic-schema-parent-schema-mismatch":
     case "topic-schema-parent-schema-unreadable":
+    case "decision-schema-parent-schema-mismatch":
+    case "decision-schema-parent-schema-unreadable":
+    case "task-schema-parent-schema-mismatch":
+    case "task-schema-parent-schema-unreadable":
+    case "evidence-schema-parent-schema-mismatch":
+    case "evidence-schema-parent-schema-unreadable":
+    case "pointer-schema-parent-schema-mismatch":
+    case "pointer-schema-parent-schema-unreadable":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Parent Schema:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "topic-schema-parent-created-at-missing":
     case "topic-schema-parent-created-at-invalid":
     case "topic-schema-parent-created-at-mismatch":
+    case "decision-schema-parent-created-at-missing":
+    case "decision-schema-parent-created-at-invalid":
+    case "decision-schema-parent-created-at-mismatch":
+    case "task-schema-parent-created-at-missing":
+    case "task-schema-parent-created-at-invalid":
+    case "task-schema-parent-created-at-mismatch":
+    case "evidence-schema-parent-created-at-missing":
+    case "evidence-schema-parent-created-at-invalid":
+    case "evidence-schema-parent-created-at-mismatch":
+    case "pointer-schema-parent-created-at-missing":
+    case "pointer-schema-parent-created-at-invalid":
+    case "pointer-schema-parent-created-at-mismatch":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Created At:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Parent Schema:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Parent")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "topic-schema-parent-origin-missing":
+    case "decision-schema-parent-origin-missing":
+    case "task-schema-parent-origin-missing":
+    case "evidence-schema-parent-origin-missing":
+    case "pointer-schema-parent-origin-missing":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Parent")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Trace:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "topic-schema-parent-origin-browse-git-missing":
+    case "decision-schema-parent-origin-browse-git-missing":
+    case "task-schema-parent-origin-browse-git-missing":
+    case "evidence-schema-parent-origin-browse-git-missing":
+    case "pointer-schema-parent-origin-browse-git-missing":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Origin:")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Trace:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "topic-schema-parent-origin-unpinned-browse-git":
     case "topic-schema-parent-origin-browse-git-mismatch":
+    case "decision-schema-parent-origin-unpinned-browse-git":
+    case "decision-schema-parent-origin-browse-git-mismatch":
+    case "task-schema-parent-origin-unpinned-browse-git":
+    case "task-schema-parent-origin-browse-git-mismatch":
+    case "evidence-schema-parent-origin-unpinned-browse-git":
+    case "evidence-schema-parent-origin-browse-git-mismatch":
+    case "pointer-schema-parent-origin-unpinned-browse-git":
+    case "pointer-schema-parent-origin-browse-git-mismatch":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- [browse + git]"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Origin:")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "topic-schema-parent-trace-unresolvable":
     case "topic-schema-parent-root-invalid":
+    case "decision-schema-parent-trace-unresolvable":
+    case "decision-schema-parent-root-invalid":
+    case "task-schema-parent-trace-unresolvable":
+    case "task-schema-parent-root-invalid":
+    case "evidence-schema-parent-trace-unresolvable":
+    case "evidence-schema-parent-root-invalid":
+    case "pointer-schema-parent-trace-unresolvable":
+    case "pointer-schema-parent-root-invalid":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Trace:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "root-schema-lineage-unexpected-envelope-field":
     case "topic-schema-lineage-unexpected-envelope-field":
+    case "decision-schema-lineage-unexpected-envelope-field":
+    case "task-schema-lineage-unexpected-envelope-field":
+    case "evidence-schema-lineage-unexpected-envelope-field":
+    case "pointer-schema-lineage-unexpected-envelope-field":
       return getTraceableSchemaPlacementRange(document, finding)
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "topic-schema-footer-target-mismatch":
     case "topic-schema-footer-target-not-permalink":
+    case "decision-schema-footer-target-mismatch":
+    case "decision-schema-footer-target-not-permalink":
+    case "task-schema-footer-target-mismatch":
+    case "task-schema-footer-target-not-permalink":
+    case "evidence-schema-footer-target-mismatch":
+    case "evidence-schema-footer-target-not-permalink":
+    case "pointer-schema-footer-target-mismatch":
+    case "pointer-schema-footer-target-not-permalink":
       return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trimStart().startsWith("- Towards:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity");
     case "root-schema-validation-contract-missing":
@@ -6749,10 +6919,30 @@ export function activate(context: vscode.ExtensionContext): void {
           filePath: document.uri.fsPath,
           readTextFileSync
         })
-        : validateTraceableTopicSchemaSync({
-          filePath: document.uri.fsPath,
-          readTextFileSync
-        });
+        : validationKind === "topic-schema"
+          ? validateTraceableTopicSchemaSync({
+            filePath: document.uri.fsPath,
+            readTextFileSync
+          })
+          : validationKind === "task-schema"
+            ? validateTraceableTaskSchemaSync({
+              filePath: document.uri.fsPath,
+              readTextFileSync
+            })
+            : validationKind === "evidence-schema"
+              ? validateTraceableEvidenceSchemaSync({
+                filePath: document.uri.fsPath,
+                readTextFileSync
+              })
+              : validationKind === "pointer-schema"
+                ? validateTraceablePointerSchemaSync({
+                  filePath: document.uri.fsPath,
+                  readTextFileSync
+                })
+              : validateTraceableDecisionSchemaSync({
+                filePath: document.uri.fsPath,
+                readTextFileSync
+              });
       traceableContinuityDiagnostics.set(document.uri, buildTraceableSchemaDiagnostics(document, result));
     } catch (error) {
       traceableContinuityDiagnostics.set(document.uri, [new vscode.Diagnostic(
