@@ -690,6 +690,7 @@ This prevents traces from silently skipping checksum coverage.`;
     },
     workspaceRoots: [{ name: "docs", fsPath: docsRoot }],
     gitRevisionExistsSync: () => true,
+    gitRevisionPathReadableSync: () => true,
     maxDepth: 1
   });
 
@@ -728,6 +729,7 @@ Body content without a title or named topic sections.
     },
     workspaceRoots: [{ name: "docs", fsPath: docsRoot }],
     gitRevisionExistsSync: () => true,
+    gitRevisionPathReadableSync: () => true,
     maxDepth: 1
   });
 
@@ -774,6 +776,7 @@ function testValidatorFindsUnreadableParentTraceTarget() {
     },
     workspaceRoots: [{ name: "docs", fsPath: docsRoot }],
     gitRevisionExistsSync: () => true,
+    gitRevisionPathReadableSync: () => true,
     maxDepth: 1
   });
 
@@ -835,12 +838,64 @@ This prevents traces from looking pinned while still pointing nowhere.
       { name: ".github", fsPath: githubRoot }
     ],
     gitRevisionExistsSync: (_repoRoot, revision) => revision !== brokenRevision,
+    gitRevisionPathReadableSync: (_repoRoot, revision) => revision !== brokenRevision,
     maxDepth: 1
   });
 
   assert.ok(result.findings.some((finding) => finding.code === "traceable-current-origin-browse-git-unreadable"), "Validator should surface Current Origin browse + git permalinks that cannot be resolved.");
   assert.ok(result.findings.some((finding) => finding.code === "continuity-footer-towards-unreadable"), "Validator should surface footer Towards permalinks that cannot be resolved.");
   assert.ok(result.findings.some((finding) => finding.code === "continuity-footer-self-required-without-parent"), "Validator should require self as footer Towards when an ordinary trace has no parent signal.");
+}
+
+function testValidatorFindsPermalinkWhoseRevisionExistsButPathDoesNot() {
+  const artifactPath = path.join(packageRoot, ".test-temp", "continuity-schema-permalink-missing-at-revision", "001-schema-permalink-missing-at-revision.trace.md");
+  const validDocsRevision = "0e6d169685d56c913cb890ba568a96b366ebd4bf";
+  const markdown = finalizeContinuityIntegrity(`# Continuity Context
+
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/${validDocsRevision}/.topics/.schemas/tiinex.root.v1.schema.md)
+- Current
+  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/${validDocsRevision}/.topics/.schemas/tiinex.evidence.v1.schema.md)
+  - Created At: 2026-06-02 22:38:22
+  - Summary: Current schema permalink points to a path missing at the pinned revision.
+
+---
+
+# Missing At Revision Fixture
+
+## Current Read
+
+This fixture models a commit that exists while the pinned schema path does not.
+
+## Relevance
+
+Ordinary trace validation should reject schema permalinks that would 404 at the pinned revision even if the file exists in the current workspace.
+
+---
+
+# Continuity Integrity
+
+- sha256-base64url-c14n-v1
+  - Towards: [self](self)
+  - Value: PLACEHOLDER`);
+  const docsRoot = path.resolve(packageRoot, "..", "..", "..", "docs");
+  const result = validateTraceableContinuityArtifactChainSync({
+    filePath: artifactPath,
+    readTextFileSync: (filePath) => {
+      if (path.resolve(filePath) === path.resolve(artifactPath)) {
+        return markdown;
+      }
+      if (isUnderPath(filePath, docsRoot)) {
+        return "# stub";
+      }
+      throw new Error(`Missing test fixture ${filePath}`);
+    },
+    workspaceRoots: [{ name: "docs", fsPath: docsRoot }],
+    gitRevisionExistsSync: () => true,
+    gitRevisionPathReadableSync: (_repoRoot, _revision, relativePath) => relativePath !== ".topics/.schemas/tiinex.evidence.v1.schema.md",
+    maxDepth: 1
+  });
+
+  assert.ok(result.findings.some((finding) => finding.code === "traceable-current-schema-unreadable"), "Validator should surface Current Schema permalinks whose commit exists but whose pinned path is unreadable at that revision.");
 }
 
 function testTaskSchemaNoteDoesNotTriggerTaskArtifactRule() {
@@ -2333,6 +2388,7 @@ async function main() {
   testValidatorFindsMissingTopicStructure();
   testValidatorFindsUnreadableParentTraceTarget();
   testValidatorFindsUnreadableCurrentOriginAndFooterPermalinks();
+  testValidatorFindsPermalinkWhoseRevisionExistsButPathDoesNot();
   testTaskSchemaNoteDoesNotTriggerTaskArtifactRule();
   testCurrentValidatorTaskLeafSatisfiesTaskStructureRule();
   testRuntimeTraceStructureValidationAgainstTransferFixture();

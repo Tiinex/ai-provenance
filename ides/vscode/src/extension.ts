@@ -522,9 +522,11 @@ function buildSchemaLayoutCodeActions(
 
 function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagnostics: readonly vscode.Diagnostic[]): vscode.CodeAction[] {
   const actions: vscode.CodeAction[] = [];
+  const lines = Array.from({ length: document.lineCount }, (_, index) => document.lineAt(index).text);
   for (const diagnostic of diagnostics) {
     const diagnosticCode = normalizeDiagnosticCode(diagnostic.code);
-    if (diagnosticCode && isRefreshableTraceablePermalinkDiagnosticCode(diagnosticCode)) {
+    const refreshFieldKey = getTraceablePermalinkRefreshFieldKey(lines, diagnostic.range.start.line);
+    if ((diagnosticCode && isRefreshableTraceablePermalinkDiagnosticCode(diagnosticCode)) || isRefreshableTraceablePermalinkFieldKey(refreshFieldKey)) {
       const action = new vscode.CodeAction("Refresh permalink from latest", vscode.CodeActionKind.QuickFix);
       action.command = {
         command: REFRESH_TRACEABLE_PERMALINK_FROM_LATEST_COMMAND,
@@ -3255,6 +3257,15 @@ function isRefreshableTraceablePermalinkDiagnosticCode(code: string): boolean {
   ].includes(code);
 }
 
+function isRefreshableTraceablePermalinkFieldKey(fieldKey: string | undefined): boolean {
+  return fieldKey === "envelope-schema"
+    || fieldKey === "parent-schema"
+    || fieldKey === "current-schema"
+    || fieldKey === "parent-origin-browse-git"
+    || fieldKey === "current-origin-browse-git"
+    || fieldKey === "footer-towards";
+}
+
 function getTraceablePermalinkRefreshFieldKey(lines: readonly string[], targetLineIndex: number): string | undefined {
   if (targetLineIndex < 0 || targetLineIndex >= lines.length) {
     return undefined;
@@ -3339,6 +3350,103 @@ function findTraceablePermalinkRefreshLineInLatest(currentLines: readonly string
 function extractFirstMarkdownLinkTarget(lineText: string): string | undefined {
   const match = lineText.match(/\[[^\]]*\]\(([^)]+)\)/u);
   return match?.[1]?.trim();
+}
+
+function replaceFirstMarkdownLinkTarget(lineText: string, nextTarget: string): string | undefined {
+  const match = lineText.match(/(\[[^\]]*\]\()([^)]+)(\))/u);
+  if (!match) {
+    return undefined;
+  }
+  return `${lineText.slice(0, match.index ?? 0)}${match[1]}${nextTarget}${match[3]}${lineText.slice((match.index ?? 0) + match[0].length)}`;
+}
+
+function gitRefExistsAtPath(gitRoot: string, revision: string, relativePath: string): boolean {
+  try {
+    execFileSync("git", ["-C", gitRoot, "cat-file", "-e", `${revision}:${relativePath}`], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveTraceableGitRootForRepoSlug(repoSlug: string): string | undefined {
+  const normalizedRepoSlug = repoSlug.trim();
+  if (!normalizedRepoSlug) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  for (const workspaceFolder of vscode.workspace.workspaceFolders ?? []) {
+    const gitRoot = resolveTraceableGitRoot(workspaceFolder.uri.fsPath);
+    if (!gitRoot || seen.has(gitRoot)) {
+      continue;
+    }
+    seen.add(gitRoot);
+    try {
+      const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
+      if (normalizeGitHubRepoSlugFromRemoteUrl(remoteUrl) === normalizedRepoSlug) {
+        return gitRoot;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+function resolveTraceableCommitHashForBranch(gitRoot: string, branchName: string): string | undefined {
+  for (const ref of [`origin/${branchName}`, `refs/remotes/origin/${branchName}`, branchName, `refs/heads/${branchName}`]) {
+    try {
+      const commitHash = execFileSync("git", ["-C", gitRoot, "rev-parse", ref], { encoding: "utf8" }).trim();
+      if (/^[0-9a-f]{40}$/iu.test(commitHash)) {
+        return commitHash;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+function encodeGitHubPath(relativePath: string): string {
+  return relativePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
+}
+
+function tryResolveTraceableLatestPermalinkForTarget(document: vscode.TextDocument, linkTarget: string): string | undefined {
+  const permalink = parseGitHubCommitPermalink(linkTarget);
+  let repoSlug: string | undefined;
+  let gitRoot: string | undefined;
+  let relativePath: string | undefined;
+
+  if (permalink) {
+    repoSlug = permalink.repoSlug;
+    relativePath = permalink.relativePath;
+    gitRoot = resolveTraceableGitRootForRepoSlug(repoSlug);
+  } else if (!/^[a-z]+:\/\//iu.test(linkTarget)) {
+    const resolvedTargetPath = path.resolve(path.dirname(document.uri.fsPath), linkTarget);
+    gitRoot = resolveTraceableGitRoot(resolvedTargetPath);
+    if (gitRoot) {
+      relativePath = path.relative(gitRoot, resolvedTargetPath).replace(/\\+/gu, "/");
+      try {
+        const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
+        repoSlug = normalizeGitHubRepoSlugFromRemoteUrl(remoteUrl);
+      } catch {
+        repoSlug = undefined;
+      }
+    }
+  }
+
+  if (!repoSlug || !gitRoot || !relativePath || relativePath.startsWith("../")) {
+    return undefined;
+  }
+
+  for (const branchName of listTraceableLatestBranchCandidates(gitRoot)) {
+    const commitHash = resolveTraceableCommitHashForBranch(gitRoot, branchName);
+    if (!commitHash || !gitRefExistsAtPath(gitRoot, commitHash, relativePath)) {
+      continue;
+    }
+    return `https://github.com/${repoSlug}/blob/${commitHash}/${encodeGitHubPath(relativePath)}`;
+  }
+  return undefined;
 }
 
 function resolveTraceableOriginDefaultBranch(gitRoot: string): string | undefined {
@@ -3447,6 +3555,24 @@ async function readTraceableLatestMarkdownForDocument(document: vscode.TextDocum
 async function createRefreshTraceablePermalinkFromLatestEdit(document: vscode.TextDocument, lineIndex: number): Promise<vscode.WorkspaceEdit | undefined> {
   if (lineIndex < 0 || lineIndex >= document.lineCount) {
     return undefined;
+  }
+  if (getTraceableEditorValidationKindForFsPath(document.uri.fsPath) === "continuity-trace") {
+    const currentLine = document.lineAt(lineIndex);
+    const currentTarget = extractFirstMarkdownLinkTarget(currentLine.text);
+    if (!currentTarget) {
+      return undefined;
+    }
+    const refreshedTarget = tryResolveTraceableLatestPermalinkForTarget(document, currentTarget);
+    if (!refreshedTarget) {
+      return undefined;
+    }
+    const replacementLine = replaceFirstMarkdownLinkTarget(currentLine.text, refreshedTarget);
+    if (!replacementLine || replacementLine === currentLine.text) {
+      return undefined;
+    }
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, currentLine.range, replacementLine);
+    return edit;
   }
   const currentLines = Array.from({ length: document.lineCount }, (_, index) => document.lineAt(index).text);
   const latestMarkdown = await readTraceableLatestMarkdownForDocument(document);
@@ -4035,12 +4161,15 @@ function getTraceableDiagnosticRange(
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Origin:")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Current")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
-    case "continuity-current-created-at-missing":
-    case "continuity-current-created-at-invalid":
     case "traceable-current-schema-permalink-required":
     case "traceable-current-schema-unreadable":
-      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Current")
-        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Current Schema:"))
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Current Schema:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Current")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "continuity-current-created-at-missing":
+    case "continuity-current-created-at-invalid":
+      return findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim().startsWith("- Created At:"))
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "- Current")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
     case "traceable-parent-created-at-missing":
     case "traceable-parent-created-at-invalid":

@@ -127,11 +127,13 @@ const { fileURLToPath } = require("node:url");
  *   maxDepth?: number,
  *   readTextFileSync?: (filePath: string) => string,
  *   workspaceRoots?: Array<{ name?: string, fsPath: string }>,
- *   gitRevisionExistsSync?: (repoRoot: string, revision: string) => boolean | undefined
+ *   gitRevisionExistsSync?: (repoRoot: string, revision: string) => boolean | undefined,
+ *   gitRevisionPathReadableSync?: (repoRoot: string, revision: string, relativePath: string) => boolean | undefined
  * }} ValidateTraceableContinuityArtifactChainInput
  */
 
 const gitRevisionExistsCache = new Map();
+const gitRevisionPathReadableCache = new Map();
 
 function normalizePathForComparison(candidate) {
   const trimmed = typeof candidate === "string" ? candidate.trim() : "";
@@ -722,7 +724,32 @@ function defaultGitRevisionExistsSync(repoRoot, revision) {
   }
 }
 
-function canReadResolvedSchemaPermalink(filePath, reference, readTextFileSync, workspaceRoots, gitRevisionExistsSync) {
+function defaultGitRevisionPathReadableSync(repoRoot, revision, relativePath) {
+  const normalizedRoot = normalizePathForComparison(repoRoot);
+  const normalizedRevision = trimToUndefined(revision)?.toLowerCase();
+  const normalizedRelativePath = trimToUndefined(relativePath)?.replace(/\\+/gu, "/");
+  if (!normalizedRoot || !normalizedRevision || !normalizedRelativePath) {
+    return undefined;
+  }
+  const cacheKey = `${normalizedRoot}::${normalizedRevision}::${normalizedRelativePath}`;
+  if (gitRevisionPathReadableCache.has(cacheKey)) {
+    return gitRevisionPathReadableCache.get(cacheKey);
+  }
+  try {
+    execFileSync("git", ["-C", repoRoot, "cat-file", "-e", `${revision}:${normalizedRelativePath}`], { stdio: "ignore" });
+    gitRevisionPathReadableCache.set(cacheKey, true);
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      gitRevisionPathReadableCache.set(cacheKey, undefined);
+      return undefined;
+    }
+    gitRevisionPathReadableCache.set(cacheKey, false);
+    return false;
+  }
+}
+
+function canReadResolvedSchemaPermalink(filePath, reference, readTextFileSync, workspaceRoots, gitRevisionExistsSync, gitRevisionPathReadableSync) {
   const permalink = parseGitHubSchemaPermalink(reference);
   if (!permalink) {
     return false;
@@ -731,7 +758,13 @@ function canReadResolvedSchemaPermalink(filePath, reference, readTextFileSync, w
     const revisionKnown = typeof gitRevisionExistsSync === "function"
       ? gitRevisionExistsSync(repoRoot, permalink.revision)
       : defaultGitRevisionExistsSync(repoRoot, permalink.revision);
-    if (revisionKnown === false) {
+    if (revisionKnown !== true) {
+      continue;
+    }
+    const revisionPathReadable = typeof gitRevisionPathReadableSync === "function"
+      ? gitRevisionPathReadableSync(repoRoot, permalink.revision, permalink.relativePath)
+      : defaultGitRevisionPathReadableSync(repoRoot, permalink.revision, permalink.relativePath);
+    if (revisionPathReadable !== true) {
       continue;
     }
     const resolvedPath = path.resolve(repoRoot, ...permalink.relativePath.split("/"));
@@ -867,7 +900,7 @@ const ROOT_SCHEMA_REQUIRED_CONTRACT_GROUPS = [
   "Optional Machine Sections"
 ];
 
-function collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileSync, workspaceRoots, gitRevisionExistsSync) {
+function collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileSync, workspaceRoots, gitRevisionExistsSync, gitRevisionPathReadableSync) {
   if (isSchemaNoteFilePath(node.filePath)) {
     return [];
   }
@@ -913,7 +946,7 @@ function collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileS
       });
       continue;
     }
-    if (!canReadResolvedSchemaPermalink(node.filePath, target, readTextFileSync, workspaceRoots, gitRevisionExistsSync)) {
+    if (!canReadResolvedSchemaPermalink(node.filePath, target, readTextFileSync, workspaceRoots, gitRevisionExistsSync, gitRevisionPathReadableSync)) {
       findings.push({
         code: schemaTarget.unreadableCode,
         category: schemaTarget.category,
@@ -936,7 +969,7 @@ function collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileS
         severity: "error",
         surfaces: ["problems", "report"]
       });
-    } else if (!canReadResolvedSchemaPermalink(node.filePath, currentOriginBrowseGit, readTextFileSync, workspaceRoots, gitRevisionExistsSync)) {
+    } else if (!canReadResolvedSchemaPermalink(node.filePath, currentOriginBrowseGit, readTextFileSync, workspaceRoots, gitRevisionExistsSync, gitRevisionPathReadableSync)) {
       findings.push({
         code: "traceable-current-origin-browse-git-unreadable",
         category: "continuity-integrity",
@@ -970,7 +1003,7 @@ function collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileS
         severity: "error",
         surfaces: ["problems", "report"]
       });
-    } else if (!canReadResolvedSchemaPermalink(node.filePath, footerTowardsTarget, readTextFileSync, workspaceRoots, gitRevisionExistsSync)) {
+    } else if (!canReadResolvedSchemaPermalink(node.filePath, footerTowardsTarget, readTextFileSync, workspaceRoots, gitRevisionExistsSync, gitRevisionPathReadableSync)) {
       findings.push({
         code: "continuity-footer-towards-unreadable",
         category: "continuity-integrity",
@@ -1561,6 +1594,7 @@ function collectTraceableContinuityFindings(result) {
   const readTextFileSync = typeof result.readTextFileSync === "function" ? result.readTextFileSync : (filePath) => readFileSync(filePath, "utf8");
   const workspaceRoots = Array.isArray(result.workspaceRoots) ? result.workspaceRoots : [];
   const gitRevisionExistsSync = typeof result.gitRevisionExistsSync === "function" ? result.gitRevisionExistsSync : undefined;
+  const gitRevisionPathReadableSync = typeof result.gitRevisionPathReadableSync === "function" ? result.gitRevisionPathReadableSync : undefined;
 
   for (let index = 0; index < result.nodes.length; index += 1) {
     const node = result.nodes[index];
@@ -1573,7 +1607,7 @@ function collectTraceableContinuityFindings(result) {
     findings.push(...collectRootSchemaContractFindings(node));
     findings.push(...collectTaskStructureFindings(node));
     findings.push(...collectTopicStructureFindings(node));
-    findings.push(...collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileSync, workspaceRoots, gitRevisionExistsSync));
+    findings.push(...collectOrdinaryTraceSchemaTargetReadabilityFindings(node, readTextFileSync, workspaceRoots, gitRevisionExistsSync, gitRevisionPathReadableSync));
     findings.push(...collectContinuityParentTraceFindings(node, readTextFileSync));
 
     if (!trimToUndefined(node.parsed.currentCreatedAt)) {

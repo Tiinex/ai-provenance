@@ -191,5 +191,6 @@ export function validateTraceableContinuityArtifactChainSync(input: {
   readTextFileSync?: (filePath: string) => string;
   workspaceRoots?: Array<{ name?: string; fsPath: string }>;
   gitRevisionExistsSync?: (repoRoot: string, revision: string) => boolean | undefined;
+  gitRevisionPathReadableSync?: (repoRoot: string, revision: string, relativePath: string) => boolean | undefined;
 }): TraceableContinuityValidationResult;
 export function renderTraceableContinuityValidationMarkdown(result: TraceableContinuityValidationResult): string;
