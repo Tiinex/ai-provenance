@@ -100,6 +100,12 @@ import {
   resolveTraceableGitRoot
 } from "./traceableLineage";
 import {
+  renderTraceableLineageRepairMarkdown,
+  resolveTraceableLineageRepairGitRoot,
+  runTraceableLineageRepair,
+  type TraceableLineageRepairResult
+} from "./traceableLineageRepair";
+import {
   createTraceableCopyMutation,
   createTraceableMoveMutation,
   createTraceableRewriteMutation,
@@ -147,6 +153,7 @@ const RUN_TRACEABLE_SUBAGENT_TOOL = "run_traceable_subagent";
 const VIEW_TRACEABLE_SUBAGENT_TOOL = "view_traceable_subagent";
 const TRANSFER_TRACE_TOOL = "transfer_trace";
 const VALIDATE_TRACEABLE_CONTINUITY_TOOL = "validate_traceable_continuity";
+const REPAIR_TRACE_LINEAGE_TOOL = "repair_traceable_lineage";
 const SHOW_TRACEABLE_TRACES_TOOL = "show_traceable_traces";
 const TRACEABLE_EVIDENCE_EDITOR_VIEW_TYPE = "tiinexTraceableEvidenceEditor";
 const TRACEABLE_EVIDENCE_REFRESH_DEBOUNCE_MS = 250;
@@ -233,6 +240,13 @@ interface ValidateTraceableContinuityInput {
   maxDepth?: number;
 }
 
+interface RepairTraceableLineageInput {
+  targetPath: string;
+  autoCommit?: boolean;
+  commitMessagePrefix?: string;
+  maxIterations?: number;
+}
+
 interface ResolvedShowTracesInput extends ShowTracesInput {
   detailLevel?: "compact" | "standard" | "full";
 }
@@ -251,6 +265,7 @@ interface PendingTraceableRewriteRename {
 }
 
 const traceableSubagentToolMutex = new QueuedMutex();
+const traceableLineageRepairMutex = new QueuedMutex();
 
 const TRACEABLE_SURFACE_OPTIONS: Array<{ label: string; description: string; surface: TraceableEvidenceSurface }> = [
   { label: "Rendered Output", description: "Render the reconstructed TRACEABLE output surface", surface: "rendered-output" },
@@ -7234,6 +7249,38 @@ export function activate(context: vscode.ExtensionContext): void {
     return false;
   };
 
+  const runTraceableLineageRepairInternal = async (input: RepairTraceableLineageInput): Promise<TraceableLineageRepairResult> => {
+    const resolvedTargetPath = await resolveMarkdownArtifactFilePath(input.targetPath);
+    if (!resolvedTargetPath.toLowerCase().endsWith(".trace.md")) {
+      throw new Error(`Trace lineage repair requires a .trace.md file. Got ${JSON.stringify(resolvedTargetPath)}.`);
+    }
+    const repoRoot = resolveTraceableLineageRepairGitRoot(resolvedTargetPath);
+    if (!repoRoot) {
+      throw new Error(`Trace lineage repair requires a git-backed repository root. Could not resolve one for ${JSON.stringify(resolvedTargetPath)}.`);
+    }
+    return runTraceableLineageRepair(
+      {
+        repoRoot,
+        targets: [resolvedTargetPath],
+        autoCommit: input.autoCommit,
+        commitMessagePrefix: input.commitMessagePrefix,
+        maxIterations: input.maxIterations
+      },
+      {
+        refreshScriptPath: path.resolve(repoRoot, "scripts", "refresh-traceable-continuity-integrity.mjs"),
+        parseSchemaNoteMarkdown
+      }
+    );
+  };
+
+  const showTraceableLineageRepairResult = async (result: TraceableLineageRepairResult): Promise<void> => {
+    const document = await vscode.workspace.openTextDocument({
+      language: "markdown",
+      content: renderTraceableLineageRepairMarkdown(result)
+    });
+    await vscode.window.showTextDocument(document, { preview: false });
+  };
+
   const repairTraceableLineage = async (target?: vscode.Uri): Promise<void> => {
     const candidate = resolveTraceableEvidenceUri(target);
     if (!candidate) {
@@ -7241,11 +7288,33 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     const integrity = await getBrokenTraceableLineageIntegrity(candidate);
-    if (!integrity) {
-      void vscode.window.showInformationMessage(`TRACEABLE did not find broken lineage for ${path.basename(candidate.fsPath)}.`);
+    if (integrity && integrity.status !== "checksum-mismatch") {
+      await promptTraceableLineageRepair(candidate, "Repair Trace Lineage", integrity);
       return;
     }
-    await promptTraceableLineageRepair(candidate, "Repair Trace Lineage", integrity);
+    const confirmation = await vscode.window.showWarningMessage(
+      `Repair TRACEABLE lineage for ${path.basename(candidate.fsPath)} and create intermediate checkpoint commits when descendants depend on committed parents?`,
+      {
+        modal: true,
+        detail: "This runs connected-component lineage repair in-process inside the extension."
+      },
+      "Repair Lineage"
+    );
+    if (confirmation !== "Repair Lineage") {
+      return;
+    }
+    const lease = await traceableLineageRepairMutex.acquire("repairTraceLineage command");
+    try {
+      const result = await runTraceableLineageRepairInternal({
+        targetPath: candidate.fsPath,
+        autoCommit: true,
+        commitMessagePrefix: "Repair trace lineage"
+      });
+      output.appendLine(`TRACEABLE lineage repair completed for ${candidate.fsPath}`);
+      await showTraceableLineageRepairResult(result);
+    } finally {
+      lease.release();
+    }
   };
 
   const ensureTraceableLineageReadyForCommand = async (
@@ -8372,6 +8441,30 @@ export function activate(context: vscode.ExtensionContext): void {
           maxDepth: options.input.maxDepth,
           workspaceRoots: getTraceableOpenWorkspaceFolders()
         })));
+      }
+    }),
+    vscode.lm.registerTool(REPAIR_TRACE_LINEAGE_TOOL, {
+      prepareInvocation(options: vscode.LanguageModelToolInvocationPrepareOptions<RepairTraceableLineageInput>): vscode.PreparedToolInvocation {
+        return {
+          invocationMessage: `Repair trace lineage from ${JSON.stringify(options.input.targetPath)}`
+        };
+      },
+      async invoke(options: vscode.LanguageModelToolInvocationOptions<RepairTraceableLineageInput>): Promise<vscode.LanguageModelToolResult> {
+        if (traceableLineageRepairMutex.isLocked()) {
+          throw new Error(TRACEABLE_BUSY_MESSAGE);
+        }
+        const lease = await traceableLineageRepairMutex.acquire("repairTraceLineage tool");
+        try {
+          const result = await runTraceableLineageRepairInternal({
+            targetPath: options.input.targetPath,
+            autoCommit: options.input.autoCommit !== false,
+            commitMessagePrefix: options.input.commitMessagePrefix,
+            maxIterations: options.input.maxIterations
+          });
+          return textResult(renderTraceableLineageRepairMarkdown(result));
+        } finally {
+          lease.release();
+        }
       }
     }),
     vscode.lm.registerTool(

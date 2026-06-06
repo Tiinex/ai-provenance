@@ -30,6 +30,7 @@
     "onLanguageModelTool:view_traceable_subagent",
     "onLanguageModelTool:run_traceable_subagent",
     "onLanguageModelTool:transfer_trace",
+    "onLanguageModelTool:repair_traceable_lineage",
     "onLanguageModelTool:validate_traceable_continuity"
   ],
   "categories": [
@@ -412,6 +413,38 @@
           "required": [
             "evidenceFilePath"
           ]
+        }
+      },
+      {
+        "name": "repair_traceable_lineage",
+        "displayName": "Repair Trace Lineage",
+        "userDescription": "Repair a connected trace lineage component with checksum refresh and checkpoint commits when needed.",
+        "modelDescription": "Repair a connected `.trace.md` lineage component from one starting artifact using the extension's in-process lineage repair runtime. The runtime walks local parent/footer dependencies in both directions, runs continuity refresh across the whole connected component, and when `autoCommit` is not false it creates intermediate checkpoint commits so descendants never rotate against dirty parents. Use this instead of CLI scripts or VS Code tasks when the goal is to finish lineage repair on the real host surface an agent can call directly.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "repairTraceLineage",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "targetPath"
+          ],
+          "properties": {
+            "targetPath": {
+              "type": "string",
+              "description": "Absolute or workspace-relative path to the starting `.trace.md` artifact. The runtime repairs the full connected lineage component reachable from this start file."
+            },
+            "autoCommit": {
+              "type": "boolean",
+              "description": "When true or omitted, create checkpoint commits as needed so descendant checksums only refresh against committed parents. Set false to inspect blocked state without committing."
+            },
+            "commitMessagePrefix": {
+              "type": "string",
+              "description": "Optional commit message prefix for auto-created checkpoint commits."
+            },
+            "maxIterations": {
+              "type": "number",
+              "description": "Optional maximum number of repair iterations before the runtime fails fast."
+            }
+          }
         }
       },
       {
