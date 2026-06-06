@@ -253,4 +253,4 @@ proposal stage.
 
 - sha256-base64url-c14n-v1
   - Towards: [001-2-schema-lineage-repair.trace.md](001-2-schema-lineage-repair.trace.md)
-  - Value: o2IrHigUctznXaTFKkxL53GXaoCGu9I9QaD4E11yojI
+  - Value: DE7XEa1a5MeIRnLvk0zH9CEqvBbiNjMBRSO8hQ4EVEk
