@@ -7,8 +7,8 @@
   - Trace: [001.trace.md](001.trace.md)
   - Origin:
     - [relative](001.trace.md)
-    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001.trace.md)
-    - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/tools/validator/001.trace.md)
+    - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001.t    - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/tools/validator/001.trace.md)
+race.md)
 - Current
   - Current Schema: [tiinex.decision.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.decision.v1.schema.md)
   - Created At: 2026-05-30 00:20:00
@@ -91,9 +91,7 @@
 
 ```json
 {
-  "schema": "tiinex.traceable-state.v1",
-  "result": {
-    "parentTracePath": "001.trace.md",
+
     "parentTraceChecksumSha256": "M2-6QLkEeiAsxEgVZ_NOByRUAUq57EPXVbj6gQ-nH9A",
     "lineageLabel": "001-1",
     "lineageDepth": 2
@@ -107,4 +105,8 @@
 
 - sha256-base64url-c14n-v1
   - Towards: [001.trace.md](001.trace.md)
-  - Value: M2-6QLkEeiAsxEgVZ_NOByRUAUq57EPXVbj6gQ-nH9A
+  - Value: M2-6QLkEeiAsxEgVZ_NOByRUAUq57EPXVbj6gQ-nH9Arl-c14n-v1
+  - Towards: [001.trace.md](001.trace.md)
+  - Value: nvhLEdk3h4neusmqObX3IhmUOlnvjBYoC8kvGGG1l4w6srl-c14n-v1
+  - Towards: [001.trace.md](001.trace.md)
+  - Value: 5YvpEu0usaVeD8iOfQNpEEsOADsFenPQaXrCq7_pZGM
