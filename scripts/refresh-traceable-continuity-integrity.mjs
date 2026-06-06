@@ -63,6 +63,46 @@ function replaceParentChecksum(markdown, nextChecksum) {
     : markdown;
 }
 
+async function refreshStoredParentChecksum(markdown, absolutePath, traceFileSet, inFlight) {
+  const traceableState = extractTraceableState(markdown);
+  if (!traceableState.parentTracePath) {
+    return {
+      markdown,
+      parentChecksumUpdated: false
+    };
+  }
+
+  const resolvedParentPath = path.resolve(path.dirname(absolutePath), traceableState.parentTracePath);
+  if (traceFileSet.has(resolvedParentPath)) {
+    await refreshTraceFile(resolvedParentPath, traceFileSet, inFlight);
+  }
+  if (!existsSync(resolvedParentPath)) {
+    return {
+      markdown,
+      parentChecksumUpdated: false
+    };
+  }
+
+  const parentMarkdown = await readFile(resolvedParentPath, "utf8");
+  const nextParentChecksum = computeTraceableContinuityChecksumSha256(parentMarkdown);
+  if (
+    !nextParentChecksum
+    || !traceableState.parentTraceChecksumSha256
+    || traceableState.parentTraceChecksumSha256 === nextParentChecksum
+  ) {
+    return {
+      markdown,
+      parentChecksumUpdated: false
+    };
+  }
+
+  const updatedMarkdown = replaceParentChecksum(markdown, nextParentChecksum);
+  return {
+    markdown: updatedMarkdown,
+    parentChecksumUpdated: updatedMarkdown !== markdown
+  };
+}
+
 async function refreshTraceFile(filePath, traceFileSet, inFlight) {
   const absolutePath = path.resolve(filePath);
   if (inFlight.has(absolutePath)) {
@@ -72,31 +112,27 @@ async function refreshTraceFile(filePath, traceFileSet, inFlight) {
   const refreshPromise = (async () => {
     let markdown = await readFile(absolutePath, "utf8");
     const originalMarkdown = markdown;
-    const traceableState = extractTraceableState(markdown);
     let parentChecksumUpdated = false;
     let footerChecksumUpdated = false;
 
-    if (traceableState.parentTracePath) {
-      const resolvedParentPath = path.resolve(path.dirname(absolutePath), traceableState.parentTracePath);
-      if (traceFileSet.has(resolvedParentPath)) {
-        await refreshTraceFile(resolvedParentPath, traceFileSet, inFlight);
-      }
-      if (existsSync(resolvedParentPath)) {
-        const parentMarkdown = await readFile(resolvedParentPath, "utf8");
-        const nextParentChecksum = computeTraceableContinuityChecksumSha256(parentMarkdown);
-        if (
-          nextParentChecksum
-          && traceableState.parentTraceChecksumSha256
-          && traceableState.parentTraceChecksumSha256 !== nextParentChecksum
-        ) {
-          markdown = replaceParentChecksum(markdown, nextParentChecksum);
-          parentChecksumUpdated = markdown !== originalMarkdown;
-        }
-      }
-    }
+    const initialParentRefresh = await refreshStoredParentChecksum(markdown, absolutePath, traceFileSet, inFlight);
+    markdown = initialParentRefresh.markdown;
+    parentChecksumUpdated = initialParentRefresh.parentChecksumUpdated;
 
     const parsed = parseSchemaNoteMarkdown(markdown);
-    const nextChecksum = computeTargetedTraceableContinuityChecksumSha256(absolutePath, markdown, parsed.footerIntegrity);
+    const footerTarget = parsed.footerIntegrity?.towardsTarget?.trim();
+    if (footerTarget && footerTarget !== "self" && !/^[a-z][a-z0-9+.-]*:\/\//iu.test(footerTarget)) {
+      const resolvedFooterTargetPath = path.resolve(path.dirname(absolutePath), footerTarget);
+      if (traceFileSet.has(resolvedFooterTargetPath)) {
+        await refreshTraceFile(resolvedFooterTargetPath, traceFileSet, inFlight);
+        const refreshedMarkdown = await readFile(absolutePath, "utf8");
+        const secondParentRefresh = await refreshStoredParentChecksum(refreshedMarkdown, absolutePath, traceFileSet, inFlight);
+        markdown = secondParentRefresh.markdown;
+        parentChecksumUpdated = parentChecksumUpdated || secondParentRefresh.parentChecksumUpdated;
+      }
+    }
+    const refreshedParsed = parseSchemaNoteMarkdown(markdown);
+    const nextChecksum = computeTargetedTraceableContinuityChecksumSha256(absolutePath, markdown, refreshedParsed.footerIntegrity);
     if (!nextChecksum) {
       throw new Error(`Could not resolve the declared continuity integrity target for ${absolutePath}`);
     }
