@@ -7267,8 +7267,8 @@ export function activate(context: vscode.ExtensionContext): void {
         maxIterations: input.maxIterations
       },
       {
-        refreshScriptPath: path.resolve(repoRoot, "scripts", "refresh-traceable-continuity-integrity.mjs"),
-        parseSchemaNoteMarkdown
+        parseSchemaNoteMarkdown,
+        workspaceRoots: getTraceableOpenWorkspaceFolders().map((folder) => folder.fsPath)
       }
     );
   };
@@ -7305,13 +7305,19 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     const lease = await traceableLineageRepairMutex.acquire("repairTraceLineage command");
     try {
-      const result = await runTraceableLineageRepairInternal({
-        targetPath: candidate.fsPath,
-        autoCommit: true,
-        commitMessagePrefix: "Repair trace lineage"
-      });
-      output.appendLine(`TRACEABLE lineage repair completed for ${candidate.fsPath}`);
-      await showTraceableLineageRepairResult(result);
+      try {
+        const result = await runTraceableLineageRepairInternal({
+          targetPath: candidate.fsPath,
+          autoCommit: true,
+          commitMessagePrefix: "Repair trace lineage"
+        });
+        output.appendLine(`TRACEABLE lineage repair completed for ${candidate.fsPath}`);
+        await showTraceableLineageRepairResult(result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        output.appendLine(`TRACEABLE lineage repair failed for ${candidate.fsPath}: ${message}`);
+        void vscode.window.showErrorMessage(`TRACEABLE lineage repair failed: ${message}`);
+      }
     } finally {
       lease.release();
     }
