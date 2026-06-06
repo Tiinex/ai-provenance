@@ -1,15 +1,16 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.root.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.task.v1.schema.md)
+  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-05-28 21:48:32
   - Trace: [001-2-schema-lineage-repair.trace.md](001-2-schema-lineage-repair.trace.md)
   - Origin:
     - [relative](001-2-schema-lineage-repair.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/tools/001-2-schema-lineage-repair.trace.md)
+    - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/trace-format/tools/001-2-schema-lineage-repair.trace.md)
 - Current
-  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/134ead70f229cd7a29fad1ada5aa0dd0f2b02ff9/.topics/.schemas/tiinex.evidence.v1.schema.md)
+  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.evidence.v1.schema.md)
   - Created At: 2026-05-29 01:37:57
   - Why: Preserves the concrete references that currently justify a bounded V1 schema-lineage repair solution and its current confidence limits.
   - Summary: Evidence slice showing that existing code, contract artifacts, and repeated docs repairs are enough for audit-plus-proposal V1 but not for broad auto-apply.
@@ -47,7 +48,7 @@ automatic apply behavior across files or repositories.
 - Origin:
   - [relative](../../../ides/vscode/src/traceableLineageIntegrity.ts)
   - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/ides/vscode/src/traceableLineageIntegrity.ts)
-  - [browse + git](https://github.com/Tiinex/ai-provenance/blob/7bf064bd79a7adf336323e1eea5eaa869fb7030a/ides/vscode/src/traceableLineageIntegrity.ts)
+  - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/ides/vscode/src/traceableLineageIntegrity.ts)
 - Representation: code reading
 - Supports: bounded checksum and parent-integrity diagnostics already exist as
   concrete implementation, not just as a proposal
@@ -66,7 +67,7 @@ What it shows:
 - Origin:
   - [relative](../implementation-contract.md)
   - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/implementation-contract.md)
-  - [browse + git](https://github.com/Tiinex/ai-provenance/blob/7bf064bd79a7adf336323e1eea5eaa869fb7030a/.topics/trace-format/implementation-contract.md)
+  - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/trace-format/implementation-contract.md)
 - Representation: contract excerpt
 - Supports: the git-driver and origin-backed target model is already described
   clearly enough to constrain V1 target resolution
@@ -85,7 +86,7 @@ What it shows:
 - Origin:
   - [relative](../validation-checklist.md)
   - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/validation-checklist.md)
-  - [browse + git](https://github.com/Tiinex/ai-provenance/blob/7bf064bd79a7adf336323e1eea5eaa869fb7030a/.topics/trace-format/validation-checklist.md)
+  - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/trace-format/validation-checklist.md)
 - Representation: validation checklist
 - Supports: V1 already has a concrete acceptance surface for same-repo,
   cross-repo, git-driver, timestamp, and integrity behavior
@@ -103,6 +104,7 @@ What it shows:
 - Origin:
   - [relative](001-2-schema-lineage-repair.trace.md)
   - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/tools/001-2-schema-lineage-repair.trace.md)
+  - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/trace-format/tools/001-2-schema-lineage-repair.trace.md)
 - Representation: bounded task contract
 - Supports: the repair problem is already reduced to a small failure taxonomy
   with explicit stop conditions rather than a vague "fix lineage" ambition

@@ -1,15 +1,16 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.root.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.task.v1.schema.md)
+  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-05-28 21:23:20
   - Trace: [001.trace.md](001.trace.md)
   - Origin:
     - [relative](001.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/tools/001.trace.md)
+    - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/trace-format/tools/001.trace.md)
 - Current
-  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/c81f1cddac7ec3d671fd11c26d871ecfd4952541/.topics/.schemas/tiinex.task.v1.schema.md)
+  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-05-28 21:48:32
   - Why: Carries the bounded repair task for schema-lineage fixup behavior when links, parent targets, or footer integrity drift.
   - Summary: Task for defining bounded schema-lineage repair behavior.

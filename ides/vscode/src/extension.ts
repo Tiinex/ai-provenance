@@ -622,6 +622,22 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
       actions.push(action);
       continue;
     }
+    if (diagnosticCode === "traceable-parent-schema-missing" || diagnosticCode === "traceable-parent-schema-mismatch") {
+      const edit = createSetContinuityParentSchemaEdit(document);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction(
+        diagnosticCode === "traceable-parent-schema-missing"
+          ? "Insert Parent Schema from parent trace"
+          : "Replace Parent Schema from parent trace",
+        vscode.CodeActionKind.QuickFix
+      );
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
     if (diagnosticCode === "traceable-parent-checksum-mismatch") {
       const edit = createSetTraceableParentChecksumEdit(document);
       if (!edit) {
@@ -3935,6 +3951,67 @@ function createSetContinuityParentCreatedAtEdit(document: vscode.TextDocument): 
   const parentSchemaLine = document.lineAt(parentSchemaLineIndex);
   const indentation = parentSchemaLine.text.match(/^(\s*)/u)?.[1] ?? "  ";
   edit.insert(document.uri, new vscode.Position(parentSchemaLineIndex + 1, 0), `${indentation}- Created At: ${parentCreatedAt}\n`);
+  return edit;
+}
+
+function createSetContinuityParentSchemaEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
+  let parentBlockLineIndex: number | undefined;
+  let parentSchemaLineIndex: number | undefined;
+  let parentCreatedAtLineIndex: number | undefined;
+  let parentTraceLineIndex: number | undefined;
+  let inParentBlock = false;
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text;
+    const trimmed = lineText.trim();
+    if (trimmed === "- Parent") {
+      parentBlockLineIndex = lineIndex;
+      inParentBlock = true;
+      continue;
+    }
+    if (inParentBlock && !lineText.startsWith("  ") && trimmed) {
+      break;
+    }
+    if (!inParentBlock) {
+      continue;
+    }
+    if (trimmed.startsWith("- Parent Schema:")) {
+      parentSchemaLineIndex = lineIndex;
+      continue;
+    }
+    if (trimmed.startsWith("- Created At:")) {
+      parentCreatedAtLineIndex = lineIndex;
+      continue;
+    }
+    if (trimmed.startsWith("- Trace:")) {
+      parentTraceLineIndex = lineIndex;
+      continue;
+    }
+  }
+
+  const parentCurrentSchema = parseTraceableContinuityMarkdown(readTraceableParentArtifactMarkdownForDocument(document) ?? "").currentSchema;
+  const parentSchemaLabel = parentCurrentSchema?.label?.trim() || parentCurrentSchema?.target?.trim();
+  if (!parentSchemaLabel) {
+    return undefined;
+  }
+
+  const replacementLine = parentCurrentSchema?.target?.trim()
+    ? `  - Parent Schema: [${parentSchemaLabel}](${parentCurrentSchema.target.trim()})`
+    : `  - Parent Schema: ${parentSchemaLabel}`;
+  const edit = new vscode.WorkspaceEdit();
+  if (parentSchemaLineIndex !== undefined) {
+    edit.replace(document.uri, document.lineAt(parentSchemaLineIndex).range, replacementLine);
+    return edit;
+  }
+  if (parentBlockLineIndex === undefined) {
+    return undefined;
+  }
+
+  const insertBeforeLineIndex = parentCreatedAtLineIndex ?? parentTraceLineIndex;
+  if (insertBeforeLineIndex !== undefined) {
+    edit.insert(document.uri, new vscode.Position(insertBeforeLineIndex, 0), `${replacementLine}\n`);
+    return edit;
+  }
+  edit.insert(document.uri, new vscode.Position(parentBlockLineIndex + 1, 0), `${replacementLine}\n`);
   return edit;
 }
 

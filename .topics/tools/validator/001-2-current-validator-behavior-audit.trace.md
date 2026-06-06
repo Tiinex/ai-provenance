@@ -8,8 +8,9 @@
   - Origin:
     - [relative](001.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001.trace.md)
+    - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/tools/validator/001.trace.md)
 - Current
-  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.evidence.v1.schema.md)
+  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.evidence.v1.schema.md)
   - Created At: 2026-05-31 21:15:58
   - Authors: Linus
   - Why: Preserves a code-grounded audit of what the current continuity validator actually validates today so later validator work does not assume broader schema or origin checks already exist.
@@ -90,4 +91,4 @@
 
 - sha256-base64url-c14n-v1
   - Towards: [001.trace.md](001.trace.md)
-  - Value: vfDxrADeEz1b8-L5bOeCEPayWxs9e-0HKvrmKfVyRZM
+  - Value: M2-6QLkEeiAsxEgVZ_NOByRUAUq57EPXVbj6gQ-nH9A

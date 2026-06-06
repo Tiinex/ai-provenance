@@ -9,7 +9,7 @@
     - [relative](../001.trace.md)
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/tools/validator/001.trace.md)
 - Current
-  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/613f592976c75e73deee101a555674b1cce08304/.topics/.schemas/tiinex.task.v1.schema.md)
+  - Current Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-06-03 02:18:04
   - Why: Collects the remaining validator-format improvements into one bounded task before any validator split or code change.
   - Summary: Task leaf for validator interop-profile hardening and schema-versus-adapter separation.
@@ -302,4 +302,4 @@ Out of scope for now:
 
 - sha256-base64url-c14n-v1
   - Towards: [001.trace.md](001.trace.md)
-  - Value: RnY5TwmiUx3_yBuDJvyKOLL5JUNr9wLZ7pf1cdlWwDw
+  - Value: M2-6QLkEeiAsxEgVZ_NOByRUAUq57EPXVbj6gQ-nH9A
