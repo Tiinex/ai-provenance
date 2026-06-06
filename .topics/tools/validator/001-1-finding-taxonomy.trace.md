@@ -105,8 +105,4 @@ race.md)
 
 - sha256-base64url-c14n-v1
   - Towards: [001.trace.md](001.trace.md)
-  - Value: M2-6QLkEeiAsxEgVZ_NOByRUAUq57EPXVbj6gQ-nH9Arl-c14n-v1
-  - Towards: [001.trace.md](001.trace.md)
-  - Value: nvhLEdk3h4neusmqObX3IhmUOlnvjBYoC8kvGGG1l4w6srl-c14n-v1
-  - Towards: [001.trace.md](001.trace.md)
-  - Value: 5YvpEu0usaVeD8iOfQNpEEsOADsFenPQaXrCq7_pZGM
+  - Value: M2-6QLkEeiAsxEgVZ_NOByRUAUq57EPXVbj6gQ-nH9A

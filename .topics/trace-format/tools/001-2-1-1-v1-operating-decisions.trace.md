@@ -92,4 +92,4 @@ The next unresolved planning questions are now narrower:
 
 - sha256-base64url-c14n-v1
   - Towards: [001-2-1-existing-tooling-evidence.trace.md](001-2-1-existing-tooling-evidence.trace.md)
-  - Value: m8-oUEvjV_SJSeIIPpWRJunhqrF-cjmDDJ8mAn8Lk_c
+  - Value: WK-dAfHLH8U21mNO5Wx8nM1GlvTnmMeYdW4z3D8-ofw
