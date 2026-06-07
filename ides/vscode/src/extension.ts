@@ -2859,9 +2859,18 @@ async function renderTraceableEvidenceSurfaceFromFile(input: {
 
 type TraceableEditorValidationKind = "continuity-trace" | "root-schema" | "topic-schema" | "decision-schema" | "task-schema" | "evidence-schema" | "pointer-schema";
 
+function isSuppressedTraceableFixturePath(fsPath: string): boolean {
+  const normalized = path.resolve(fsPath).replace(/\\+/gu, "/").toLowerCase();
+  return normalized.includes("/lineage-bridge/packages/bridge/src/fixtures/")
+    && normalized.endsWith(".trace.md");
+}
+
 function getTraceableEditorValidationKindForFsPath(fsPath: string): TraceableEditorValidationKind | undefined {
   const normalized = path.resolve(fsPath);
   const normalizedLower = normalized.toLowerCase();
+  if (isSuppressedTraceableFixturePath(normalized)) {
+    return undefined;
+  }
   if (normalizedLower.endsWith(".trace.md")) {
     return "continuity-trace";
   }
