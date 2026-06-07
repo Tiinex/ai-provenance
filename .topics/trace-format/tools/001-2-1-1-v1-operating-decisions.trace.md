@@ -1,8 +1,8 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.root.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/832b642cf3b374919f7b180de1c7c43f38aee5b2/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.evidence.v1.schema.md)
+  - Parent Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/832b642cf3b374919f7b180de1c7c43f38aee5b2/.topics/.schemas/tiinex.evidence.v1.schema.md)
   - Created At: 2026-05-29 01:37:57
   - Trace: [001-2-1-existing-tooling-evidence.trace.md](001-2-1-existing-tooling-evidence.trace.md)
   - Origin:
@@ -10,7 +10,7 @@
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/tools/001-2-1-existing-tooling-evidence.trace.md)
     - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/trace-format/tools/001-2-1-existing-tooling-evidence.trace.md)
 - Current
-  - Current Schema: [tiinex.decision.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.decision.v1.schema.md)
+  - Current Schema: [tiinex.decision.v1](https://github.com/Tiinex/docs/blob/832b642cf3b374919f7b180de1c7c43f38aee5b2/.topics/.schemas/tiinex.decision.v1.schema.md)
   - Created At: 2026-05-29 02:17:56
   - Why: Captures the landed operator decisions that change how schema-lineage repair V1 should be planned and executed.
   - Summary: Decision leaf establishing domain-bound audit, decision-driven repair, and separation between audit and repair surfaces.
@@ -92,4 +92,4 @@ The next unresolved planning questions are now narrower:
 
 - sha256-base64url-c14n-v1
   - Towards: [001-2-1-existing-tooling-evidence.trace.md](001-2-1-existing-tooling-evidence.trace.md)
-  - Value: WK-dAfHLH8U21mNO5Wx8nM1GlvTnmMeYdW4z3D8-ofw
+  - Value: sRdxp9MwN1Eeyq5nUxNmrJRXX8ixYeaOj0AdsqG9N00
