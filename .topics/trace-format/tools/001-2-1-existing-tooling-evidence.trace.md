@@ -1,8 +1,8 @@
 # Continuity Context
 
-- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.root.v1.schema.md)
+- Envelope Schema: [tiinex.root.v1](https://github.com/Tiinex/docs/blob/832b642cf3b374919f7b180de1c7c43f38aee5b2/.topics/.schemas/tiinex.root.v1.schema.md)
 - Parent
-  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.task.v1.schema.md)
+  - Parent Schema: [tiinex.task.v1](https://github.com/Tiinex/docs/blob/832b642cf3b374919f7b180de1c7c43f38aee5b2/.topics/.schemas/tiinex.task.v1.schema.md)
   - Created At: 2026-05-28 21:48:32
   - Trace: [001-2-schema-lineage-repair.trace.md](001-2-schema-lineage-repair.trace.md)
   - Origin:
@@ -10,7 +10,7 @@
     - [absolute](C:/Users/micro/Documents/Repos/Tiinex/ai-provenance/.topics/trace-format/tools/001-2-schema-lineage-repair.trace.md)
     - [browse + git](https://github.com/Tiinex/ai-provenance/blob/4c697e188115489da37587b3145186c198c9166f/.topics/trace-format/tools/001-2-schema-lineage-repair.trace.md)
 - Current
-  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/f6106423ab395137600bd3633a56296223006671/.topics/.schemas/tiinex.evidence.v1.schema.md)
+  - Current Schema: [tiinex.evidence.v1](https://github.com/Tiinex/docs/blob/832b642cf3b374919f7b180de1c7c43f38aee5b2/.topics/.schemas/tiinex.evidence.v1.schema.md)
   - Created At: 2026-05-29 01:37:57
   - Why: Preserves the concrete references that currently justify a bounded V1 schema-lineage repair solution and its current confidence limits.
   - Summary: Evidence slice showing that existing code, contract artifacts, and repeated docs repairs are enough for audit-plus-proposal V1 but not for broad auto-apply.
@@ -253,4 +253,4 @@ proposal stage.
 
 - sha256-base64url-c14n-v1
   - Towards: [001-2-schema-lineage-repair.trace.md](001-2-schema-lineage-repair.trace.md)
-  - Value: DE7XEa1a5MeIRnLvk0zH9CEqvBbiNjMBRSO8hQ4EVEk
+  - Value: 1vYzbJI3DhiUvdpHL9peyH84KDC0jfbHdEuc7VmHO8g
