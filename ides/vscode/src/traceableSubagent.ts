@@ -7,6 +7,14 @@ import { allocateNextTraceableLineageLabel, parseTraceableEvidenceFileName } fro
 import { isRuntimeAgentArtifactPath, normalizeArtifactPath } from "./tools/runtimeAgentArtifactStructure";
 import { expandToolReferenceKeys, normalizeToolReferenceKey } from "./toolNameNormalization";
 import { appendLineToRollingLog } from "./runtimeFileHygiene";
+import {
+  getTraceableRuntimeProviderAvailability,
+  listTraceableRuntimeModelCandidates,
+  readTraceableRuntimeProviderSettings,
+  selectTraceableRuntimeModels,
+  type TraceableRuntimeChatResponse,
+  type TraceableRuntimeModel
+} from "./traceableRuntimeProvider";
 import type { TraceableSubagentTimingSummary } from "./traceableContract";
 
 export const TRACEABLE_SUBAGENT_TOOL_NAME = "run_traceable_subagent";
@@ -70,10 +78,21 @@ type TraceableStopSource = "traceable-panel" | "host-cancel" | "unknown";
 const TRACEABLE_UNDECLARED_MAX_ITERATIONS_SETTING = "traceableUndeclaredMaxIterations";
 const TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING = "traceableUndeclaredMaxToolCalls";
 const TRACEABLE_PREVIEW_MAX_BYTES_SETTING = "traceablePreviewMaxBytes";
+const TRACEABLE_RUNTIME_PROVIDER_SETTING = "runtimeProvider";
+const TRACEABLE_DISABLE_VSCODE_LM_PROVIDER_SETTING = "disableVscodeLmProviderForTraceableRuntime";
+const TRACEABLE_OPENAI_COMPATIBLE_BASE_URL_SETTING = "openAiCompatibleBaseUrl";
+const TRACEABLE_OPENAI_COMPATIBLE_API_KEY_ENV_SETTING = "openAiCompatibleApiKeyEnv";
+const TRACEABLE_OPENAI_COMPATIBLE_MODEL_SETTING = "openAiCompatibleModel";
+const TRACEABLE_OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS_SETTING = "openAiCompatibleMaxOutputTokens";
+const TRACEABLE_OPENAI_COMPATIBLE_TEMPERATURE_SETTING = "openAiCompatibleTemperature";
+const TRACEABLE_EXTERNAL_PROVIDER_MAX_REQUESTS_PER_RUN_SETTING = "externalProviderMaxRequestsPerRun";
 const DEFAULT_UNDECLARED_MAX_ITERATIONS = 100;
 const DEFAULT_UNDECLARED_MAX_TOOL_CALLS = 100;
 const DEFAULT_OUTPUT_TEXT_CHARS = 1600;
 const DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES = 64 * 1024;
+const DEFAULT_TRACEABLE_OPENAI_COMPATIBLE_MAX_OUTPUT_TOKENS = 1200;
+const DEFAULT_TRACEABLE_OPENAI_COMPATIBLE_TEMPERATURE = 0.2;
+const DEFAULT_TRACEABLE_EXTERNAL_PROVIDER_MAX_REQUESTS_PER_RUN = 2;
 const MAX_TOOL_DETAIL_TEXT_CHARS = 120000;
 
 const DEFAULT_BLOCKED_TOOL_NAMES = new Set([
@@ -248,17 +267,38 @@ function isAutomaticTraceableModelSelector(selector: TraceableModelSelector | un
   return (selector?.id?.trim().toLowerCase() || "") === "auto";
 }
 
+function getConfiguredTraceableRuntimeProvider(
+  config: vscode.WorkspaceConfiguration
+): "vscode-lm" | "openai-compatible" | "ollama" {
+  const configured = config.get<string>(TRACEABLE_RUNTIME_PROVIDER_SETTING, "vscode-lm").trim();
+  if (configured === "openai-compatible" || configured === "ollama") {
+    return configured;
+  }
+  return "vscode-lm";
+}
+
 function buildTraceableRuntimeFingerprint(): TraceableRuntimeFingerprint {
   const config = vscode.workspace.getConfiguration("tiinex.aiProvenance");
+  const providerSettings = readTraceableRuntimeProviderSettings(config);
+  const providerAvailability = getTraceableRuntimeProviderAvailability(providerSettings);
   const extensionVersion = vscode.extensions.getExtension("tiinex.ai-provenance")?.packageJSON?.version;
   return {
     extensionVersion: typeof extensionVersion === "string" ? extensionVersion : undefined,
-    hostSurface: "vscode-lm-tool",
+    hostSurface: providerAvailability.hostSurface,
+    providerRoute: providerSettings.runtimeProvider,
     platform: process.platform,
     workspaceFolders: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.name),
     relevantConfig: {
       traceablePreferredModels: config.get<string[]>("traceablePreferredModels", []).map((value) => value.trim()).filter((value) => value.length > 0),
       traceableBlockedModels: config.get<string[]>("traceableBlockedModels", []).map((value) => value.trim()).filter((value) => value.length > 0),
+      runtimeProvider: providerSettings.runtimeProvider,
+      disableVscodeLmProviderForTraceableRuntime: providerSettings.disableVscodeLmProviderForTraceableRuntime,
+      openAiCompatibleBaseUrlConfigured: providerSettings.openAiCompatibleBaseUrl.length > 0,
+      openAiCompatibleApiKeyEnv: providerSettings.openAiCompatibleApiKeyEnv || undefined,
+      openAiCompatibleModel: providerSettings.openAiCompatibleModel || undefined,
+      openAiCompatibleMaxOutputTokens: providerSettings.openAiCompatibleMaxOutputTokens,
+      openAiCompatibleTemperature: providerSettings.openAiCompatibleTemperature,
+      externalProviderMaxRequestsPerRun: providerSettings.externalProviderMaxRequestsPerRun,
       traceableUndeclaredMaxIterations: config.get<number>(TRACEABLE_UNDECLARED_MAX_ITERATIONS_SETTING, DEFAULT_UNDECLARED_MAX_ITERATIONS),
       traceableUndeclaredMaxToolCalls: config.get<number>(TRACEABLE_UNDECLARED_MAX_TOOL_CALLS_SETTING, DEFAULT_UNDECLARED_MAX_TOOL_CALLS),
       traceablePreviewMaxBytes: config.get<number>(TRACEABLE_PREVIEW_MAX_BYTES_SETTING, DEFAULT_TRACEABLE_PREVIEW_MAX_BYTES)
@@ -282,7 +322,7 @@ function buildTraceableRuntimeDecisionSummary(
   input: TraceableSubagentInput,
   resolvedAgentArtifact: ResolvedTraceableAgentArtifact | undefined,
   matchedSelector: vscode.LanguageModelChatSelector | undefined,
-  model: vscode.LanguageModelChat | undefined,
+  model: TraceableRuntimeModel | undefined,
   availableCandidateCount: number,
   sendableCandidateCount: number,
   routing: {
@@ -536,12 +576,21 @@ export interface TraceableRuntimeDecisionSummary {
 
 export interface TraceableRuntimeFingerprint {
   extensionVersion?: string;
-  hostSurface: "vscode-lm-tool";
+  hostSurface: "vscode-lm-tool" | "openai-compatible-chat-completions";
+  providerRoute: "vscode-lm" | "openai-compatible" | "ollama";
   platform: string;
   workspaceFolders: string[];
   relevantConfig: {
     traceablePreferredModels: string[];
     traceableBlockedModels: string[];
+    runtimeProvider: "vscode-lm" | "openai-compatible" | "ollama";
+    disableVscodeLmProviderForTraceableRuntime: boolean;
+    openAiCompatibleBaseUrlConfigured: boolean;
+    openAiCompatibleApiKeyEnv?: string;
+    openAiCompatibleModel?: string;
+    openAiCompatibleMaxOutputTokens: number;
+    openAiCompatibleTemperature: number;
+    externalProviderMaxRequestsPerRun: number;
     traceableUndeclaredMaxIterations: number;
     traceableUndeclaredMaxToolCalls: number;
     traceablePreviewMaxBytes: number;
@@ -2367,27 +2416,10 @@ function formatTraceableAgentResolutionHelp(roleName: string, catalog: readonly 
   return parts.join("; ");
 }
 
-async function listBroadRuntimeModelCandidates(
-  accessInformation?: vscode.LanguageModelAccessInformation
-): Promise<{ available: vscode.LanguageModelChat[]; sendable: vscode.LanguageModelChat[] }> {
-  try {
-    const available = await vscode.lm.selectChatModels({});
-    return {
-      available,
-      sendable: accessInformation ? available.filter((candidate) => accessInformation.canSendRequest(candidate)) : available
-    };
-  } catch {
-    return {
-      available: [],
-      sendable: []
-    };
-  }
-}
-
 export async function listTraceableModelCatalogEntries(
   accessInformation?: vscode.LanguageModelAccessInformation
 ): Promise<TraceableModelCatalogEntry[]> {
-  const candidates = await listBroadRuntimeModelCandidates(accessInformation);
+  const candidates = await listTraceableRuntimeModelCandidates(accessInformation);
   const sendableKeys = new Set(candidates.sendable.map((model) => JSON.stringify({
     vendor: model.vendor,
     family: model.family,
@@ -4020,7 +4052,7 @@ function extractUsageSummaryFromValue(value: unknown): TraceableSubagentUsageSum
   return undefined;
 }
 
-function extractResponseUsageSummary(response: vscode.LanguageModelChatResponse): TraceableSubagentUsageSummary {
+function extractResponseUsageSummary(response: TraceableRuntimeChatResponse): TraceableSubagentUsageSummary {
   const responseRecord = isRecord(response) ? response : undefined;
   const candidateValues = [
     responseRecord,
@@ -4300,7 +4332,7 @@ function buildEmptyChildResponseFallback(
   );
 }
 
-function summarizeModelCandidates(models: readonly vscode.LanguageModelChat[]): string {
+function summarizeModelCandidates(models: readonly TraceableRuntimeModel[]): string {
   if (models.length === 0) {
     return "[]";
   }
@@ -4656,9 +4688,11 @@ export async function runTraceableSubagent(
     : forceToolFreeDirectResponse
       ? "tool-free: lightweight DIRECT turn"
       : "tool-enabled";
-  let broadRuntimeModelsPromise: Promise<{ available: vscode.LanguageModelChat[]; sendable: vscode.LanguageModelChat[] }> | undefined;
+  const providerSettings = readTraceableRuntimeProviderSettings();
+  const providerAvailability = getTraceableRuntimeProviderAvailability(providerSettings);
+  let broadRuntimeModelsPromise: Promise<{ available: TraceableRuntimeModel[]; sendable: TraceableRuntimeModel[] }> | undefined;
   const loadBroadRuntimeModels = () => {
-    broadRuntimeModelsPromise ??= listBroadRuntimeModelCandidates(options.accessInformation);
+    broadRuntimeModelsPromise ??= listTraceableRuntimeModelCandidates(options.accessInformation, providerSettings);
     return broadRuntimeModelsPromise;
   };
 
@@ -4735,6 +4769,42 @@ export async function runTraceableSubagent(
     });
   }
 
+  if (!providerAvailability.available) {
+    return finalizeResult(fallbackResult(
+      input,
+      [],
+      providerAvailability.reason ?? "TRACEABLE runtime provider is unavailable on this host.",
+      "tool_blocked",
+      "unresolved",
+      {
+        allowedToolNames: selectedToolNames,
+        validationIssues
+      }
+    ), "runtime_provider_unavailable", {
+      providerRoute: providerAvailability.route,
+      providerAvailabilityReason: providerAvailability.reason,
+      hostSurface: providerAvailability.hostSurface
+    });
+  }
+
+  if (providerAvailability.route !== "vscode-lm" && selectedToolNames.length > 0) {
+    return finalizeResult(fallbackResult(
+      input,
+      [],
+      `TRACEABLE runtimeProvider=${providerAvailability.route} currently supports text-only requests only. This run selected tools ${summarizeJson(selectedToolNames, 220)}. Set maxToolCalls=0, use a lightweight DIRECT turn, or switch back to vscode-lm for tool-enabled runs.`,
+      "tool_blocked",
+      "unresolved",
+      {
+        allowedToolNames: selectedToolNames,
+        validationIssues
+      }
+    ), "runtime_provider_tools_unsupported", {
+      providerRoute: providerAvailability.route,
+      hostSurface: providerAvailability.hostSurface,
+      selectedToolNames
+    });
+  }
+
   const policy = getTraceableModelPolicyDeclarations();
   const explicitSelectors = buildTraceableSubagentModelSelectors(input);
   if (explicitSelectors.some((selector) => isBlockedTraceableModelSelector(selector, policy.blocked))) {
@@ -4758,10 +4828,10 @@ export async function runTraceableSubagent(
 
   const toolCalls: TraceableSubagentToolCallRecord[] = [];
   const opaqueDelegations: TraceableOpaqueDelegation[] = [];
-  let availableModels: vscode.LanguageModelChat[] = [];
-  let sendableModels: vscode.LanguageModelChat[] = [];
+  let availableModels: TraceableRuntimeModel[] = [];
+  let sendableModels: TraceableRuntimeModel[] = [];
   let matchedSelector: vscode.LanguageModelChatSelector | undefined;
-  let model: vscode.LanguageModelChat | undefined;
+  let model: TraceableRuntimeModel | undefined;
 
   if (selectors.length === 0) {
     const canUseImplicitAutoSelection = !resolvedAgentArtifact
@@ -4838,10 +4908,8 @@ export async function runTraceableSubagent(
   setStatus("selecting model");
   try {
     for (const selector of selectors) {
-      const availableForSelector = await vscode.lm.selectChatModels(selector);
-      const sendableForSelector = options.accessInformation
-        ? availableForSelector.filter((candidate) => options.accessInformation?.canSendRequest(candidate))
-        : availableForSelector;
+      const selectedCandidates = await selectTraceableRuntimeModels(selector, options.accessInformation, providerSettings);
+      const { available: availableForSelector, sendable: sendableForSelector } = selectedCandidates;
       if (!model && sendableForSelector[0]) {
         availableModels = availableForSelector;
         sendableModels = sendableForSelector;
@@ -4990,7 +5058,7 @@ export async function runTraceableSubagent(
       messageCount: messages.length,
       recentMessages: summarizeRecentMessages(messages)
     });
-    let response: vscode.LanguageModelChatResponse;
+    let response: TraceableRuntimeChatResponse;
     try {
       if (options.token?.isCancellationRequested) {
         return finalizeCancelledResult("cancelled_before_send_request", toolCalls, selectedToolNames, {

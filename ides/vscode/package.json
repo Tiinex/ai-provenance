@@ -1503,6 +1503,55 @@
             "default": [],
             "description": "TRACEABLE model declarations to disallow for role-driven selection, preferred-model fallback selection, and explicit caller-provided modelSelector.id. Blocked declarations are also marked in `list_traceable_models` instead of being hidden. Use the same human-readable declaration syntax as agent frontmatter model/models."
           },
+          "tiinex.aiProvenance.runtimeProvider": {
+            "type": "string",
+            "enum": [
+              "vscode-lm",
+              "openai-compatible",
+              "ollama"
+            ],
+            "default": "vscode-lm",
+            "description": "Select the model provider route used by TRACEABLE runtime. `vscode-lm` preserves current behavior. `openai-compatible` and `ollama` are opt-in external or local routes."
+          },
+          "tiinex.aiProvenance.disableVscodeLmProviderForTraceableRuntime": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, TRACEABLE runtime must not use the VS Code LM or Copilot provider route. This only controls Tiinex runtime routing and does not unload Copilot globally."
+          },
+          "tiinex.aiProvenance.openAiCompatibleBaseUrl": {
+            "type": "string",
+            "default": "",
+            "description": "Base URL for an OpenAI-compatible chat completions endpoint. For local Ollama this may be a localhost endpoint."
+          },
+          "tiinex.aiProvenance.openAiCompatibleApiKeyEnv": {
+            "type": "string",
+            "default": "",
+            "description": "Name of the environment variable containing the API key for the OpenAI-compatible provider. Leave empty for local providers that do not require a key."
+          },
+          "tiinex.aiProvenance.openAiCompatibleModel": {
+            "type": "string",
+            "default": "",
+            "description": "Model id for the OpenAI-compatible provider route."
+          },
+          "tiinex.aiProvenance.openAiCompatibleMaxOutputTokens": {
+            "type": "number",
+            "default": 1200,
+            "minimum": 1,
+            "description": "Maximum output token budget for OpenAI-compatible provider calls."
+          },
+          "tiinex.aiProvenance.openAiCompatibleTemperature": {
+            "type": "number",
+            "default": 0.2,
+            "minimum": 0,
+            "maximum": 2,
+            "description": "Temperature for OpenAI-compatible provider calls."
+          },
+          "tiinex.aiProvenance.externalProviderMaxRequestsPerRun": {
+            "type": "number",
+            "default": 2,
+            "minimum": 1,
+            "description": "Fail-safe cap on external provider calls per TRACEABLE run."
+          },
           "tiinex.aiProvenance.traceableUndeclaredMaxIterations": {
             "type": "number",
             "default": 100,

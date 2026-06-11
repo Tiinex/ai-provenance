@@ -4,6 +4,14 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  buildTraceableOpenAiCompatibleEndpoint,
+  buildTraceableOpenAiCompatibleHeaders,
+  buildTraceableOpenAiCompatibleRequestBody,
+  extractTraceableOpenAiCompatibleText,
+  extractTraceableOpenAiCompatibleUsage,
+  formatTraceableExternalProviderFailure
+} from "../src/traceableRuntimeProviderHttp.js";
+import {
   getUniqueWorkspaceFolderMatchByName,
   isPathWithinAnyWorkspaceRoot,
   resolveDriveLessAbsolutePathOnWindows,
@@ -56,6 +64,94 @@ function testStandaloneMoveRetainedDescendantRewrites() {
     newLineageLabel: "001-2-1",
     parentPathOverride: path.win32.normalize("C:/repo/.topics/transfer/move-alone-proof/001-2-leo.trace.md")
   }], "Standalone move descendants should stay in place and only rewrite their parent reference to the moved node.");
+}
+
+function testTraceableRuntimeProviderHttpHelpers() {
+  assert.equal(
+    buildTraceableOpenAiCompatibleEndpoint({ runtimeProvider: "openai-compatible", openAiCompatibleBaseUrl: "https://example.test/v1" }),
+    "https://example.test/v1/chat/completions",
+    "OpenAI-compatible routes should append the chat-completions suffix when only a base URL is configured."
+  );
+  assert.equal(
+    buildTraceableOpenAiCompatibleEndpoint({ runtimeProvider: "ollama", openAiCompatibleBaseUrl: "" }),
+    "http://127.0.0.1:11434/v1/chat/completions",
+    "Ollama routes should default to the local OpenAI-compatible endpoint when no explicit base URL is configured."
+  );
+
+  const missingApiKeyHeaders = buildTraceableOpenAiCompatibleHeaders("TRACEABLE_TEST_KEY", {});
+  assert.equal(
+    missingApiKeyHeaders.missingApiKeyEnv,
+    "TRACEABLE_TEST_KEY",
+    "External provider headers should report a configured-but-missing API key environment variable."
+  );
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(missingApiKeyHeaders.headers, "authorization"),
+    "External provider headers should not inject an authorization header when the configured API key is missing."
+  );
+
+  const presentApiKeyHeaders = buildTraceableOpenAiCompatibleHeaders("TRACEABLE_TEST_KEY", { TRACEABLE_TEST_KEY: "secret-value" });
+  assert.equal(
+    presentApiKeyHeaders.headers.authorization,
+    "Bearer secret-value",
+    "External provider headers should inject a bearer token when the configured API key environment variable is present."
+  );
+  assert.equal(
+    presentApiKeyHeaders.missingApiKeyEnv,
+    undefined,
+    "External provider headers should not report a missing API key when the environment variable is present."
+  );
+
+  const requestBody = buildTraceableOpenAiCompatibleRequestBody(
+    {
+      openAiCompatibleTemperature: 0.2,
+      openAiCompatibleMaxOutputTokens: 1200
+    },
+    "qwen2.5-coder:7b",
+    [{ role: "user", content: "hello" }]
+  );
+  assert.deepEqual(
+    requestBody,
+    {
+      model: "qwen2.5-coder:7b",
+      messages: [{ role: "user", content: "hello" }],
+      temperature: 0.2,
+      max_tokens: 1200,
+      stream: false
+    },
+    "External provider request bodies should preserve normalized messages and bounded generation settings."
+  );
+
+  assert.equal(
+    extractTraceableOpenAiCompatibleText({
+      choices: [{
+        message: {
+          content: [{ text: "alpha" }, { content: "beta" }]
+        }
+      }]
+    }),
+    "alpha\n\nbeta",
+    "External provider payload parsing should flatten both text and content response shapes."
+  );
+  assert.deepEqual(
+    extractTraceableOpenAiCompatibleUsage({
+      usage: {
+        prompt_tokens: 12,
+        completion_tokens: 5,
+        total_tokens: 17
+      }
+    }),
+    {
+      promptTokens: 12,
+      completionTokens: 5,
+      totalTokens: 17
+    },
+    "External provider usage parsing should normalize exact token counts when the provider returns them."
+  );
+  assert.equal(
+    formatTraceableExternalProviderFailure(503, "Service Unavailable", "upstream offline"),
+    "TRACEABLE external provider request failed (503 Service Unavailable). upstream offline",
+    "External provider failures should stay bounded and readable."
+  );
 }
 
 function finalizeContinuityIntegrity(markdown, options = {}) {
@@ -2410,6 +2506,7 @@ function testValidatorPolicyKeepsUnsupportedFooterMethodsOutOfProblems() {
 }
 
 async function main() {
+  testTraceableRuntimeProviderHttpHelpers();
   testStandaloneMoveRetainedDescendantRewrites();
   testContinuityValidationCoreWithLocalFixtureChain();
   testValidatorFindsParentSchemaMismatch();
@@ -3101,6 +3198,8 @@ async function main() {
   assert.ok(extensionSource.includes('"Traceable Panel Chat Turn"'), "Extension source is missing the panel chat-turn continuation path.");
   assert.ok(extensionSource.includes('exportToFolder: path.dirname(parentTracePath)'), "Extension source should continue panel chat turns into the current trace folder.");
   const runtimeSource = await readFile(path.join(packageRoot, "src", "traceableSubagent.ts"), "utf8");
+  const runtimeProviderSource = await readFile(path.join(packageRoot, "src", "traceableRuntimeProvider.ts"), "utf8");
+  const runtimeProviderHttpSource = await readFile(path.join(packageRoot, "src", "traceableRuntimeProviderHttp.js"), "utf8");
   assert.ok(runtimeSource.includes("deriveContinuationInheritedModelSelector"), "Traceable runtime source should derive continuation model inheritance from the parent trace outcome.");
   assert.ok(runtimeSource.includes("const exactParentModel = normalizeInheritedModelSelector(isRecord(parentResult?.model) ? parentResult.model : undefined);"), "Traceable runtime source should prefer the parent trace's actual selected model for continuations.");
   assert.ok(runtimeSource.includes("tiinex.aiProvenance"), "Traceable runtime source is missing the provenance configuration namespace.");
@@ -3188,6 +3287,11 @@ async function main() {
   assert.ok(runtimeSource.includes("output: buildPersistedToolOutput(toolOutput)"), "Traceable runtime source should persist bounded successful tool output in the tool ledger.");
   assert.ok(runtimeSource.includes("function isBinaryLikeToolDataCandidate"), "Traceable runtime source is missing binary-like data detection for safer persisted tool output.");
   assert.ok(runtimeSource.includes("outputMetadataSummary"), "Traceable runtime source is missing metadata summaries for data-like tool outputs.");
+  assert.ok(runtimeProviderSource.includes("export interface TraceableProviderModel") && runtimeProviderSource.includes("export interface TraceableProviderRequest") && runtimeProviderSource.includes("export interface TraceableProviderResponse"), "Traceable runtime provider boundary should preserve provider-neutral model/request/response contracts.");
+  assert.ok(runtimeProviderSource.includes("getTraceableRuntimeProviderAvailability") && runtimeProviderSource.includes("disableVscodeLmProviderForTraceableRuntime") && runtimeProviderSource.includes("openAiCompatibleModel to be configured") && runtimeProviderSource.includes("openAiCompatibleBaseUrl or the built-in Ollama default endpoint"), "Traceable runtime provider boundary should gate disabled or misconfigured routes explicitly instead of silently using VS Code LM.");
+  assert.ok(runtimeProviderSource.includes("createTraceableExternalRuntimeModel") && runtimeProviderSource.includes("currently supports text-only requests only") && runtimeProviderHttpSource.includes("/chat/completions"), "Traceable runtime provider boundary should expose the first external text-only adapter path through an OpenAI-compatible chat completions surface.");
+  assert.ok(runtimeProviderHttpSource.includes("missingApiKeyEnv") && runtimeProviderHttpSource.includes("authorization") && runtimeProviderSource.includes("requires environment variable"), "Traceable runtime provider boundary should fail closed when a configured external API-key environment variable is missing.");
+  assert.ok(runtimeProviderSource.includes("toTraceableProviderModel") && runtimeProviderSource.includes("buildTraceableProviderToolDefinitions"), "Traceable runtime provider boundary should expose neutral conversion helpers for model and tool metadata.");
   assert.ok(extensionSource.includes("traceableEvidenceLoadedToolDetails"), "Extension source is missing cached on-demand tool-detail state for evidence panels.");
   assert.ok(extensionSource.includes("readParsedTraceableEvidenceFromFileWithRetry"), "Extension source is missing bounded retry handling for freshly written TRACEABLE evidence files.");
   assert.ok(extensionSource.includes("const { markdown, parsed } = await readParsedTraceableEvidenceFromFileWithRetry(resolvedEvidenceFilePath);"), "Extension source should use bounded retry when the public view_traceable_subagent tool reads freshly written evidence files.");

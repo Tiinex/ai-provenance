@@ -414,12 +414,21 @@ export interface TraceableRuntimeDecisionSummary {
 
 export interface TraceableRuntimeFingerprint {
   extensionVersion?: string;
-  hostSurface: "vscode-lm-tool";
+  hostSurface: "vscode-lm-tool" | "openai-compatible-chat-completions";
+  providerRoute: "vscode-lm" | "openai-compatible" | "ollama";
   platform: string;
   workspaceFolders: string[];
   relevantConfig: {
     traceablePreferredModels: string[];
     traceableBlockedModels: string[];
+    runtimeProvider: "vscode-lm" | "openai-compatible" | "ollama";
+    disableVscodeLmProviderForTraceableRuntime: boolean;
+    openAiCompatibleBaseUrlConfigured: boolean;
+    openAiCompatibleApiKeyEnv?: string;
+    openAiCompatibleModel?: string;
+    openAiCompatibleMaxOutputTokens: number;
+    openAiCompatibleTemperature: number;
+    externalProviderMaxRequestsPerRun: number;
     traceableUndeclaredMaxIterations: number;
     traceableUndeclaredMaxToolCalls: number;
     traceablePreviewMaxBytes: number;
