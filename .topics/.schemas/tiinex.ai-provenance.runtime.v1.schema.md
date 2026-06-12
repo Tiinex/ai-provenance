@@ -32,6 +32,62 @@ It is intentionally narrower than the generic
 `tiinex.ai.runtime.v1` parent schema and only owns the concrete fields that the
 local TRACEABLE runtime actually emits, persists, or meaningfully preserves.
 
+## Schema Validation Contract
+
+The following sections contain the validation-relevant contract for this
+child schema. Validation tooling and runtime checks should consult the rules
+below when deciding whether an artifact is a valid `tiinex.ai-provenance.runtime.v1`
+emission.
+
+### Scope Rule
+
+Use `tiinex.ai-provenance.runtime.v1` when the artifact or embedded state is
+primarily trying to preserve a concrete TRACEABLE child-lane result or evidence
+state for this repository's runtime.
+
+This schema is for the parseable ai-provenance runtime result shape, not for the
+broader abstract AI-runtime model and not for generic topic documents.
+
+### Required M0 Runtime Shape
+
+Artifacts using this schema should preserve, either directly or through an
+embedded `Traceable State` block, the following M0-compatible runtime fields:
+
+- provider route
+- selected model identity when known
+- request contract summary or request envelope signal
+- runtime decision summary
+- outcome triple:
+  - stop reason
+  - completion claim
+  - final summary
+- usage provenance or usage summary
+- degraded or unresolved state when the run could not complete normally
+
+### Interpretation Boundaries (Required Concrete Semantics)
+
+When this schema is used, the runtime shape should make it understandable:
+
+- which TRACEABLE lane or child run produced the result
+- which provider route was selected or configured for that run
+- whether the selected route still used the native VS Code LM host surface or a
+  later external route
+- which model identity the runtime actually selected when that signal exists
+- whether tools were allowed, blocked, or absent for the run
+- whether the child result was completed, partial, unresolved, degraded, or
+  otherwise narrowed by runtime policy
+
+### Provider Capability Rule
+
+This child schema must not encode Copilot or VS Code LM as the only provider
+route.
+
+It must also allow text-only external providers in M0.
+
+If a provider route cannot support tool calling for a given run, the preserved
+runtime state should clearly show that the run stayed text-only or degraded,
+rather than pretending that tool parity existed.
+
 ## Scope Rule
 
 Use `tiinex.ai-provenance.runtime.v1` when the artifact or embedded state is

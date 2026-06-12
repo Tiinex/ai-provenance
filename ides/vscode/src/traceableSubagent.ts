@@ -4672,12 +4672,19 @@ export async function runTraceableSubagent(
   const toolSelectionBudgetZero = budgetPolicy.maxToolCalls <= 0;
   const normalizedInputMode = normalizeTraceableInputMode(input.inputMode);
   const forceToolFreeDirectResponse = isLightweightConversationalDirectTurn(input);
+  const providerSettings = readTraceableRuntimeProviderSettings();
+  const providerAvailability = getTraceableRuntimeProviderAvailability(providerSettings);
+  // If the provider is external and the run did not explicitly request or inherit allowed tools,
+  // treat the default allowed toolset as empty so selection yields a tool-free run.
+  const computedDefaultAllowedToolNames = (providerAvailability.route !== "vscode-lm" && requestedAllowedToolNames.length === 0 && inheritedAllowedToolNames.length === 0)
+    ? []
+    : inheritedAllowedToolNames;
   const selectedTools = toolSelectionBudgetZero || forceToolFreeDirectResponse
     ? []
     : selectTraceableSubagentTools(vscode.lm.tools, {
       allowedToolNames: requestedAllowedToolNames,
       blockedToolNames: requestedBlockedToolNames,
-      defaultAllowedToolNames: inheritedAllowedToolNames
+      defaultAllowedToolNames: computedDefaultAllowedToolNames
     });
   const selectedToolNames = selectedTools.map((tool) => tool.name);
   const toolSelectionRestricted = requestedAllowedToolNames.length > 0
@@ -4688,8 +4695,10 @@ export async function runTraceableSubagent(
     : forceToolFreeDirectResponse
       ? "tool-free: lightweight DIRECT turn"
       : "tool-enabled";
-  const providerSettings = readTraceableRuntimeProviderSettings();
-  const providerAvailability = getTraceableRuntimeProviderAvailability(providerSettings);
+  // Compute an effective routing note that reflects external provider constraints.
+  const effectiveRoutingNote = (providerAvailability.route !== "vscode-lm" && requestedAllowedToolNames.length === 0 && inheritedAllowedToolNames.length === 0)
+    ? "tool-free: external-text-only"
+    : routingNote;
   let broadRuntimeModelsPromise: Promise<{ available: TraceableRuntimeModel[]; sendable: TraceableRuntimeModel[] }> | undefined;
   const loadBroadRuntimeModels = () => {
     broadRuntimeModelsPromise ??= listTraceableRuntimeModelCandidates(options.accessInformation, providerSettings);
@@ -4706,14 +4715,15 @@ export async function runTraceableSubagent(
     toolSelectionBudgetZero,
     forceToolFreeDirectResponse,
     selectedToolCount: selectedToolNames.length,
-    selectedToolNames
+    selectedToolNames,
+    routingNote: effectiveRoutingNote
   });
 
   try {
     options.statusReporter?.setHeader?.({
       selectedToolNames,
       toolSelectionRestricted,
-      routingNote
+      routingNote: effectiveRoutingNote
     });
   } catch {
     // Best-effort UI status only; runtime correctness should not depend on it.

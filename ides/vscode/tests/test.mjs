@@ -32,6 +32,7 @@ import { validateTraceablePointerSchemaSync } from "../src/traceablePointerSchem
 import { validateTraceableTaskSchemaSync } from "../src/traceableTaskSchemaValidation.js";
 import { validateTraceableTopicSchemaSync } from "../src/traceableTopicSchemaValidation.js";
 import { runSchemaCompatibilityFixtures } from "./schemaCompatibilityFixtures.mjs";
+// Note: avoid importing dist/extension.js (requires vscode). Use HTTP helpers instead.
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -3412,7 +3413,53 @@ async function main() {
   assert.ok(extensionSource.includes("revealFileInOS"), "Traceable extension source is missing OS-level reveal handling for targets outside workspace roots.");
   assert.ok(extensionSource.includes("isPathWithinAnyWorkspaceRoot"), "Traceable extension source is missing the workspace-root boundary check for open targets.");
   assert.ok(contractSource.includes("extractObservedReadTargets"), "Traceable contract source is missing observed-read target summaries.");
+  await testMockedExternalDirectRun();
   console.log("ai-provenance vscode scaffold checks passed");
+}
+
+async function testMockedExternalDirectRun() {
+  // Mock fetch to simulate OpenAI-compatible chat/completions response
+  const originalFetch = global.fetch;
+  const originalEnv = { ...process.env };
+  try {
+    process.env.TEST_OPENAI_KEY = "fake-key";
+    global.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        choices: [
+          { message: { content: "The external child returned a plain text answer." } }
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 }
+      }),
+      text: async () => JSON.stringify({})
+    });
+
+    const settings = {
+      runtimeProvider: "openai-compatible",
+      openAiCompatibleBaseUrl: "https://api.example.test/",
+      openAiCompatibleApiKeyEnv: "TEST_OPENAI_KEY",
+      openAiCompatibleModel: "test-model",
+      openAiCompatibleMaxOutputTokens: 200,
+      openAiCompatibleTemperature: 0.2
+    };
+
+    // Build headers/body like the runtime would.
+    const { headers, missingApiKeyEnv } = buildTraceableOpenAiCompatibleHeaders(settings.openAiCompatibleApiKeyEnv, process.env);
+    assert.ok(!missingApiKeyEnv, `Test requires ${settings.openAiCompatibleApiKeyEnv} env to be set`);
+    const body = buildTraceableOpenAiCompatibleRequestBody(settings, settings.openAiCompatibleModel, [{ role: "user", content: "Hello" }]);
+
+    // Call mocked fetch and parse response using runtime helpers.
+    const response = await fetch(buildTraceableOpenAiCompatibleEndpoint(settings), { method: "POST", headers, body: JSON.stringify(body) });
+    assert.ok(response.ok, "Mocked fetch should return ok");
+    const payload = await response.json();
+    const rawText = extractTraceableOpenAiCompatibleText(payload);
+    const usage = extractTraceableOpenAiCompatibleUsage(payload);
+    assert.ok(rawText.includes("external child returned") || rawText.length > 0, "Expected external provider to return text");
+    assert.deepEqual(usage, { promptTokens: 1, completionTokens: 2, totalTokens: 3 });
+  } finally {
+    global.fetch = originalFetch;
+    process.env = originalEnv;
+  }
 }
 
 await main();
