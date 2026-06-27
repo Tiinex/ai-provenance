@@ -2857,7 +2857,7 @@ async function renderTraceableEvidenceSurfaceFromFile(input: {
   });
 }
 
-type TraceableEditorValidationKind = "continuity-trace" | "root-schema" | "topic-schema" | "decision-schema" | "task-schema" | "evidence-schema" | "pointer-schema";
+type TraceableEditorValidationKind = "continuity-trace" | "root-schema" | "topic-schema" | "decision-schema" | "task-schema" | "evidence-schema" | "pointer-schema" | "schema-generic" | "validator-generic";
 
 function isSuppressedTraceableFixturePath(fsPath: string): boolean {
   const normalized = path.resolve(fsPath).replace(/\\+/gu, "/").toLowerCase();
@@ -2880,6 +2880,7 @@ function getTraceableEditorValidationKindForFsPath(fsPath: string): TraceableEdi
   if (normalizedLower.endsWith("tiinex.topic.v1.schema.md")) {
     return "topic-schema";
   }
+  
   if (normalizedLower.endsWith("tiinex.decision.v1.schema.md")) {
     return "decision-schema";
   }
@@ -2891,6 +2892,16 @@ function getTraceableEditorValidationKindForFsPath(fsPath: string): TraceableEdi
   }
   if (normalizedLower.endsWith("tiinex.pointer.v1.schema.md")) {
     return "pointer-schema";
+  }
+  // Generic schema validation kind: run continuity checks for any schema note
+  // file that doesn't match a dedicated validator above. This ensures basic
+  // continuity envelope and continuity integrity diagnostics (and related
+  // quick fixes) are available for all `*.schema.md` files.
+  if (normalizedLower.endsWith(".schema.md")) {
+    return "schema-generic";
+  }
+  if (normalizedLower.endsWith(".validator.md")) {
+    return "validator-generic";
   }
   return undefined;
 }
@@ -4827,7 +4838,7 @@ async function rotateTraceableContinuityChecksum(output: vscode.OutputChannel, t
   const readTextFileSync = (filePath: string): string => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(artifactUri.fsPath)
     ? markdown
     : readFileSync(filePath, "utf8");
-  const nextChecksum = artifactUri.fsPath.endsWith(".schema.md")
+  const nextChecksum = (artifactUri.fsPath.endsWith(".schema.md") || artifactUri.fsPath.endsWith(".validator.md"))
     ? computeTargetedSchemaNoteContinuityChecksumSha256(
       artifactUri.fsPath,
       markdown,
@@ -7417,7 +7428,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const readTextFileSync = (filePath: string): string => path.resolve(filePath).toLowerCase() === normalizedDocumentPath
         ? document.getText()
         : readFileSync(filePath, "utf8");
-      if (validationKind === "continuity-trace") {
+      if (validationKind === "continuity-trace" || validationKind === "schema-generic" || validationKind === "validator-generic") {
         const result = validateTraceableContinuityArtifactChainSync({
           filePath: document.uri.fsPath,
           workspaceRoots: getTraceableOpenWorkspaceFolders(),
