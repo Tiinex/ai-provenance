@@ -38,7 +38,13 @@ export interface TraceableParsedSchemaNote {
   currentSchema?: { label?: string; target?: string };
   currentCreatedAt?: string;
   currentSummary?: string;
-  footerIntegrity?: { method?: string; towardsLabel?: string; towardsTarget?: string; value?: string };
+  footerIntegrity?: {
+    method?: string;
+    towardsLabel?: string;
+    towardsTarget?: string;
+    value?: string;
+    entries?: Array<{ method?: string; towardsLabel?: string; towardsTarget?: string; value?: string }>;
+  };
   schemaValidationContract?: TraceableSchemaContractSection;
   artifactCreationContract?: TraceableSchemaContractSection;
   headings: Array<{ level: number; text: string; lineNumber: number }>;

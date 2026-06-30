@@ -144,6 +144,7 @@ const REPAIR_TRACE_LINEAGE_COMMAND = "tiinex.aiProvenance.repairTraceLineage";
 const VALIDATE_TRACEABLE_CONTINUITY_COMMAND = "tiinex.aiProvenance.validateTraceableContinuity";
 const ROTATE_TRACEABLE_CONTINUITY_CHECKSUM_COMMAND = "tiinex.aiProvenance.rotateTraceableContinuityChecksum";
 const REFRESH_TRACEABLE_PERMALINK_FROM_LATEST_COMMAND = "tiinex.aiProvenance.refreshTraceablePermalinkFromLatest";
+const REPAIR_TRACEABLE_PARENT_TRACE_TARGET_COMMAND = "tiinex.aiProvenance.repairTraceableParentTraceTarget";
 const ADD_FILE_TO_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.addFileToTraceableChat";
 const NEW_TRACEABLE_CHAT_COMMAND = "tiinex.aiProvenance.newTraceableChat";
 const CREATE_TRACEABLE_CHAT_FROM_VIEW_COMMAND = "tiinex.aiProvenance.createTraceableChatFromView";
@@ -574,6 +575,28 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
       }
       const action = new vscode.CodeAction("Insert Continuity Integrity footer", vscode.CodeActionKind.QuickFix);
       action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "continuity-checksum-v1-legacy") {
+      const action = new vscode.CodeAction("Upgrade Continuity Integrity footer to v2", vscode.CodeActionKind.QuickFix);
+      action.command = {
+        command: ROTATE_TRACEABLE_CONTINUITY_CHECKSUM_COMMAND,
+        title: "Upgrade Continuity Integrity footer to v2",
+        arguments: [document.uri]
+      };
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
+    if (diagnosticCode === "traceable-parent-trace-unreadable" || diagnosticCode === "traceable-parent-trace-unresolvable") {
+      const action = new vscode.CodeAction("Repair Parent Trace target", vscode.CodeActionKind.QuickFix);
+      action.command = {
+        command: REPAIR_TRACEABLE_PARENT_TRACE_TARGET_COMMAND,
+        title: "Repair Parent Trace target",
+        arguments: [document.uri]
+      };
       action.diagnostics = [diagnostic];
       actions.push(action);
       continue;
@@ -2903,6 +2926,13 @@ function getTraceableEditorValidationKindForFsPath(fsPath: string): TraceableEdi
   if (normalizedLower.endsWith(".validator.md")) {
     return "validator-generic";
   }
+  // Treat a set of other markdown artifact types as generic schema-like
+  // artifacts so they receive continuity footer and checksum diagnostics
+  // and quick fixes (v1 checksum support). These are not specialized
+  // schema validators and should only get the continuity envelope checks.
+  if (normalizedLower.endsWith(".origin.md") || normalizedLower.endsWith(".adapter.md") || normalizedLower.endsWith(".tool.md") || normalizedLower.endsWith(".interface.md")) {
+    return "schema-generic";
+  }
   return undefined;
 }
 
@@ -2917,6 +2947,71 @@ function createTopOfDocumentRange(document: vscode.TextDocument): vscode.Range {
     return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 0));
   }
   return new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, Math.max(document.lineAt(0).text.length, 1)));
+}
+
+function collectOutdatedTraceablePermalinkDiagnostics(
+  document: vscode.TextDocument,
+  source: string
+): vscode.Diagnostic[] {
+  const diagnostics: vscode.Diagnostic[] = [];
+  const lines = Array.from({ length: document.lineCount }, (_, index) => document.lineAt(index).text);
+  const refreshedTargetCache = new Map<string, string | undefined>();
+  const currentTargetMarkdownCache = new Map<string, string | undefined>();
+  const latestTargetMarkdownCache = new Map<string, string | undefined>();
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const fieldKey = getTraceablePermalinkRefreshFieldKey(lines, lineIndex);
+    if (!isRefreshableTraceablePermalinkFieldKey(fieldKey)) {
+      continue;
+    }
+    const currentTarget = extractFirstMarkdownLinkTarget(lines[lineIndex]);
+    if (!currentTarget) {
+      continue;
+    }
+    const currentPermalink = parseGitHubCommitPermalink(currentTarget);
+    if (!currentPermalink) {
+      continue;
+    }
+    let refreshedTarget = refreshedTargetCache.get(currentTarget);
+    if (refreshedTarget === undefined && !refreshedTargetCache.has(currentTarget)) {
+      refreshedTarget = tryResolveTraceableLatestPermalinkForTarget(document, currentTarget, { allowRemoteQuery: false });
+      refreshedTargetCache.set(currentTarget, refreshedTarget);
+    }
+    if (!refreshedTarget) {
+      continue;
+    }
+    const refreshedPermalink = parseGitHubCommitPermalink(refreshedTarget);
+    if (!refreshedPermalink) {
+      continue;
+    }
+    if (currentPermalink.repoSlug === refreshedPermalink.repoSlug
+      && currentPermalink.relativePath === refreshedPermalink.relativePath
+      && currentPermalink.revision !== refreshedPermalink.revision) {
+      let currentTargetMarkdown = currentTargetMarkdownCache.get(currentTarget);
+      if (currentTargetMarkdown === undefined && !currentTargetMarkdownCache.has(currentTarget)) {
+        currentTargetMarkdown = readTraceablePermalinkTargetMarkdownForDocument(document, currentTarget);
+        currentTargetMarkdownCache.set(currentTarget, currentTargetMarkdown);
+      }
+      let latestTargetMarkdown = latestTargetMarkdownCache.get(currentTarget);
+      if (latestTargetMarkdown === undefined && !latestTargetMarkdownCache.has(currentTarget)) {
+        latestTargetMarkdown = readTraceableLatestMarkdownForPermalinkTarget(document, currentTarget, { allowRemoteQuery: false });
+        latestTargetMarkdownCache.set(currentTarget, latestTargetMarkdown);
+      }
+      if (typeof currentTargetMarkdown === "string"
+        && typeof latestTargetMarkdown === "string"
+        && currentTargetMarkdown.replace(/\r\n?/gu, "\n") === latestTargetMarkdown.replace(/\r\n?/gu, "\n")) {
+        continue;
+      }
+      const diagnostic = new vscode.Diagnostic(
+        document.lineAt(lineIndex).range,
+        "Commit-pinned permalink is out of date; a newer latest-origin permalink is available for this target.",
+        vscode.DiagnosticSeverity.Warning
+      );
+      diagnostic.source = source;
+      diagnostic.code = "traceable-permalink-outdated";
+      diagnostics.push(diagnostic);
+    }
+  }
+  return diagnostics;
 }
 
 function findTraceableDiagnosticLineRange(
@@ -2965,6 +3060,72 @@ function findTraceableDiagnosticLineRangeInSection(
   return undefined;
 }
 
+function findTraceablePreferredContinuityIntegrityValueRange(document: vscode.TextDocument): vscode.Range | undefined {
+  let inSection = false;
+  const entries: Array<{ method?: string; towardsTarget?: string; valueLineIndex?: number }> = [];
+  let currentEntry: { method?: string; towardsTarget?: string; valueLineIndex?: number } | undefined;
+
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const lineText = document.lineAt(lineIndex).text;
+    const trimmed = lineText.trim();
+    if (!inSection) {
+      if (trimmed === "# Continuity Integrity") {
+        inSection = true;
+      }
+      continue;
+    }
+    if (/^#\s+/u.test(trimmed) && trimmed !== "# Continuity Integrity") {
+      break;
+    }
+
+    const methodMatch = trimmed.match(/^-[ \t]+([^:]+)$/u);
+    if (methodMatch) {
+      currentEntry = { method: methodMatch[1].trim() };
+      entries.push(currentEntry);
+      continue;
+    }
+
+    const towardsMatch = trimmed.match(/^-[ \t]+Towards:\s+(.*)$/u);
+    if (towardsMatch) {
+      currentEntry ??= {};
+      if (entries[entries.length - 1] !== currentEntry) {
+        entries.push(currentEntry);
+      }
+      const targetMatch = towardsMatch[1].trim().match(/^\[[^\]]*\]\(([^)]+)\)$/u);
+      currentEntry.towardsTarget = targetMatch?.[1]?.trim() || towardsMatch[1].trim();
+      continue;
+    }
+
+    if (/^-[ \t]+Value:\s+/u.test(trimmed)) {
+      currentEntry ??= {};
+      if (entries[entries.length - 1] !== currentEntry) {
+        entries.push(currentEntry);
+      }
+      currentEntry.valueLineIndex = lineIndex;
+    }
+  }
+
+  let preferredEntry = entries[entries.length - 1];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.method === "sha256-base64url-c14n-v2" && entry?.towardsTarget === "self" && Number.isInteger(entry.valueLineIndex)) {
+      preferredEntry = entry;
+      break;
+    }
+  }
+
+  const valueLineIndex = preferredEntry?.valueLineIndex;
+  if (typeof valueLineIndex === "number") {
+    const line = document.lineAt(valueLineIndex);
+    return new vscode.Range(
+      new vscode.Position(valueLineIndex, 0),
+      new vscode.Position(valueLineIndex, Math.max(line.text.length, 1))
+    );
+  }
+
+  return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Value:"));
+}
+
 function collectDocumentMarkdownHeadings(document: vscode.TextDocument): Array<{ level: number; text: string; lineIndex: number }> {
   const headings: Array<{ level: number; text: string; lineIndex: number }> = [];
   let inFence = false;
@@ -3011,7 +3172,7 @@ function getExpectedSchemaDisplayHeading(validationKind: TraceableEditorValidati
 
 function getSchemaValidationResultForDocument(document: vscode.TextDocument): TraceableSchemaValidationResult | undefined {
   const validationKind = getTraceableEditorValidationKindForFsPath(document.uri.fsPath);
-  if (!validationKind || validationKind === "continuity-trace") {
+  if (!validationKind || validationKind === "continuity-trace" || validationKind === "schema-generic" || validationKind === "validator-generic") {
     return undefined;
   }
   const readTextFileSync = (filePath: string): string => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(document.uri.fsPath)
@@ -3262,26 +3423,54 @@ function createSetCurrentCreatedAtEdit(document: vscode.TextDocument, replaceExi
 }
 
 function readTraceablePermalinkTargetMarkdownForDocument(document: vscode.TextDocument, permalinkTarget: string): string | undefined {
-  const permalinkMatch = permalinkTarget.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:blob|raw)\/([0-9a-f]{7,40})\/(.+)$/iu);
-  if (!permalinkMatch) {
+  const permalink = parseGitHubCommitPermalink(permalinkTarget);
+  if (!permalink) {
     return undefined;
   }
-  const gitRoot = resolveTraceableGitRoot(document.uri.fsPath);
+  const gitRoot = resolveTraceableGitRootForRepoSlug(permalink.repoSlug) ?? resolveTraceableGitRoot(document.uri.fsPath);
   if (!gitRoot) {
     return undefined;
   }
+  if (readTraceableRepoSlugForGitRoot(gitRoot) !== permalink.repoSlug) {
+    return undefined;
+  }
   try {
-    const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
-    const sshMatch = remoteUrl.match(/^git@github\.com:(.+?)(?:\.git)?$/iu);
-    const httpsMatch = remoteUrl.match(/^https:\/\/github\.com\/(.+?)(?:\.git)?$/iu);
-    const repoSlug = sshMatch?.[1] ?? httpsMatch?.[1];
-    if (repoSlug !== permalinkMatch[1]) {
-      return undefined;
-    }
-    return execFileSync("git", ["-C", gitRoot, "show", `${permalinkMatch[2]}:${decodeURIComponent(permalinkMatch[3])}`], { encoding: "utf8" });
+    return execFileSync("git", ["-C", gitRoot, "show", `${permalink.revision}:${permalink.relativePath}`], { encoding: "utf8" });
   } catch {
     return undefined;
   }
+}
+
+function readTraceableLatestMarkdownForPermalinkTarget(
+  document: vscode.TextDocument,
+  permalinkTarget: string,
+  options?: { allowRemoteQuery?: boolean }
+): string | undefined {
+  const permalink = parseGitHubCommitPermalink(permalinkTarget);
+  if (!permalink) {
+    return undefined;
+  }
+  const gitRoot = resolveTraceableGitRootForRepoSlug(permalink.repoSlug) ?? resolveTraceableGitRoot(document.uri.fsPath);
+  if (!gitRoot) {
+    return undefined;
+  }
+  if (readTraceableRepoSlugForGitRoot(gitRoot) !== permalink.repoSlug) {
+    return undefined;
+  }
+
+  const allowRemoteQuery = options?.allowRemoteQuery !== false;
+  for (const branchName of listTraceableLatestBranchCandidates(gitRoot, { allowRemoteQuery })) {
+    const commitHash = resolveTraceableCommitHashForBranch(gitRoot, branchName, { allowRemoteQuery });
+    if (!commitHash || !gitRefExistsAtPath(gitRoot, commitHash, permalink.relativePath)) {
+      continue;
+    }
+    try {
+      return execFileSync("git", ["-C", gitRoot, "show", `${commitHash}:${permalink.relativePath}`], { encoding: "utf8" });
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
 }
 
 function readTraceableLocalTargetMarkdownForDocument(document: vscode.TextDocument, reference: string): string | undefined {
@@ -3393,6 +3582,27 @@ function parseGitHubCommitPermalink(target: string): { repoSlug: string; revisio
     return {
       repoSlug: rawMatch[1],
       revision: rawMatch[2],
+      relativePath: decodeURIComponent(rawMatch[3])
+    };
+  }
+  return undefined;
+}
+
+function parseGitHubBlobLikeTarget(target: string): { repoSlug: string; revision: string; relativePath: string } | undefined {
+  const trimmed = target.trim();
+  const githubMatch = trimmed.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:blob|raw)\/([^/]+)\/(.+)$/iu);
+  if (githubMatch) {
+    return {
+      repoSlug: githubMatch[1],
+      revision: decodeURIComponent(githubMatch[2]),
+      relativePath: decodeURIComponent(githubMatch[3])
+    };
+  }
+  const rawMatch = trimmed.match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+\/[^/]+)\/([^/]+)\/(.+)$/iu);
+  if (rawMatch) {
+    return {
+      repoSlug: rawMatch[1],
+      revision: decodeURIComponent(rawMatch[2]),
       relativePath: decodeURIComponent(rawMatch[3])
     };
   }
@@ -3554,6 +3764,34 @@ function replaceFirstMarkdownLinkTarget(lineText: string, nextTarget: string): s
   return `${lineText.slice(0, match.index ?? 0)}${match[1]}${nextTarget}${match[3]}${lineText.slice((match.index ?? 0) + match[0].length)}`;
 }
 
+const traceableBranchCommitCache = new Map<string, string | undefined>();
+const traceableGitRootRepoSlugCache = new Map<string, string | undefined>();
+const traceableRepoSlugGitRootCache = new Map<string, string | undefined>();
+
+function clearTraceableLatestPermalinkCaches(): void {
+  traceableGitRootRepoSlugCache.clear();
+  traceableRepoSlugGitRootCache.clear();
+  traceableBranchCommitCache.clear();
+}
+
+function readTraceableRepoSlugForGitRoot(gitRoot: string): string | undefined {
+  if (traceableGitRootRepoSlugCache.has(gitRoot)) {
+    return traceableGitRootRepoSlugCache.get(gitRoot);
+  }
+  let repoSlug: string | undefined;
+  try {
+    const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
+    repoSlug = normalizeGitHubRepoSlugFromRemoteUrl(remoteUrl);
+  } catch {
+    repoSlug = undefined;
+  }
+  traceableGitRootRepoSlugCache.set(gitRoot, repoSlug);
+  if (repoSlug && !traceableRepoSlugGitRootCache.has(repoSlug)) {
+    traceableRepoSlugGitRootCache.set(repoSlug, gitRoot);
+  }
+  return repoSlug;
+}
+
 function gitRefExistsAtPath(gitRoot: string, revision: string, relativePath: string): boolean {
   try {
     execFileSync("git", ["-C", gitRoot, "cat-file", "-e", `${revision}:${relativePath}`], { stdio: "ignore" });
@@ -3568,6 +3806,9 @@ function resolveTraceableGitRootForRepoSlug(repoSlug: string): string | undefine
   if (!normalizedRepoSlug) {
     return undefined;
   }
+  if (traceableRepoSlugGitRootCache.has(normalizedRepoSlug)) {
+    return traceableRepoSlugGitRootCache.get(normalizedRepoSlug);
+  }
   const seen = new Set<string>();
   for (const workspaceFolder of vscode.workspace.workspaceFolders ?? []) {
     const gitRoot = resolveTraceableGitRoot(workspaceFolder.uri.fsPath);
@@ -3575,29 +3816,51 @@ function resolveTraceableGitRootForRepoSlug(repoSlug: string): string | undefine
       continue;
     }
     seen.add(gitRoot);
-    try {
-      const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
-      if (normalizeGitHubRepoSlugFromRemoteUrl(remoteUrl) === normalizedRepoSlug) {
-        return gitRoot;
-      }
-    } catch {
-      continue;
+    if (readTraceableRepoSlugForGitRoot(gitRoot) === normalizedRepoSlug) {
+      traceableRepoSlugGitRootCache.set(normalizedRepoSlug, gitRoot);
+      return gitRoot;
     }
   }
+  traceableRepoSlugGitRootCache.set(normalizedRepoSlug, undefined);
   return undefined;
 }
 
-function resolveTraceableCommitHashForBranch(gitRoot: string, branchName: string): string | undefined {
+function resolveTraceableCommitHashForBranch(
+  gitRoot: string,
+  branchName: string,
+  options?: { allowRemoteQuery?: boolean }
+): string | undefined {
+  const allowRemoteQuery = options?.allowRemoteQuery !== false;
+  const cacheKey = `${gitRoot}::${branchName}::${allowRemoteQuery ? "remote" : "local"}`;
+  if (traceableBranchCommitCache.has(cacheKey)) {
+    return traceableBranchCommitCache.get(cacheKey);
+  }
   for (const ref of [`origin/${branchName}`, `refs/remotes/origin/${branchName}`, branchName, `refs/heads/${branchName}`]) {
     try {
       const commitHash = execFileSync("git", ["-C", gitRoot, "rev-parse", ref], { encoding: "utf8" }).trim();
       if (/^[0-9a-f]{40}$/iu.test(commitHash)) {
+        traceableBranchCommitCache.set(cacheKey, commitHash);
         return commitHash;
       }
     } catch {
       continue;
     }
   }
+  if (!allowRemoteQuery) {
+    traceableBranchCommitCache.set(cacheKey, undefined);
+    return undefined;
+  }
+  try {
+    const output = execFileSync("git", ["-C", gitRoot, "ls-remote", "origin", `refs/heads/${branchName}`], { encoding: "utf8" }).trim();
+    const commitHash = output.split(/\s+/u)[0]?.trim();
+    if (commitHash && /^[0-9a-f]{40}$/iu.test(commitHash)) {
+      traceableBranchCommitCache.set(cacheKey, commitHash);
+      return commitHash;
+    }
+  } catch {
+    // Ignore remote lookup failures and let the caller try other branches.
+  }
+  traceableBranchCommitCache.set(cacheKey, undefined);
   return undefined;
 }
 
@@ -3605,11 +3868,16 @@ function encodeGitHubPath(relativePath: string): string {
   return relativePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
 }
 
-function tryResolveTraceableLatestPermalinkForTarget(document: vscode.TextDocument, linkTarget: string): string | undefined {
-  const permalink = parseGitHubCommitPermalink(linkTarget);
+function tryResolveTraceableLatestPermalinkForTarget(
+  document: vscode.TextDocument,
+  linkTarget: string,
+  options?: { allowRemoteQuery?: boolean }
+): string | undefined {
+  const permalink = parseGitHubBlobLikeTarget(linkTarget);
   let repoSlug: string | undefined;
   let gitRoot: string | undefined;
   let relativePath: string | undefined;
+  const allowRemoteQuery = options?.allowRemoteQuery !== false;
 
   if (permalink) {
     repoSlug = permalink.repoSlug;
@@ -3620,12 +3888,7 @@ function tryResolveTraceableLatestPermalinkForTarget(document: vscode.TextDocume
     gitRoot = resolveTraceableGitRoot(resolvedTargetPath);
     if (gitRoot) {
       relativePath = path.relative(gitRoot, resolvedTargetPath).replace(/\\+/gu, "/");
-      try {
-        const remoteUrl = execFileSync("git", ["-C", gitRoot, "config", "--get", "remote.origin.url"], { encoding: "utf8" }).trim();
-        repoSlug = normalizeGitHubRepoSlugFromRemoteUrl(remoteUrl);
-      } catch {
-        repoSlug = undefined;
-      }
+      repoSlug = readTraceableRepoSlugForGitRoot(gitRoot);
     }
   }
 
@@ -3633,14 +3896,94 @@ function tryResolveTraceableLatestPermalinkForTarget(document: vscode.TextDocume
     return undefined;
   }
 
-  for (const branchName of listTraceableLatestBranchCandidates(gitRoot)) {
-    const commitHash = resolveTraceableCommitHashForBranch(gitRoot, branchName);
+  for (const branchName of listTraceableLatestBranchCandidates(gitRoot, { allowRemoteQuery })) {
+    const commitHash = resolveTraceableCommitHashForBranch(gitRoot, branchName, { allowRemoteQuery });
     if (!commitHash || !gitRefExistsAtPath(gitRoot, commitHash, relativePath)) {
       continue;
     }
     return `https://github.com/${repoSlug}/blob/${commitHash}/${encodeGitHubPath(relativePath)}`;
   }
   return undefined;
+}
+
+function buildSchemaIdentityFileNameCandidates(identity: string): string[] {
+  const trimmed = identity.trim();
+  if (!trimmed) {
+    return [];
+  }
+  const candidates = new Set<string>([`${trimmed}.schema.md`]);
+  const parts = trimmed.split(".").filter(Boolean);
+  const versionIndex = parts.findIndex((part) => /^v\d+$/iu.test(part));
+  if (versionIndex >= 0 && versionIndex < parts.length - 1) {
+    const reordered = [...parts.slice(0, versionIndex), ...parts.slice(versionIndex + 1), parts[versionIndex]].join(".");
+    candidates.add(`${reordered}.schema.md`);
+  }
+  return Array.from(candidates);
+}
+
+async function findLikelyLocalSchemaTargetForIdentity(document: vscode.TextDocument, identity: string | undefined): Promise<string | undefined> {
+  const trimmed = identity?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  for (const candidateName of buildSchemaIdentityFileNameCandidates(trimmed)) {
+    const matches = await vscode.workspace.findFiles(`**/${candidateName}`, undefined, 5);
+    if (matches.length > 0) {
+      return matches[0].fsPath;
+    }
+  }
+  return undefined;
+}
+
+async function resolveTraceableRefreshSeedTarget(document: vscode.TextDocument, lineIndex: number): Promise<string | undefined> {
+  const lineText = document.lineAt(lineIndex).text;
+  const directTarget = extractFirstMarkdownLinkTarget(lineText);
+  if (directTarget) {
+    const directResolved = tryResolveTraceableLatestPermalinkForTarget(document, directTarget);
+    if (directResolved) {
+      return directTarget;
+    }
+  }
+
+  const fieldKey = getTraceablePermalinkRefreshFieldKey(
+    Array.from({ length: document.lineCount }, (_, index) => document.lineAt(index).text),
+    lineIndex
+  );
+  if (!fieldKey) {
+    return undefined;
+  }
+
+  const parsed = parseTraceableContinuityMarkdown(document.getText());
+  switch (fieldKey) {
+    case "envelope-schema":
+      return parsed.envelopeSchema?.target
+        || await findLikelyLocalSchemaTargetForIdentity(document, parsed.envelopeSchema?.label);
+    case "parent-schema":
+      return parsed.parentSchema?.target
+        || parsed.parentOrigin?.relative
+        || parsed.parentOrigin?.absolute
+        || await findLikelyLocalSchemaTargetForIdentity(document, parsed.parentSchema?.label);
+    case "current-schema":
+      return parsed.currentSchema?.target
+        || parsed.currentOrigin?.relative
+        || parsed.currentOrigin?.absolute
+        || await findLikelyLocalSchemaTargetForIdentity(document, parsed.currentSchema?.label);
+    case "parent-origin-browse-git":
+      return parsed.parentOrigin?.relative
+        || parsed.parentOrigin?.absolute
+        || parsed.parentTrace?.target
+        || parsed.parentSchema?.target
+        || await findLikelyLocalSchemaTargetForIdentity(document, parsed.parentSchema?.label);
+    case "current-origin-browse-git":
+      return parsed.currentOrigin?.relative
+        || parsed.currentOrigin?.absolute
+        || parsed.currentSchema?.target
+        || await findLikelyLocalSchemaTargetForIdentity(document, parsed.currentSchema?.label);
+    case "footer-towards":
+      return parsed.footerIntegrity?.towardsTarget;
+    default:
+      return undefined;
+  }
 }
 
 function resolveTraceableOriginDefaultBranch(gitRoot: string): string | undefined {
@@ -3673,13 +4016,17 @@ function resolveTraceableUpstreamBranchName(gitRoot: string): string | undefined
   }
 }
 
-function listTraceableLatestBranchCandidates(gitRoot: string): string[] {
+function listTraceableLatestBranchCandidates(
+  gitRoot: string,
+  options?: { allowRemoteQuery?: boolean }
+): string[] {
+  const allowRemoteQuery = options?.allowRemoteQuery !== false;
   const candidates = [
+    resolveTraceableOriginDefaultBranch(gitRoot),
+    allowRemoteQuery ? resolveTraceableOriginHeadBranchViaRemote(gitRoot) : undefined,
+    resolveTraceableUpstreamBranchName(gitRoot),
     "master",
     "main",
-    resolveTraceableOriginDefaultBranch(gitRoot),
-    resolveTraceableOriginHeadBranchViaRemote(gitRoot),
-    resolveTraceableUpstreamBranchName(gitRoot),
   ];
   const seen = new Set<string>();
   const result: string[] = [];
@@ -3717,7 +4064,10 @@ function readHttpsText(url: string): Promise<string> {
   });
 }
 
-async function readTraceableLatestMarkdownForDocument(document: vscode.TextDocument): Promise<string | undefined> {
+async function readTraceableLatestMarkdownForDocument(
+  document: vscode.TextDocument,
+  options?: { allowRemoteQuery?: boolean; allowHttpFetch?: boolean }
+): Promise<string | undefined> {
   const gitRoot = resolveTraceableGitRoot(document.uri.fsPath);
   if (!gitRoot) {
     return undefined;
@@ -3732,8 +4082,21 @@ async function readTraceableLatestMarkdownForDocument(document: vscode.TextDocum
     if (!repoSlug) {
       return undefined;
     }
+    const allowRemoteQuery = options?.allowRemoteQuery !== false;
+    const allowHttpFetch = options?.allowHttpFetch !== false;
     const encodedPath = relativePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
-    for (const branchName of listTraceableLatestBranchCandidates(gitRoot)) {
+    for (const branchName of listTraceableLatestBranchCandidates(gitRoot, { allowRemoteQuery })) {
+      const localCommitHash = resolveTraceableCommitHashForBranch(gitRoot, branchName, { allowRemoteQuery });
+      if (localCommitHash && gitRefExistsAtPath(gitRoot, localCommitHash, relativePath)) {
+        try {
+          return execFileSync("git", ["-C", gitRoot, "show", `${localCommitHash}:${relativePath}`], { encoding: "utf8" });
+        } catch {
+          // Fall through to HTTP if the local object is not readable.
+        }
+      }
+      if (!allowHttpFetch) {
+        continue;
+      }
       try {
         return await readHttpsText(`https://raw.githubusercontent.com/${repoSlug}/${encodeURIComponent(branchName)}/${encodedPath}`);
       } catch {
@@ -3750,14 +4113,11 @@ async function createRefreshTraceablePermalinkFromLatestEdit(document: vscode.Te
   if (lineIndex < 0 || lineIndex >= document.lineCount) {
     return undefined;
   }
-  if (getTraceableEditorValidationKindForFsPath(document.uri.fsPath) === "continuity-trace") {
-    const currentLine = document.lineAt(lineIndex);
-    const currentTarget = extractFirstMarkdownLinkTarget(currentLine.text);
-    if (!currentTarget) {
-      return undefined;
-    }
+  const currentLine = document.lineAt(lineIndex);
+  const currentTarget = await resolveTraceableRefreshSeedTarget(document, lineIndex);
+  if (currentTarget) {
     const refreshedTarget = tryResolveTraceableLatestPermalinkForTarget(document, currentTarget);
-    if (!refreshedTarget) {
+    if (!refreshedTarget || !parseGitHubCommitPermalink(refreshedTarget)) {
       return undefined;
     }
     const replacementLine = replaceFirstMarkdownLinkTarget(currentLine.text, refreshedTarget);
@@ -3768,6 +4128,7 @@ async function createRefreshTraceablePermalinkFromLatestEdit(document: vscode.Te
     edit.replace(document.uri, currentLine.range, replacementLine);
     return edit;
   }
+
   const currentLines = Array.from({ length: document.lineCount }, (_, index) => document.lineAt(index).text);
   const latestMarkdown = await readTraceableLatestMarkdownForDocument(document);
   if (!latestMarkdown) {
@@ -3779,11 +4140,7 @@ async function createRefreshTraceablePermalinkFromLatestEdit(document: vscode.Te
     return undefined;
   }
   const replacementTarget = extractFirstMarkdownLinkTarget(replacementLine);
-  if (!replacementTarget || !parseGitHubCommitPermalink(replacementTarget)) {
-    return undefined;
-  }
-  const currentLine = document.lineAt(lineIndex);
-  if (currentLine.text === replacementLine) {
+  if (!replacementTarget || !parseGitHubCommitPermalink(replacementTarget) || currentLine.text === replacementLine) {
     return undefined;
   }
   const edit = new vscode.WorkspaceEdit();
@@ -3813,7 +4170,67 @@ async function refreshTraceablePermalinkFromLatest(output: vscode.OutputChannel,
     void vscode.window.showErrorMessage("VS Code could not apply the permalink refresh edit.");
     return;
   }
+  const updatedDocument = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === artifactUri.toString())
+    ?? await vscode.workspace.openTextDocument(artifactUri);
+  if (/^# Continuity Integrity\s*$/mu.test(updatedDocument.getText())) {
+    await rotateTraceableContinuityChecksum(output, artifactUri);
+  }
   output.appendLine(`Refreshed permalink from latest for ${artifactUri.fsPath}${diagnosticCode ? ` (${diagnosticCode})` : ""}`);
+}
+
+async function createRepairTraceableParentTraceTargetEdit(document: vscode.TextDocument): Promise<vscode.WorkspaceEdit | undefined> {
+  const parsed = parseTraceableContinuityMarkdown(document.getText());
+  const repairTarget = parsed.parentOrigin?.relative
+    || parsed.parentOrigin?.absolute
+    || parsed.parentSchema?.target
+    || await findLikelyLocalSchemaTargetForIdentity(document, parsed.parentSchema?.label);
+  if (!repairTarget) {
+    return undefined;
+  }
+  const resolvedRepairPath = path.isAbsolute(repairTarget)
+    ? repairTarget
+    : path.resolve(path.dirname(document.uri.fsPath), repairTarget);
+  let relativeTarget = path.relative(path.dirname(document.uri.fsPath), resolvedRepairPath).replace(/\\+/gu, "/");
+  if (!relativeTarget || relativeTarget.startsWith("../") || relativeTarget.startsWith("./")) {
+    // keep as-is
+  } else {
+    relativeTarget = `./${relativeTarget}`;
+  }
+  for (let lineIndex = 0; lineIndex < document.lineCount; lineIndex += 1) {
+    const line = document.lineAt(lineIndex);
+    if (!line.text.trim().startsWith("- Trace:")) {
+      continue;
+    }
+    const replacementLine = replaceFirstMarkdownLinkTarget(line.text, relativeTarget);
+    if (!replacementLine || replacementLine === line.text) {
+      return undefined;
+    }
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, line.range, replacementLine);
+    return edit;
+  }
+  return undefined;
+}
+
+async function repairTraceableParentTraceTarget(output: vscode.OutputChannel, target?: vscode.Uri): Promise<void> {
+  const artifactUri = resolveMarkdownArtifactUri(target);
+  if (!artifactUri) {
+    void vscode.window.showErrorMessage("Open a markdown continuity artifact first, or invoke the fix from a markdown file.");
+    return;
+  }
+  const document = vscode.workspace.textDocuments.find((candidate) => candidate.uri.toString() === artifactUri.toString())
+    ?? await vscode.workspace.openTextDocument(artifactUri);
+  const edit = await createRepairTraceableParentTraceTargetEdit(document);
+  if (!edit) {
+    void vscode.window.showErrorMessage("Could not repair Parent Trace from the current continuity context.");
+    return;
+  }
+  const applied = await vscode.workspace.applyEdit(edit);
+  if (!applied) {
+    void vscode.window.showErrorMessage("VS Code could not apply the Parent Trace repair edit.");
+    return;
+  }
+  output.appendLine(`Repaired Parent Trace target for ${artifactUri.fsPath}`);
 }
 
 function createInsertContinuityIntegrityFooterEdit(document: vscode.TextDocument): vscode.WorkspaceEdit | undefined {
@@ -3827,42 +4244,85 @@ function createInsertContinuityIntegrityFooterEdit(document: vscode.TextDocument
     || parsed.parentOrigin?.absolute?.trim()
     || parsed.parentOrigin?.browseGit?.trim()
   );
-  const target = hasParent
+  const comparisonTarget = hasParent
     ? parsed.parentOrigin?.browseGit?.trim() || parsed.parentTrace?.target?.trim() || parsed.currentSchema?.target?.trim()
-    : "self";
-  if (!target) {
-    return undefined;
-  }
-  const label = target === "self"
-    ? "self"
-    : parsed.parentTrace?.label?.trim()
+    : undefined;
+  const comparisonLabel = comparisonTarget
+    ? parsed.parentTrace?.label?.trim()
       || parsed.currentSchema?.label?.trim()
-      || path.posix.basename(target.split("/").pop() ?? "target");
+      || path.posix.basename(comparisonTarget.split("/").pop() ?? "target")
+    : undefined;
   const endOfLine = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
-  const currentText = document.getText();
-  const separatorPrefix = currentText.length === 0
-    ? ""
-    : currentText.endsWith("\n") || currentText.endsWith("\r")
-      ? `${endOfLine}${endOfLine}`
-      : `${endOfLine}${endOfLine}`;
-  const footerWithPlaceholder = `${separatorPrefix}---${endOfLine}${endOfLine}# Continuity Integrity${endOfLine}${endOfLine}- sha256-base64url-c14n-v1${endOfLine}  - Towards: [${label}](${target})${endOfLine}  - Value: PLACEHOLDER`;
-  const checksum = computeTargetedTraceableContinuityChecksumSha256(
+
+  // Normalize current text into LF-delimited lines for trimming.
+  const originalText = document.getText();
+  const normalized = originalText.replace(/\r\n?/gu, "\n");
+  const lines = normalized.split("\n");
+
+  // Trim trailing empty lines and any trailing '---' separators so we don't
+  // create duplicate separators or multiple blank lines when inserting.
+  let lastContentLine = lines.length - 1;
+  while (lastContentLine >= 0) {
+    const t = (lines[lastContentLine] ?? "").trim();
+    if (t === "" || t === "---") {
+      lastContentLine -= 1;
+      continue;
+    }
+    break;
+  }
+
+  const startLineIndex = Math.max(lastContentLine + 1, 0);
+
+  const prefix = lines.slice(0, startLineIndex).join("\n");
+  const computeForTarget = (method: string, towards: string, markdownPayload: string) => computeTargetedTraceableContinuityChecksumSha256(
     document.uri.fsPath,
-    `${currentText}${footerWithPlaceholder}`,
-    { towardsTarget: target },
+    markdownPayload,
+    { method, towardsTarget: towards },
     (filePath: string) => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(document.uri.fsPath)
-      ? `${currentText}${footerWithPlaceholder}`
+      ? markdownPayload
       : readFileSync(filePath, "utf8"),
     getTraceableOpenWorkspaceFolders()
   );
-  if (!checksum) {
-    return undefined;
-  }
-  const footer = footerWithPlaceholder.replace("PLACEHOLDER", checksum);
+  const buildFooterLines = (targetValue: string, selfValue: string) => {
+    const footerLines: string[] = [];
+    if (lastContentLine >= 0) {
+      footerLines.push("");
+    }
+    footerLines.push("---", "", "# Continuity Integrity", "");
+    if (comparisonTarget && comparisonLabel) {
+      footerLines.push(
+        "- sha256-base64url-c14n-v1",
+        `  - Towards: [${comparisonLabel}](${comparisonTarget})`,
+        `  - Value: ${targetValue}`,
+        ""
+      );
+    }
+    footerLines.push(
+      "- sha256-base64url-c14n-v2",
+      "  - Towards: self",
+      `  - Value: ${selfValue}`
+    );
+    return footerLines;
+  };
+
+  const initialFooterText = buildFooterLines("TARGET_PLACEHOLDER", "SELF_PLACEHOLDER").join("\n");
+  const initialMarkdown = prefix.length === 0 ? initialFooterText : `${prefix}\n${initialFooterText}`;
+  const targetChecksum = comparisonTarget
+    ? computeForTarget("sha256-base64url-c14n-v1", comparisonTarget, initialMarkdown) ?? "TARGET_PLACEHOLDER"
+    : "TARGET_PLACEHOLDER";
+  const footerWithTargetText = buildFooterLines(targetChecksum, "SELF_PLACEHOLDER").join("\n");
+  const markdownWithTarget = prefix.length === 0 ? footerWithTargetText : `${prefix}\n${footerWithTargetText}`;
+  const selfChecksum = computeForTarget("sha256-base64url-c14n-v2", "self", markdownWithTarget) ?? "SELF_PLACEHOLDER";
+  const footerFinalText = buildFooterLines(targetChecksum, selfChecksum).join("\n").replace(/\n/g, endOfLine);
   const edit = new vscode.WorkspaceEdit();
   const lastLine = Math.max(document.lineCount - 1, 0);
-  const lastCharacter = document.lineAt(lastLine).text.length;
-  edit.insert(document.uri, new vscode.Position(lastLine, lastCharacter), footer);
+  if (startLineIndex <= lastLine) {
+    edit.replace(document.uri, new vscode.Range(new vscode.Position(startLineIndex, 0), document.lineAt(lastLine).range.end), footerFinalText);
+  } else {
+    const lastCharacter = document.lineAt(lastLine).text.length;
+    const insertionText = lastContentLine >= 0 ? `${endOfLine}${footerFinalText}` : footerFinalText;
+    edit.insert(document.uri, new vscode.Position(lastLine, lastCharacter), insertionText);
+  }
   return edit;
 }
 
@@ -4453,7 +4913,8 @@ function getTraceableDiagnosticRange(
   switch (finding.code) {
     case "continuity-checksum-missing":
     case "continuity-checksum-mismatch":
-      return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Value:"))
+    case "continuity-checksum-v1-legacy":
+      return findTraceablePreferredContinuityIntegrityValueRange(document)
         ?? findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Towards:"))
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity")
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
@@ -4560,7 +5021,8 @@ function getTraceableSchemaDiagnosticRange(
 ): vscode.Range | undefined {
   switch (finding.code) {
     case "continuity-checksum-mismatch":
-      return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Value:"))
+    case "continuity-checksum-v1-legacy":
+      return findTraceablePreferredContinuityIntegrityValueRange(document)
         ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity");
     case "continuity-current-created-at-missing":
     case "continuity-current-created-at-invalid":
@@ -4775,6 +5237,8 @@ function buildTraceableContinuityDiagnostics(
     addDiagnostic(finding.message, severity, getTraceableDiagnosticRange(document, finding), finding.code);
   }
 
+  diagnostics.push(...collectOutdatedTraceablePermalinkDiagnostics(document, "Tiinex Traceable Continuity"));
+
   return diagnostics;
 }
 
@@ -4803,6 +5267,7 @@ function buildTraceableSchemaDiagnostics(
     diagnostic.code = finding.code;
     diagnostics.push(diagnostic);
   }
+  diagnostics.push(...collectOutdatedTraceablePermalinkDiagnostics(document, "Tiinex Schema Validation"));
   return diagnostics;
 }
 
@@ -4838,42 +5303,91 @@ async function rotateTraceableContinuityChecksum(output: vscode.OutputChannel, t
   const readTextFileSync = (filePath: string): string => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(artifactUri.fsPath)
     ? markdown
     : readFileSync(filePath, "utf8");
-  const nextChecksum = (artifactUri.fsPath.endsWith(".schema.md") || artifactUri.fsPath.endsWith(".validator.md"))
-    ? computeTargetedSchemaNoteContinuityChecksumSha256(
-      artifactUri.fsPath,
-      markdown,
-      parseSchemaNoteMarkdown(markdown).footerIntegrity,
-      readTextFileSync
-    )
-    : computeTargetedTraceableContinuityChecksumSha256(
-      artifactUri.fsPath,
-      markdown,
-      parseTraceableContinuityMarkdown(markdown).footerIntegrity,
-      readTextFileSync,
-      getTraceableOpenWorkspaceFolders()
-    ) ?? computeTraceableContinuityChecksumSha256(markdown);
-  if (!nextChecksum) {
-    void vscode.window.showErrorMessage("Could not resolve the declared continuity integrity target for the current schema note.");
+  const parsed = parseTraceableContinuityMarkdown(markdown);
+  const hasParent = Boolean(
+    parsed.parentCreatedAt?.trim()
+    || parsed.parentTrace?.target?.trim()
+    || parsed.parentSchema?.target?.trim()
+    || parsed.parentSchema?.label?.trim()
+    || parsed.parentOrigin?.relative?.trim()
+    || parsed.parentOrigin?.absolute?.trim()
+    || parsed.parentOrigin?.browseGit?.trim()
+  );
+  const comparisonTarget = hasParent
+    ? parsed.parentOrigin?.browseGit?.trim() || parsed.parentTrace?.target?.trim() || parsed.currentSchema?.target?.trim()
+    : undefined;
+  const comparisonLabel = comparisonTarget
+    ? parsed.parentTrace?.label?.trim()
+      || parsed.currentSchema?.label?.trim()
+      || path.posix.basename(comparisonTarget.split("/").pop() ?? "target")
+    : undefined;
+  const normalizedLines = markdown.replace(/\r\n?/gu, "\n").split("\n");
+  const integrityHeadingLineIndex = normalizedLines.findIndex((line) => line.trim() === "# Continuity Integrity");
+  if (integrityHeadingLineIndex < 0) {
+    void vscode.window.showErrorMessage("Could not locate a Continuity Integrity section in the current document.");
     return;
   }
-  const valueLinePattern = /(- Value:\s+)([^\r\n]+)/u;
-  const match = valueLinePattern.exec(markdown);
-  if (!match || match.index === undefined) {
-    void vscode.window.showErrorMessage("Could not locate a continuity integrity Value line in the current document.");
-    return;
+  let lastContentLineIndex = integrityHeadingLineIndex - 1;
+  while (lastContentLineIndex >= 0) {
+    const trimmed = normalizedLines[lastContentLineIndex]?.trim() ?? "";
+    if (trimmed === "" || trimmed === "---") {
+      lastContentLineIndex -= 1;
+      continue;
+    }
+    break;
   }
-  if (match[2] === nextChecksum) {
+  const footerStartLineIndex = Math.max(lastContentLineIndex + 1, 0);
+  const prefixMarkdown = normalizedLines.slice(0, footerStartLineIndex).join("\n");
+  const footerMarkdown = normalizedLines.slice(footerStartLineIndex).join("\n");
+  const endOfLine = document.eol === vscode.EndOfLine.CRLF ? "\r\n" : "\n";
+  const computeForTarget = (method: string, towards: string, markdownPayload: string) => computeTargetedTraceableContinuityChecksumSha256(
+    artifactUri.fsPath,
+    markdownPayload,
+    { method, towardsTarget: towards },
+    (filePath: string) => normalizeComparableFsPath(filePath) === normalizeComparableFsPath(artifactUri.fsPath)
+      ? markdownPayload
+      : readFileSync(filePath, "utf8"),
+    getTraceableOpenWorkspaceFolders()
+  );
+  const buildSection = (targetValue: string, selfValue: string) => {
+    const lines: string[] = [];
+    if (lastContentLineIndex >= 0) {
+      lines.push("");
+    }
+    lines.push("---", "", "# Continuity Integrity", "");
+    if (comparisonTarget && comparisonLabel) {
+      lines.push(
+        "- sha256-base64url-c14n-v1",
+        `  - Towards: [${comparisonLabel}](${comparisonTarget})`,
+        `  - Value: ${targetValue}`,
+        ""
+      );
+    }
+    lines.push(
+      "- sha256-base64url-c14n-v2",
+      "  - Towards: self",
+      `  - Value: ${selfValue}`
+    );
+    return lines.join("\n");
+  };
+  const previewFooterMarkdown = buildSection("TARGET_PLACEHOLDER", "SELF_PLACEHOLDER");
+  const previewMarkdown = prefixMarkdown.length === 0 ? previewFooterMarkdown : `${prefixMarkdown}\n${previewFooterMarkdown}`;
+  const targetChecksum = comparisonTarget
+    ? computeForTarget("sha256-base64url-c14n-v1", comparisonTarget, previewMarkdown) ?? "TARGET_PLACEHOLDER"
+    : "TARGET_PLACEHOLDER";
+  const footerWithTarget = buildSection(targetChecksum, "SELF_PLACEHOLDER");
+  const markdownWithTarget = prefixMarkdown.length === 0 ? footerWithTarget : `${prefixMarkdown}\n${footerWithTarget}`;
+  const selfChecksum = computeForTarget("sha256-base64url-c14n-v2", "self", markdownWithTarget) ?? "SELF_PLACEHOLDER";
+  const nextFooterMarkdown = buildSection(targetChecksum, selfChecksum);
+  if (footerMarkdown === nextFooterMarkdown) {
     void vscode.window.showInformationMessage("The continuity checksum is already up to date.");
     return;
   }
-
-  const valueStartOffset = match.index + match[1].length;
-  const valueEndOffset = valueStartOffset + match[2].length;
   const edit = new vscode.WorkspaceEdit();
   edit.replace(
     artifactUri,
-    new vscode.Range(document.positionAt(valueStartOffset), document.positionAt(valueEndOffset)),
-    nextChecksum
+    new vscode.Range(new vscode.Position(footerStartLineIndex, 0), document.positionAt(markdown.length)),
+    nextFooterMarkdown.replace(/\n/g, endOfLine)
   );
   const applied = await vscode.workspace.applyEdit(edit);
   if (!applied) {
@@ -7503,7 +8017,16 @@ export function activate(context: vscode.ExtensionContext): void {
         return undefined;
       }
       const actions: vscode.CodeAction[] = [];
-      const checksumDiagnostics = context.diagnostics.filter(isContinuityChecksumMismatchDiagnostic);
+      // Use the diagnostics provided by the code action request when available
+      // (these are diagnostics intersecting the requested range). When the
+      // request's diagnostics are empty, fall back to the stored diagnostics
+      // for this document so actions are offered even when the user's cursor
+      // is not exactly on the diagnostic range.
+      const requestHasDiagnostics = Boolean(context?.diagnostics && context.diagnostics.length > 0);
+      const providedDiagnostics = requestHasDiagnostics
+        ? context.diagnostics
+        : (traceableContinuityDiagnostics.get(document.uri) ?? []);
+      const checksumDiagnostics = providedDiagnostics.filter(isContinuityChecksumMismatchDiagnostic);
       if (checksumDiagnostics.length > 0) {
         const action = new vscode.CodeAction("Rotate continuity checksum", vscode.CodeActionKind.QuickFix);
         action.command = {
@@ -7511,13 +8034,15 @@ export function activate(context: vscode.ExtensionContext): void {
           title: "Rotate continuity checksum",
           arguments: [document.uri]
         };
-        action.diagnostics = checksumDiagnostics;
         action.isPreferred = true;
         actions.push(action);
       }
-      actions.push(...buildContinuityEnvelopeCodeActions(document, context.diagnostics));
-      actions.push(...buildSchemaLayoutCodeActions(document, context.diagnostics));
-      actions.push(...buildSchemaContractCodeActions(document, context.diagnostics));
+      actions.push(...buildContinuityEnvelopeCodeActions(document, providedDiagnostics));
+      actions.push(...buildSchemaLayoutCodeActions(document, providedDiagnostics));
+      actions.push(...buildSchemaContractCodeActions(document, providedDiagnostics));
+      for (const action of actions) {
+        action.diagnostics = undefined;
+      }
       return actions.length > 0 ? actions : undefined;
     }
   }, {
@@ -7551,6 +8076,7 @@ export function activate(context: vscode.ExtensionContext): void {
     if (document.uri.scheme === "file" && document.uri.fsPath.toLowerCase().endsWith(".trace.md")) {
       scheduleReturnToParentTraceContextRefresh();
     }
+    clearTraceableLatestPermalinkCaches();
     scheduleTraceableContinuityDiagnosticsRefresh(document, 0);
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
@@ -7569,6 +8095,13 @@ export function activate(context: vscode.ExtensionContext): void {
   }));
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor((editor) => {
     scheduleTraceableContinuityDiagnosticsRefresh(editor?.document, 0);
+  }));
+  context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => {
+    if (!state.focused) {
+      return;
+    }
+    clearTraceableLatestPermalinkCaches();
+    refreshTraceableContinuityDiagnosticsForOpenDocuments();
   }));
 
   const prepareTraceableRewriteRequestedMove = async (
@@ -8268,6 +8801,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand(REFRESH_TRACEABLE_PERMALINK_FROM_LATEST_COMMAND, async (target?: vscode.Uri, lineIndex?: number, diagnosticCode?: string) => {
       await refreshTraceablePermalinkFromLatest(output, target, lineIndex, diagnosticCode);
+    }),
+    vscode.commands.registerCommand(REPAIR_TRACEABLE_PARENT_TRACE_TARGET_COMMAND, async (target?: vscode.Uri) => {
+      await repairTraceableParentTraceTarget(output, target);
     }),
     vscode.commands.registerCommand(ADD_FILE_TO_TRACEABLE_CHAT_COMMAND, async (target?: vscode.Uri) => {
       await addFileToTraceableChat(target);

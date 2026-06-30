@@ -103,6 +103,16 @@ function validateTraceableRootSchemaSync(input) {
     });
   }
 
+  if (parsed.footerIntegrity?.method === "sha256-base64url-c14n-v1") {
+    findings.push({
+      code: "continuity-checksum-v1-legacy",
+      category: "continuity-integrity",
+      filePath: input.filePath,
+      message: "Continuity footer still uses legacy checksum method v1. Prefer upgrading this footer to v2.",
+      severity: "warning"
+    });
+  }
+
   if ((parsed.currentSchema?.label ?? parsed.currentSchema?.target) !== "tiinex.root.v1") {
     findings.push({
       code: "root-schema-current-schema-mismatch",

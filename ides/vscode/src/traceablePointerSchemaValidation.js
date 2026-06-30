@@ -155,6 +155,16 @@ function validateTraceablePointerSchemaSync(input) {
     findings.push({ code: "continuity-checksum-mismatch", category: "continuity-integrity", filePath: input.filePath, message: continuityIntegrity.status === "target-unreadable" ? "Continuity footer checksum target could not be read." : "Continuity footer checksum does not match the declared target artifact.", severity: "error" });
   }
 
+  if (parsed.footerIntegrity?.method === "sha256-base64url-c14n-v1") {
+    findings.push({
+      code: "continuity-checksum-v1-legacy",
+      category: "continuity-integrity",
+      filePath: input.filePath,
+      message: "Continuity footer still uses legacy checksum method v1. Prefer upgrading this footer to v2.",
+      severity: "warning"
+    });
+  }
+
   if ((parsed.currentSchema?.label ?? parsed.currentSchema?.target) !== "tiinex.pointer.v1") {
     findings.push({ code: "pointer-schema-current-schema-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The pointer validator expects Current Schema to be tiinex.pointer.v1.", severity: "error" });
   }
@@ -187,11 +197,13 @@ function validateTraceablePointerSchemaSync(input) {
   if ((parsed.footerIntegrity?.towardsLabel ?? parsed.footerIntegrity?.towardsTarget) !== "self" && path.basename(parsed.footerIntegrity?.towardsTarget ?? "") !== "tiinex.root.v1.schema.md") {
     findings.push({ code: "pointer-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The pointer schema footer should target the root schema or self according to the active validation strategy.", severity: "error" });
   }
-  if (parsed.footerIntegrity?.towardsTarget === "self") {
+  const footerComparisonTarget = parsed.footerIntegrity?.entries?.map((entry) => entry?.towardsTarget).filter((target) => target && target !== "self").at(-1)
+    ?? (parsed.footerIntegrity?.towardsTarget && parsed.footerIntegrity.towardsTarget !== "self" ? parsed.footerIntegrity.towardsTarget : undefined);
+  if (parsed.footerIntegrity?.towardsTarget === "self" && !footerComparisonTarget) {
     findings.push({ code: "pointer-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The pointer schema footer must target the root schema permalink rather than self.", severity: "error" });
-  } else if (parsed.footerIntegrity?.towardsTarget && !isCommitPinnedBrowseGitTarget(parsed.footerIntegrity.towardsTarget)) {
+  } else if (footerComparisonTarget && !isCommitPinnedBrowseGitTarget(footerComparisonTarget)) {
     findings.push({ code: "pointer-schema-footer-target-not-permalink", category: "schema-note-lineage", filePath: input.filePath, message: "The pointer schema footer Towards target must be a commit-pinned browse + git permalink when the root schema permalink is available.", severity: "error" });
-  } else if (parsed.parentOrigin?.browseGit && parsed.footerIntegrity?.towardsTarget && parsed.footerIntegrity.towardsTarget !== parsed.parentOrigin.browseGit) {
+  } else if (parsed.parentOrigin?.browseGit && footerComparisonTarget && footerComparisonTarget !== parsed.parentOrigin.browseGit) {
     findings.push({ code: "pointer-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The pointer schema footer Towards target must match the Parent Origin browse + git permalink.", severity: "error" });
   }
 

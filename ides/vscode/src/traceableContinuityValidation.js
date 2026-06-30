@@ -336,6 +336,16 @@ function parseArtifactCreationContract(markdown) {
   return parseContractSection(markdown, "Artifact Creation Contract");
 }
 
+function hasDedicatedSchemaValidationSurface(node) {
+  const schemaIdentity = extractSchemaIdentity(node.parsed.currentSchema);
+  return schemaIdentity === "tiinex.root.v1"
+    || schemaIdentity === "tiinex.topic.v1"
+    || schemaIdentity === "tiinex.decision.v1"
+    || schemaIdentity === "tiinex.task.v1"
+    || schemaIdentity === "tiinex.evidence.v1"
+    || schemaIdentity === "tiinex.pointer.v1";
+}
+
 function parseContinuityContext(lines) {
   const result = {
     envelopeSchema: undefined,
@@ -478,35 +488,54 @@ function parseContinuityIntegrity(lines) {
   if (startIndex < 0) {
     return undefined;
   }
-  let method;
-  let towardsLabel;
-  let towardsTarget;
-  let value;
+  const entries = [];
+  let currentEntry;
   for (const line of lines.slice(startIndex + 1)) {
-    if (!method) {
-      const methodMatch = line.match(/^-\s+([^:]+)$/u);
-      if (methodMatch) {
-        method = trimToUndefined(methodMatch[1]);
-        continue;
-      }
+    const methodMatch = line.match(/^-\s+([^:]+)$/u);
+    if (methodMatch) {
+      currentEntry = { method: trimToUndefined(methodMatch[1]) };
+      entries.push(currentEntry);
+      continue;
     }
     const towardsValue = extractNestedLabeledValue(line, "Towards");
     if (towardsValue) {
+      if (!currentEntry) {
+        currentEntry = {};
+        entries.push(currentEntry);
+      }
       const link = extractMarkdownLink(towardsValue);
-      towardsLabel = link.label;
-      towardsTarget = link.target;
+      currentEntry.towardsLabel = link.label;
+      currentEntry.towardsTarget = link.target;
       continue;
     }
     const storedValue = extractNestedLabeledValue(line, "Value");
     if (storedValue) {
-      value = storedValue;
+      if (!currentEntry) {
+        currentEntry = {};
+        entries.push(currentEntry);
+      }
+      currentEntry.value = storedValue;
       continue;
     }
   }
-  if (!method && !towardsTarget && !value) {
+  if (entries.length === 0) {
     return undefined;
   }
-  return { method, towardsLabel, towardsTarget, value };
+  let preferredEntry = entries[entries.length - 1];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.method === "sha256-base64url-c14n-v2" && entry?.towardsTarget === "self") {
+      preferredEntry = entry;
+      break;
+    }
+  }
+  return {
+    method: preferredEntry?.method,
+    towardsLabel: preferredEntry?.towardsLabel,
+    towardsTarget: preferredEntry?.towardsTarget,
+    value: preferredEntry?.value,
+    entries
+  };
 }
 
 function isExternalUrl(target) {
@@ -1042,7 +1071,7 @@ function isSchemaNoteFilePath(filePath) {
 }
 
 function collectSchemaNoteStructureFindings(node) {
-  if (!isSchemaNoteFilePath(node.filePath)) {
+  if (!isSchemaNoteFilePath(node.filePath) || !hasDedicatedSchemaValidationSurface(node)) {
     return [];
   }
   const levelTwoHeadings = collectHeadingMap(node.parsed.headings, 2);
@@ -1260,7 +1289,7 @@ function collectContractSectionShapeFindings(node, contract, options = {}) {
 }
 
 function collectDeclaredSchemaValidationContractFindings(node) {
-  if (!isSchemaNoteFilePath(node.filePath) || extractSchemaIdentity(node.parsed.currentSchema) === "tiinex.root.v1") {
+  if (!isSchemaNoteFilePath(node.filePath) || !hasDedicatedSchemaValidationSurface(node) || extractSchemaIdentity(node.parsed.currentSchema) === "tiinex.root.v1") {
     return [];
   }
 
@@ -1272,7 +1301,7 @@ function collectDeclaredSchemaValidationContractFindings(node) {
 }
 
 function collectDeclaredArtifactCreationContractFindings(node) {
-  if (!isSchemaNoteFilePath(node.filePath)) {
+  if (!isSchemaNoteFilePath(node.filePath) || !hasDedicatedSchemaValidationSurface(node)) {
     return [];
   }
 
@@ -1356,7 +1385,7 @@ function evaluateContinuityIntegrity(markdown, footerIntegrity, options = {}) {
   if (!footerIntegrity?.method && !footerIntegrity?.value) {
     return { status: "missing" };
   }
-  if (footerIntegrity.method !== "sha256-base64url-c14n-v1") {
+  if (footerIntegrity.method !== "sha256-base64url-c14n-v1" && footerIntegrity.method !== "sha256-base64url-c14n-v2") {
     return {
       status: "unsupported-method",
       method: footerIntegrity?.method,
@@ -1420,7 +1449,7 @@ function parseTraceableContinuityMarkdown(markdown) {
   };
 }
 
-function canonicalizeTraceableContinuityChecksumSource(markdown) {
+function canonicalizeTraceableContinuityChecksumSourceV1(markdown) {
   const normalizedNewlines = markdown.replace(/\r\n?/gu, "\n");
   const withoutTrailingWhitespace = normalizedNewlines.replace(/[ \t]+$/gmu, "").trimEnd();
   const lines = withoutTrailingWhitespace.split("\n");
@@ -1431,9 +1460,77 @@ function canonicalizeTraceableContinuityChecksumSource(markdown) {
   return withoutTrailingWhitespace;
 }
 
-function computeTraceableContinuityChecksumSha256(markdown) {
+function canonicalizeTraceableContinuityChecksumSourceV2(markdown) {
+  const normalizedNewlines = markdown.replace(/\r\n?/gu, "\n");
+  const withoutTrailingWhitespace = normalizedNewlines.replace(/[ \t]+$/gmu, "").trimEnd();
+  const lines = withoutTrailingWhitespace.split("\n");
+  const integrityHeadingIndex = lines.findIndex((line) => line.trim() === "# Continuity Integrity");
+  if (integrityHeadingIndex < 0) {
+    return withoutTrailingWhitespace;
+  }
+
+  const entries = [];
+  let currentEntry;
+  for (let index = integrityHeadingIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const methodMatch = line.match(/^-\s+([^:]+)$/u);
+    if (methodMatch) {
+      currentEntry = {
+        method: trimToUndefined(methodMatch[1]),
+        valueLineIndex: undefined,
+        towardsTarget: undefined
+      };
+      entries.push(currentEntry);
+      continue;
+    }
+    const towardsValue = extractNestedLabeledValue(line, "Towards");
+    if (towardsValue) {
+      if (!currentEntry) {
+        currentEntry = { method: undefined, valueLineIndex: undefined, towardsTarget: undefined };
+        entries.push(currentEntry);
+      }
+      currentEntry.towardsTarget = extractMarkdownLink(towardsValue).target;
+      continue;
+    }
+    if (/^\s*-\s+Value:\s*.*$/u.test(line)) {
+      if (!currentEntry) {
+        currentEntry = { method: undefined, valueLineIndex: undefined, towardsTarget: undefined };
+        entries.push(currentEntry);
+      }
+      currentEntry.valueLineIndex = index;
+    }
+  }
+
+  if (entries.length === 0) {
+    return withoutTrailingWhitespace;
+  }
+
+  let preferredEntry = entries[entries.length - 1];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.method === "sha256-base64url-c14n-v2" && entry?.towardsTarget === "self") {
+      preferredEntry = entry;
+      break;
+    }
+  }
+
+  if (Number.isInteger(preferredEntry?.valueLineIndex)) {
+    lines[preferredEntry.valueLineIndex] = lines[preferredEntry.valueLineIndex].replace(/^(\s*-\s+Value:\s*).*$/u, "$1");
+  }
+
+  return lines.join("\n");
+}
+
+function canonicalizeTraceableContinuityChecksumSource(markdown) {
+  return canonicalizeTraceableContinuityChecksumSourceV1(markdown);
+}
+
+function computeTraceableContinuityChecksumSha256(markdown, method = "sha256-base64url-c14n-v1") {
+  const canonicalSource = method === "sha256-base64url-c14n-v2"
+    ? canonicalizeTraceableContinuityChecksumSourceV2(markdown)
+    : canonicalizeTraceableContinuityChecksumSourceV1(markdown);
   return createHash("sha256")
-    .update(canonicalizeTraceableContinuityChecksumSource(markdown), "utf8")
+    .update(canonicalSource, "utf8")
     .digest("base64url");
 }
 
@@ -1479,9 +1576,10 @@ function readTraceableContinuityTargetMarkdown(filePath, target, readTextFileSyn
 }
 
 function computeTargetedTraceableContinuityChecksumSha256(filePath, markdown, footerIntegrity, readTextFileSync, workspaceRoots) {
+  const method = trimToUndefined(footerIntegrity?.method) || "sha256-base64url-c14n-v1";
   const target = trimToUndefined(footerIntegrity?.towardsTarget);
   if (!target || target === "self") {
-    return computeTraceableContinuityChecksumSha256(markdown);
+    return computeTraceableContinuityChecksumSha256(markdown, method);
   }
   if (!trimToUndefined(filePath)) {
     return undefined;
@@ -1490,7 +1588,19 @@ function computeTargetedTraceableContinuityChecksumSha256(filePath, markdown, fo
     return undefined;
   }
   const targetMarkdown = readTraceableContinuityTargetMarkdown(filePath, target, readTextFileSync, workspaceRoots);
-  return targetMarkdown ? computeTraceableContinuityChecksumSha256(targetMarkdown) : undefined;
+  if (!targetMarkdown) {
+    return undefined;
+  }
+  if (method === "sha256-base64url-c14n-v2") {
+    const targetParsed = parseTraceableContinuityMarkdown(targetMarkdown);
+    const targetMethod = trimToUndefined(targetParsed.footerIntegrity?.method);
+    const targetTowards = trimToUndefined(targetParsed.footerIntegrity?.towardsTarget);
+    if (targetMethod !== "sha256-base64url-c14n-v2" || (targetTowards && targetTowards !== "self")) {
+      return undefined;
+    }
+    return computeTraceableContinuityChecksumSha256(targetMarkdown, "sha256-base64url-c14n-v2");
+  }
+  return computeTraceableContinuityChecksumSha256(targetMarkdown, method);
 }
 
 function evaluateTraceableDirectParentIntegrityCoreSync(input, options = {}) {
@@ -1727,6 +1837,17 @@ function collectTraceableContinuityFindings(result) {
         break;
       default:
         break;
+    }
+
+    if (trimToUndefined(node.parsed.footerIntegrity?.method) === "sha256-base64url-c14n-v1") {
+      findings.push({
+        code: "continuity-checksum-v1-legacy",
+        category: "continuity-integrity",
+        filePath: node.filePath,
+        message: "Continuity footer still uses legacy checksum method v1. Prefer upgrading this footer to v2.",
+        severity: "warning",
+        surfaces: ["problems", "report"]
+      });
     }
 
     const declaredParentSchemaIdentity = extractSchemaIdentity(node.parsed.parentSchema);

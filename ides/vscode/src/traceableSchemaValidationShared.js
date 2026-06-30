@@ -235,6 +235,8 @@ function parseContinuityContext(lines) {
 
 function parseContinuityIntegrity(lines) {
   const parsed = {};
+  const entries = [];
+  let currentEntry;
   let inIntegrity = false;
   for (const line of lines) {
     const trimmed = line.trim();
@@ -248,21 +250,41 @@ function parseContinuityIntegrity(lines) {
       continue;
     }
     const methodMatch = trimmed.match(/^-\s+([^:]+)$/u);
-    if (methodMatch && !parsed.method) {
-      parsed.method = trimToUndefined(methodMatch[1]);
+    if (methodMatch) {
+      currentEntry = { method: trimToUndefined(methodMatch[1]) };
+      entries.push(currentEntry);
       continue;
     }
     const towards = extractNestedLabeledValue(line, "Towards");
     if (towards) {
+      if (!currentEntry) {
+        currentEntry = {};
+        entries.push(currentEntry);
+      }
       const link = extractMarkdownLink(towards);
-      parsed.towardsLabel = link.label;
-      parsed.towardsTarget = link.target;
+      currentEntry.towardsLabel = link.label;
+      currentEntry.towardsTarget = link.target;
       continue;
     }
     const value = extractNestedLabeledValue(line, "Value");
     if (value) {
-      parsed.value = value;
+      if (!currentEntry) {
+        currentEntry = {};
+        entries.push(currentEntry);
+      }
+      currentEntry.value = value;
     }
+  }
+  const preferredEntry = [...entries].reverse().find((entry) => entry?.method === "sha256-base64url-c14n-v2" && entry?.towardsTarget === "self")
+    ?? entries[entries.length - 1];
+  if (preferredEntry) {
+    parsed.method = preferredEntry.method;
+    parsed.towardsLabel = preferredEntry.towardsLabel;
+    parsed.towardsTarget = preferredEntry.towardsTarget;
+    parsed.value = preferredEntry.value;
+  }
+  if (entries.length > 0) {
+    parsed.entries = entries;
   }
   return parsed;
 }
@@ -449,7 +471,7 @@ function isTraceableContinuityTimestamp(value) {
     && candidate.getUTCSeconds() === Number(second);
 }
 
-function canonicalizeTraceableContinuityChecksumSource(markdown) {
+function canonicalizeTraceableContinuityChecksumSourceV1(markdown) {
   const normalizedNewlines = markdown.replace(/\r\n?/gu, "\n");
   const withoutTrailingWhitespace = normalizedNewlines.replace(/[ \t]+$/gmu, "").trimEnd();
   const lines = withoutTrailingWhitespace.split("\n");
@@ -460,9 +482,73 @@ function canonicalizeTraceableContinuityChecksumSource(markdown) {
   return withoutTrailingWhitespace;
 }
 
-function computeTraceableContinuityChecksumSha256(markdown) {
+function canonicalizeTraceableContinuityChecksumSourceV2(markdown) {
+  const normalizedNewlines = markdown.replace(/\r\n?/gu, "\n");
+  const withoutTrailingWhitespace = normalizedNewlines.replace(/[ \t]+$/gmu, "").trimEnd();
+  const lines = withoutTrailingWhitespace.split("\n");
+  const integrityHeadingIndex = lines.findIndex((line) => line.trim() === "# Continuity Integrity");
+  if (integrityHeadingIndex < 0) {
+    return withoutTrailingWhitespace;
+  }
+
+  const entries = [];
+  let currentEntry;
+  for (let index = integrityHeadingIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    const methodMatch = line.match(/^-\s+([^:]+)$/u);
+    if (methodMatch) {
+      currentEntry = {
+        method: trimToUndefined(methodMatch[1]),
+        valueLineIndex: undefined,
+        towardsTarget: undefined
+      };
+      entries.push(currentEntry);
+      continue;
+    }
+    const towardsValue = extractNestedLabeledValue(line, "Towards");
+    if (towardsValue) {
+      if (!currentEntry) {
+        currentEntry = { method: undefined, valueLineIndex: undefined, towardsTarget: undefined };
+        entries.push(currentEntry);
+      }
+      currentEntry.towardsTarget = extractMarkdownLink(towardsValue).target;
+      continue;
+    }
+    if (/^\s*-\s+Value:\s*.*$/u.test(line)) {
+      if (!currentEntry) {
+        currentEntry = { method: undefined, valueLineIndex: undefined, towardsTarget: undefined };
+        entries.push(currentEntry);
+      }
+      currentEntry.valueLineIndex = index;
+    }
+  }
+
+  if (entries.length === 0) {
+    return withoutTrailingWhitespace;
+  }
+
+  let preferredEntry = entries[entries.length - 1];
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.method === "sha256-base64url-c14n-v2" && entry?.towardsTarget === "self") {
+      preferredEntry = entry;
+      break;
+    }
+  }
+
+  if (Number.isInteger(preferredEntry?.valueLineIndex)) {
+    lines[preferredEntry.valueLineIndex] = lines[preferredEntry.valueLineIndex].replace(/^(\s*-\s+Value:\s*).*$/u, "$1");
+  }
+
+  return lines.join("\n");
+}
+
+function computeTraceableContinuityChecksumSha256(markdown, method = "sha256-base64url-c14n-v1") {
+  const canonicalSource = method === "sha256-base64url-c14n-v2"
+    ? canonicalizeTraceableContinuityChecksumSourceV2(markdown)
+    : canonicalizeTraceableContinuityChecksumSourceV1(markdown);
   return createHash("sha256")
-    .update(canonicalizeTraceableContinuityChecksumSource(markdown), "utf8")
+    .update(canonicalSource, "utf8")
     .digest("base64url");
 }
 
@@ -488,20 +574,43 @@ function readPermalinkTargetMarkdown(filePath, permalinkTarget) {
 }
 
 function computeTargetedTraceableContinuityChecksumSha256(filePath, markdown, footerIntegrity, readTextFileSync) {
+  const method = trimToUndefined(footerIntegrity?.method) || "sha256-base64url-c14n-v1";
   const target = trimToUndefined(footerIntegrity?.towardsTarget);
   if (!target || target === "self") {
-    return computeTraceableContinuityChecksumSha256(markdown);
+    return computeTraceableContinuityChecksumSha256(markdown, method);
   }
   if (isExternalUrl(target)) {
     const targetMarkdown = readPermalinkTargetMarkdown(filePath, target);
-    return targetMarkdown ? computeTraceableContinuityChecksumSha256(targetMarkdown) : undefined;
+    if (!targetMarkdown) {
+      return undefined;
+    }
+    if (method === "sha256-base64url-c14n-v2") {
+      const targetParsed = parseSchemaNoteMarkdown(targetMarkdown);
+      const targetMethod = trimToUndefined(targetParsed.footerIntegrity?.method);
+      const targetTowards = trimToUndefined(targetParsed.footerIntegrity?.towardsTarget);
+      if (targetMethod !== "sha256-base64url-c14n-v2" || (targetTowards && targetTowards !== "self")) {
+        return undefined;
+      }
+      return computeTraceableContinuityChecksumSha256(targetMarkdown, "sha256-base64url-c14n-v2");
+    }
+    return computeTraceableContinuityChecksumSha256(targetMarkdown, method);
   }
   const resolvedTargetPath = resolveRelativeSchemaPath(filePath, target);
   if (!resolvedTargetPath) {
     return undefined;
   }
   try {
-    return computeTraceableContinuityChecksumSha256(readSchemaFileSync(resolvedTargetPath, readTextFileSync));
+    const targetMarkdown = readSchemaFileSync(resolvedTargetPath, readTextFileSync);
+    if (method === "sha256-base64url-c14n-v2") {
+      const targetParsed = parseSchemaNoteMarkdown(targetMarkdown);
+      const targetMethod = trimToUndefined(targetParsed.footerIntegrity?.method);
+      const targetTowards = trimToUndefined(targetParsed.footerIntegrity?.towardsTarget);
+      if (targetMethod !== "sha256-base64url-c14n-v2" || (targetTowards && targetTowards !== "self")) {
+        return undefined;
+      }
+      return computeTraceableContinuityChecksumSha256(targetMarkdown, "sha256-base64url-c14n-v2");
+    }
+    return computeTraceableContinuityChecksumSha256(targetMarkdown, method);
   } catch {
     return undefined;
   }
@@ -511,7 +620,7 @@ function evaluateContinuityIntegrity(markdown, footerIntegrity, options = {}) {
   if (!footerIntegrity?.method && !footerIntegrity?.value) {
     return { status: "missing" };
   }
-  if (footerIntegrity.method !== "sha256-base64url-c14n-v1") {
+  if (footerIntegrity.method !== "sha256-base64url-c14n-v1" && footerIntegrity.method !== "sha256-base64url-c14n-v2") {
     return {
       status: "unsupported-method",
       method: footerIntegrity?.method,

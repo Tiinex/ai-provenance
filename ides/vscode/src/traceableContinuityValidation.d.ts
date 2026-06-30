@@ -26,6 +26,7 @@ export interface TraceableContinuityFinding {
   code:
     | "continuity-checksum-missing"
     | "continuity-checksum-mismatch"
+    | "continuity-checksum-v1-legacy"
     | "continuity-footer-self-required-without-parent"
     | "continuity-footer-towards-permalink-required"
     | "continuity-footer-towards-unreadable"
@@ -102,7 +103,7 @@ export interface TraceableContinuityValidationResult {
       resolvedPath?: string;
     };
     continuityIntegrity: {
-      status: "verified" | "missing" | "mismatch" | "unsupported-method";
+      status: "verified" | "missing" | "mismatch" | "unsupported-method" | "target-unreadable";
       method?: string;
       towardsTarget?: string;
       storedValue?: string;
@@ -174,11 +175,17 @@ export interface ParsedTraceableContinuityMarkdown {
   currentCreatedAt?: string;
   currentWhy?: string;
   currentSummary?: string;
-  footerIntegrity?: { method?: string; towardsLabel?: string; towardsTarget?: string; value?: string };
+  footerIntegrity?: {
+    method?: string;
+    towardsLabel?: string;
+    towardsTarget?: string;
+    value?: string;
+    entries?: Array<{ method?: string; towardsLabel?: string; towardsTarget?: string; value?: string }>;
+  };
 }
 
 export function canonicalizeTraceableContinuityChecksumSource(markdown: string): string;
-export function computeTraceableContinuityChecksumSha256(markdown: string): string;
+export function computeTraceableContinuityChecksumSha256(markdown: string, method?: string): string;
 export function computeTargetedTraceableContinuityChecksumSha256(
   filePath: string | undefined,
   markdown: string,
