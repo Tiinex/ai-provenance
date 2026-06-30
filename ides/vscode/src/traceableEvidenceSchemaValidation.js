@@ -1,10 +1,12 @@
 const path = require("node:path");
 const {
   addContractSectionShapeFindings,
+  collectInheritedRootContractContext,
   collectContractVocabularyFindings,
   collectExpectedSchemaHeadingFindings,
   collectUnexpectedContinuityEnvelopeFieldFindings,
   evaluateContinuityIntegrity,
+  getLatestNonSelfFooterTowardsTarget,
   getContractGroupCategoryItems,
   isCommitPinnedBrowseGitTarget,
   isTraceableContinuityTimestamp,
@@ -17,17 +19,21 @@ const { validateTraceableRootSchemaSync } = require("./traceableRootSchemaValida
 const EVIDENCE_SCHEMA_EXPECTED_SECTION_HEADINGS = [
   "Summary",
   "Schema Validation Contract",
+  "Artifact Creation Contract",
   "Minimal Example",
   "Validation-Friendly Shape",
-  "Interpretation Notes",
-  "Artifact Creation Contract"
+  "Interpretation Notes"
 ];
 
 const EVIDENCE_SCHEMA_VALIDATION_GROUP_HEADINGS = [
   "Evidence Scope",
+  "Parent Preservation Specialization",
   "Evidence Body",
-  "Evidence Provenance And Fidelity",
-  "Evidence Envelope Companions",
+  "Supported Claim Or Question",
+  "Provenance",
+  "Evidence Material",
+  "Preservation And Fidelity",
+  "Interpretation Limits",
   "File Naming",
   "Interpretation Boundaries"
 ];
@@ -37,20 +43,14 @@ const EVIDENCE_SCHEMA_VALIDATION_CATEGORY_LABELS = [
   "Applies To",
   "Optional Fields",
   "Optional Sections",
+  "Required Fields",
   "Required Shape",
   "Rules"
 ];
 
 const EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS = [
-  "Prompt Fields",
-  "Template Body"
-];
-
-const EVIDENCE_SCHEMA_ARTIFACT_CREATION_CATEGORY_LABELS = [
-  "Optional Fields",
-  "Required Fields",
-  "Required Shape",
-  "Rules"
+  "Required Creation Fields",
+  "Creation Rules"
 ];
 
 function addMissingGroupFindings(findings, filePath, contract, options) {
@@ -70,6 +70,65 @@ function addRedeclaredInheritedContractCategoryFindings(findings, filePath, decl
     return;
   }
   findings.push({ code: "evidence-schema-contract-extension-redeclares-inherited-category-label", category: "schema-validation-contract", filePath, message: `Contract Category Extension redeclares inherited category labels without explicit override semantics: ${redeclaredLabels.join(", ")}.`, severity: "error" });
+}
+
+function collectEvidenceArtifactCreationContractFindings(findings, filePath, markdown) {
+  const lines = markdown.replace(/\r\n?/gu, "\n").split("\n");
+  const startIndex = lines.findIndex((line) => line.trim() === "## Artifact Creation Contract");
+  if (startIndex < 0) {
+    findings.push({ code: "evidence-schema-artifact-creation-contract-missing", category: "artifact-creation-contract", filePath, message: "The evidence schema must include an Artifact Creation Contract section.", severity: "error" });
+    return;
+  }
+
+  const seenCategoryLabels = [];
+  const unexpectedContentLines = [];
+  const emptyCategories = [];
+  let currentCategoryLabel;
+  let currentCategoryItemCount = 0;
+
+  const finalizeCurrentCategory = () => {
+    if (currentCategoryLabel && currentCategoryItemCount === 0) {
+      emptyCategories.push(currentCategoryLabel);
+    }
+  };
+
+  for (const line of lines.slice(startIndex + 1)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (trimmed === "---" || /^##\s+/u.test(trimmed) || /^#\s+/u.test(trimmed)) {
+      break;
+    }
+    if (EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS.includes(trimmed)) {
+      finalizeCurrentCategory();
+      currentCategoryLabel = trimmed;
+      currentCategoryItemCount = 0;
+      seenCategoryLabels.push(currentCategoryLabel);
+      continue;
+    }
+    if (/^-\s+/u.test(trimmed)) {
+      if (!currentCategoryLabel) {
+        unexpectedContentLines.push(trimmed);
+        continue;
+      }
+      currentCategoryItemCount += 1;
+      continue;
+    }
+    unexpectedContentLines.push(trimmed);
+  }
+  finalizeCurrentCategory();
+
+  const missingGroups = EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS.filter((heading) => !seenCategoryLabels.includes(heading));
+  if (missingGroups.length > 0) {
+    findings.push({ code: "evidence-schema-artifact-creation-contract-groups-missing", category: "artifact-creation-contract", filePath, message: `The evidence schema artifact creation contract is missing required groups: ${missingGroups.join(", ")}.`, severity: "error" });
+  }
+  if (emptyCategories.length > 0) {
+    findings.push({ code: "evidence-schema-artifact-creation-contract-category-list-missing", category: "artifact-creation-contract", filePath, message: `The evidence schema artifact creation contract has category labels without a following hyphen list: ${emptyCategories.join(", ")}.`, severity: "error" });
+  }
+  if (unexpectedContentLines.length > 0) {
+    findings.push({ code: "evidence-schema-artifact-creation-contract-unexpected-content", category: "artifact-creation-contract", filePath, message: `The evidence schema artifact creation contract contains content outside the allowed heading/list shape: ${unexpectedContentLines.join(", ")}.`, severity: "error" });
+  }
 }
 
 function canReadResolvedSchemaPath(resolvedSchemaPath, readTextFileSync) {
@@ -109,10 +168,14 @@ function validateTraceableEvidenceSchemaSync(input) {
   const unknownContractSeverity = parentSchemaPath ? "error" : "warning";
   const declaredContractCategoryLabels = parsed.schemaValidationContract?.groups.filter((group) => group.heading === "Contract Category Extension").flatMap((group) => group.declarations?.map((declaration) => declaration.name) ?? []) ?? [];
   const overriddenContractCategoryLabels = parsed.schemaValidationContract?.groups.filter((group) => group.heading === "Contract Category Override").flatMap((group) => group.declarations?.map((declaration) => declaration.name) ?? []) ?? [];
-  let allowedEnvelopeFieldLabels = [];
-  let allowedParentFieldLabels = [];
-  let allowedCurrentFieldLabels = [];
-  let inheritedContractCategoryLabels = [];
+  const rootContractContext = collectInheritedRootContractContext(input.filePath, parsed, input.readTextFileSync, {
+    authorityTarget: parsed.envelopeSchema?.target,
+    validateRootSchemaSync: validateTraceableRootSchemaSync
+  });
+  let allowedEnvelopeFieldLabels = rootContractContext.allowedEnvelopeFieldLabels;
+  let allowedParentFieldLabels = rootContractContext.allowedParentFieldLabels;
+  let allowedCurrentFieldLabels = rootContractContext.allowedCurrentFieldLabels;
+  let inheritedContractCategoryLabels = rootContractContext.inheritedContractCategoryLabels;
 
   if (!parsed.currentCreatedAt) {
     findings.push({ code: "continuity-current-created-at-missing", category: "continuity-integrity", filePath: input.filePath, message: "Current Created At is required by the continuity envelope.", severity: "error" });
@@ -151,8 +214,8 @@ function validateTraceableEvidenceSchemaSync(input) {
   if (!canReadResolvedSchemaPath(currentSchemaPath, input.readTextFileSync)) {
     findings.push({ code: "evidence-schema-current-schema-unreadable", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema Current Schema target could not be read.", severity: "error" });
   }
-  if ((parsed.parentSchema?.label ?? parsed.parentSchema?.target) !== "tiinex.root.v1") {
-    findings.push({ code: "evidence-schema-parent-schema-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema must declare tiinex.root.v1 as its direct parent schema.", severity: "error" });
+  if ((parsed.parentSchema?.label ?? parsed.parentSchema?.target) !== "tiinex.preservation.v1") {
+    findings.push({ code: "evidence-schema-parent-schema-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema must declare tiinex.preservation.v1 as its direct parent schema.", severity: "error" });
   }
   if (!canReadResolvedSchemaPath(declaredParentSchemaPath, input.readTextFileSync)) {
     findings.push({ code: "evidence-schema-parent-schema-unreadable", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema Parent Schema target could not be read.", severity: "error" });
@@ -166,17 +229,28 @@ function validateTraceableEvidenceSchemaSync(input) {
       findings.push({ code: "evidence-schema-parent-origin-unpinned-browse-git", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema Parent Origin browse + git target is not commit-pinned.", severity: "error" });
     }
   }
-  if ((parsed.footerIntegrity?.towardsLabel ?? parsed.footerIntegrity?.towardsTarget) !== "self" && path.basename(parsed.footerIntegrity?.towardsTarget ?? "") !== "tiinex.root.v1.schema.md") {
-    findings.push({ code: "evidence-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema footer should target the root schema or self according to the active validation strategy.", severity: "error" });
-  }
-  const footerComparisonTarget = parsed.footerIntegrity?.entries?.map((entry) => entry?.towardsTarget).filter((target) => target && target !== "self").at(-1)
-    ?? (parsed.footerIntegrity?.towardsTarget && parsed.footerIntegrity.towardsTarget !== "self" ? parsed.footerIntegrity.towardsTarget : undefined);
-  if (parsed.footerIntegrity?.towardsTarget === "self" && !footerComparisonTarget) {
-    findings.push({ code: "evidence-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema footer must target the root schema permalink rather than self.", severity: "error" });
-  } else if (footerComparisonTarget && !isCommitPinnedBrowseGitTarget(footerComparisonTarget)) {
-    findings.push({ code: "evidence-schema-footer-target-not-permalink", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema footer Towards target must be a commit-pinned browse + git permalink when the root schema permalink is available.", severity: "error" });
-  } else if (parsed.parentOrigin?.browseGit && footerComparisonTarget && footerComparisonTarget !== parsed.parentOrigin.browseGit) {
-    findings.push({ code: "evidence-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema footer Towards target must match the Parent Origin browse + git permalink.", severity: "error" });
+  const hasFooterIntegrityEntry = Boolean(
+    parsed.footerIntegrity?.entries?.length
+    || parsed.footerIntegrity?.method
+    || parsed.footerIntegrity?.value
+    || parsed.footerIntegrity?.towardsTarget
+    || parsed.footerIntegrity?.towardsLabel
+  );
+  if (!hasFooterIntegrityEntry) {
+    findings.push({ code: "evidence-schema-footer-missing", category: "continuity-integrity", filePath: input.filePath, message: "The evidence schema is missing a Continuity Integrity footer.", severity: "error" });
+  } else {
+    if ((parsed.footerIntegrity?.towardsLabel ?? parsed.footerIntegrity?.towardsTarget) !== "self"
+      && parsed.footerIntegrity?.towardsTarget !== parsed.parentOrigin?.browseGit) {
+      findings.push({ code: "evidence-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema footer should target the declared parent-schema permalink or self according to the active validation strategy.", severity: "error" });
+    }
+    const footerComparisonTarget = getLatestNonSelfFooterTowardsTarget(parsed.footerIntegrity);
+    if (parsed.footerIntegrity?.towardsTarget === "self" && !footerComparisonTarget) {
+      findings.push({ code: "evidence-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema footer must include the declared parent-schema permalink alongside the self entry.", severity: "error" });
+    } else if (footerComparisonTarget && !isCommitPinnedBrowseGitTarget(footerComparisonTarget)) {
+      findings.push({ code: "evidence-schema-footer-target-not-permalink", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema footer Towards target must be a commit-pinned browse + git permalink when the parent schema permalink is available.", severity: "error" });
+    } else if (parsed.parentOrigin?.browseGit && footerComparisonTarget && footerComparisonTarget !== parsed.parentOrigin.browseGit) {
+      findings.push({ code: "evidence-schema-footer-target-mismatch", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema footer Towards target must match the Parent Origin browse + git permalink.", severity: "error" });
+    }
   }
   collectExpectedSchemaHeadingFindings(findings, input.filePath, parsed, { codePrefix: "evidence-schema-layout", displayName: "evidence schema", titleHeading: "Evidence", expectedSectionHeadings: EVIDENCE_SCHEMA_EXPECTED_SECTION_HEADINGS });
   if (!parsed.schemaValidationContract?.present) {
@@ -186,24 +260,12 @@ function validateTraceableEvidenceSchemaSync(input) {
     collectContractVocabularyFindings(findings, input.filePath, parsed.schemaValidationContract, { codePrefix: "evidence-schema-contract", category: "schema-validation-contract", displayName: "evidence schema validation contract", allowedGroupHeadings: [...EVIDENCE_SCHEMA_VALIDATION_GROUP_HEADINGS, "Contract Category Extension", "Contract Category Override"], allowedCategoryLabels: [...EVIDENCE_SCHEMA_VALIDATION_CATEGORY_LABELS, ...declaredContractCategoryLabels], unexpectedSeverity: unknownContractSeverity });
     addMissingGroupFindings(findings, input.filePath, parsed.schemaValidationContract, { codePrefix: "evidence-schema-contract", category: "schema-validation-contract", displayName: "evidence schema validation contract", requiredGroupHeadings: EVIDENCE_SCHEMA_VALIDATION_GROUP_HEADINGS });
   }
-  if (!parsed.artifactCreationContract?.present) {
-    findings.push({ code: "evidence-schema-artifact-creation-contract-missing", category: "artifact-creation-contract", filePath: input.filePath, message: "The evidence schema must include an Artifact Creation Contract section.", severity: "error" });
-  } else {
-    addContractSectionShapeFindings(findings, input.filePath, parsed.artifactCreationContract, { codePrefix: "evidence-schema-artifact-creation-contract", category: "artifact-creation-contract", displayName: "evidence schema artifact creation contract" });
-    collectContractVocabularyFindings(findings, input.filePath, parsed.artifactCreationContract, { codePrefix: "evidence-schema-artifact-creation-contract", category: "artifact-creation-contract", displayName: "evidence schema artifact creation contract", allowedGroupHeadings: EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS, allowedCategoryLabels: EVIDENCE_SCHEMA_ARTIFACT_CREATION_CATEGORY_LABELS, unexpectedSeverity: unknownContractSeverity });
-    addMissingGroupFindings(findings, input.filePath, parsed.artifactCreationContract, { codePrefix: "evidence-schema-artifact-creation-contract", category: "artifact-creation-contract", displayName: "evidence schema artifact creation contract", requiredGroupHeadings: EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS });
-  }
+  collectEvidenceArtifactCreationContractFindings(findings, input.filePath, markdown);
   if (!parentSchemaPath) {
-    findings.push({ code: "evidence-schema-parent-trace-unresolvable", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema must point to a resolvable root schema trace.", severity: "error" });
+    findings.push({ code: "evidence-schema-parent-trace-unresolvable", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema must point to a resolvable parent schema trace.", severity: "error" });
   } else {
-    const rootValidation = validateTraceableRootSchemaSync({ filePath: parentSchemaPath, readTextFileSync: input.readTextFileSync });
-    inheritedContractCategoryLabels = getContractGroupCategoryItems(rootValidation.parsed.schemaValidationContract, "Contract Syntax", ["Known Category Labels"]);
-    allowedEnvelopeFieldLabels = getContractGroupCategoryItems(rootValidation.parsed.schemaValidationContract, "Continuity Context", ["Required Fields", "Optional Fields"]);
-    allowedParentFieldLabels = getContractGroupCategoryItems(rootValidation.parsed.schemaValidationContract, "Parent", ["Required Fields", "Optional Fields"]);
-    allowedCurrentFieldLabels = getContractGroupCategoryItems(rootValidation.parsed.schemaValidationContract, "Current", ["Required Fields", "Optional Fields"]);
-    const rootBlockingFindings = rootValidation.findings.filter((finding) => !finding.code.startsWith("continuity-"));
-    if (rootBlockingFindings.length > 0) {
-      findings.push({ code: "evidence-schema-parent-root-invalid", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema points to a parent root schema that does not satisfy the root validator.", severity: "error" });
+    if (rootContractContext.rootBlockingFindings.length > 0) {
+      findings.push({ code: "evidence-schema-envelope-root-invalid", category: "schema-note-lineage", filePath: input.filePath, message: "The evidence schema points to an envelope root schema that does not satisfy the root validator.", severity: "error" });
     }
     addRedeclaredInheritedContractCategoryFindings(findings, input.filePath, declaredContractCategoryLabels, inheritedContractCategoryLabels, overriddenContractCategoryLabels);
   }

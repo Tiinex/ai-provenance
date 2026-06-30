@@ -579,6 +579,17 @@ function buildContinuityEnvelopeCodeActions(document: vscode.TextDocument, diagn
       actions.push(action);
       continue;
     }
+    if (diagnosticCode === "evidence-schema-footer-missing") {
+      const edit = createInsertContinuityIntegrityFooterEdit(document);
+      if (!edit) {
+        continue;
+      }
+      const action = new vscode.CodeAction("Insert Continuity Integrity footer", vscode.CodeActionKind.QuickFix);
+      action.edit = edit;
+      action.diagnostics = [diagnostic];
+      actions.push(action);
+      continue;
+    }
     if (diagnosticCode === "continuity-checksum-v1-legacy") {
       const action = new vscode.CodeAction("Upgrade Continuity Integrity footer to v2", vscode.CodeActionKind.QuickFix);
       action.command = {
@@ -5143,12 +5154,29 @@ function getTraceableSchemaDiagnosticRange(
     case "decision-schema-footer-target-not-permalink":
     case "task-schema-footer-target-mismatch":
     case "task-schema-footer-target-not-permalink":
+    case "evidence-schema-footer-missing":
     case "evidence-schema-footer-target-mismatch":
     case "evidence-schema-footer-target-not-permalink":
     case "pointer-schema-footer-target-mismatch":
     case "pointer-schema-footer-target-not-permalink":
       return findTraceableDiagnosticLineRangeInSection(document, "# Continuity Integrity", (lineText) => lineText.trimStart().startsWith("- Towards:"))
-        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity");
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Integrity")
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "# Continuity Context");
+    case "evidence-schema-artifact-creation-contract-missing":
+    case "evidence-schema-artifact-creation-contract-duplicate-groups":
+    case "evidence-schema-artifact-creation-contract-category-list-missing":
+    case "evidence-schema-artifact-creation-contract-unlabeled-list":
+    case "evidence-schema-artifact-creation-contract-star-bullets-present":
+    case "evidence-schema-artifact-creation-contract-unexpected-content":
+    case "evidence-schema-artifact-creation-contract-unexpected-group":
+    case "evidence-schema-artifact-creation-contract-unexpected-category-label":
+      return getTraceableSchemaPlacementRange(document, finding)
+        ?? findTraceableDiagnosticLineRange(document, (lineText) => lineText.trim() === "## Artifact Creation Contract");
+    case "evidence-schema-layout-title-mismatch":
+    case "evidence-schema-layout-missing-heading":
+    case "evidence-schema-layout-unexpected-heading":
+    case "evidence-schema-layout-heading-order":
+      return getTraceableSchemaPlacementRange(document, finding);
     case "root-schema-validation-contract-missing":
     case "root-schema-contract-duplicate-groups":
     case "root-schema-contract-category-list-missing":

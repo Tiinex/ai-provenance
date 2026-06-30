@@ -663,6 +663,41 @@ function evaluateContinuityIntegrity(markdown, footerIntegrity, options = {}) {
     };
 }
 
+function getLatestNonSelfFooterTowardsTarget(footerIntegrity) {
+  return footerIntegrity?.entries?.map((entry) => entry?.towardsTarget).filter((target) => target && target !== "self").at(-1)
+    ?? (footerIntegrity?.towardsTarget && footerIntegrity.towardsTarget !== "self" ? footerIntegrity.towardsTarget : undefined);
+}
+
+function collectInheritedRootContractContext(filePath, parsed, readTextFileSync, options) {
+  const resolvedAuthoritySchemaPath = resolveRelativeSchemaPath(filePath, options?.authorityTarget);
+  const emptyResult = {
+    resolvedAuthoritySchemaPath,
+    rootValidation: undefined,
+    inheritedContractCategoryLabels: [],
+    allowedEnvelopeFieldLabels: [],
+    allowedParentFieldLabels: [],
+    allowedCurrentFieldLabels: [],
+    rootBlockingFindings: []
+  };
+  if (!resolvedAuthoritySchemaPath || typeof options?.validateRootSchemaSync !== "function") {
+    return emptyResult;
+  }
+
+  const rootValidation = options.validateRootSchemaSync({
+    filePath: resolvedAuthoritySchemaPath,
+    readTextFileSync
+  });
+  return {
+    resolvedAuthoritySchemaPath,
+    rootValidation,
+    inheritedContractCategoryLabels: getContractGroupCategoryItems(rootValidation?.parsed?.schemaValidationContract, "Contract Syntax", ["Known Category Labels"]),
+    allowedEnvelopeFieldLabels: getContractGroupCategoryItems(rootValidation?.parsed?.schemaValidationContract, "Continuity Context", ["Required Fields", "Optional Fields"]),
+    allowedParentFieldLabels: getContractGroupCategoryItems(rootValidation?.parsed?.schemaValidationContract, "Parent", ["Required Fields", "Optional Fields"]),
+    allowedCurrentFieldLabels: getContractGroupCategoryItems(rootValidation?.parsed?.schemaValidationContract, "Current", ["Required Fields", "Optional Fields"]),
+    rootBlockingFindings: rootValidation?.findings?.filter((finding) => !finding.code.startsWith("continuity-")) ?? []
+  };
+}
+
 function addContractSectionShapeFindings(findings, filePath, contract, options) {
   if (!contract?.present) {
     return;
@@ -976,12 +1011,14 @@ function resolveRelativeSchemaPath(filePath, relativeTarget) {
 
 module.exports = {
   addContractSectionShapeFindings,
+  collectInheritedRootContractContext,
   collectContractVocabularyFindings,
   collectExpectedSchemaHeadingFindings,
   collectUnexpectedContinuityEnvelopeFieldFindings,
   computeTraceableContinuityChecksumSha256,
   computeTargetedTraceableContinuityChecksumSha256,
   evaluateContinuityIntegrity,
+  getLatestNonSelfFooterTowardsTarget,
   getContractGroupCategoryItems,
   isCommitPinnedBrowseGitTarget,
   isTraceableContinuityTimestamp,

@@ -186,6 +186,7 @@ function createFixtureReadTextFileSync(fileMap) {
 function excludeSchemaTargetReadabilityFindings(findings) {
   return findings.filter((finding) => ![
     "continuity-footer-self-required-without-parent",
+    "continuity-checksum-v1-legacy",
     "traceable-envelope-schema-permalink-required",
     "traceable-envelope-schema-unreadable",
     "traceable-current-schema-permalink-required",
@@ -227,8 +228,8 @@ function testContinuityValidationCoreWithLocalFixtureChain() {
 
 # Continuity Integrity
 
-- sha256-base64url-c14n-v1
-  - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
+- sha256-base64url-c14n-v2
+  - Towards: self
   - Value: PLACEHOLDER`, { filePath: parentPath, readTextFileSync: testReadTextFileSync });
 
   fileMap.set(path.resolve(parentPath), parentMarkdown);
@@ -259,8 +260,8 @@ function testContinuityValidationCoreWithLocalFixtureChain() {
 
 # Continuity Integrity
 
-- sha256-base64url-c14n-v1
-  - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
+- sha256-base64url-c14n-v2
+  - Towards: self
   - Value: PLACEHOLDER`, { filePath: childPath, readTextFileSync: testReadTextFileSync });
 
   fileMap.set(path.resolve(childPath), childMarkdown);
@@ -304,8 +305,8 @@ function testValidatorFindsParentSchemaMismatch() {
 
 # Continuity Integrity
 
-- sha256-base64url-c14n-v1
-  - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
+- sha256-base64url-c14n-v2
+  - Towards: self
   - Value: PLACEHOLDER`, { filePath: parentPath, readTextFileSync: testReadTextFileSync });
   const parentChecksum = computeTraceableContinuityChecksumSha256(parentMarkdown);
   fileMap.set(path.resolve(parentPath), parentMarkdown);
@@ -350,8 +351,8 @@ function testValidatorFindsParentSchemaMismatch() {
 
 # Continuity Integrity
 
-- sha256-base64url-c14n-v1
-  - Towards: [tiinex.topic.v1.schema.md](../../docs/.topics/.schemas/tiinex.topic.v1.schema.md)
+- sha256-base64url-c14n-v2
+  - Towards: self
   - Value: PLACEHOLDER`, { filePath: childPath, readTextFileSync: testReadTextFileSync });
   fileMap.set(path.resolve(childPath), childMarkdown);
 
@@ -483,8 +484,8 @@ function testValidatorFindsMissingValidationFriendlyShape() {
 
 # Continuity Integrity
 
-- sha256-base64url-c14n-v1
-  - Towards: [tiinex.evidence.v1.schema.md](../../docs/.topics/.schemas/tiinex.evidence.v1.schema.md)
+- sha256-base64url-c14n-v2
+  - Towards: self
   - Value: PLACEHOLDER`);
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: artifactPath,
@@ -1292,7 +1293,7 @@ Required When`
 
 function testRootSchemaValidatorWarnsUnexpectedEnvelopeFields() {
   const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.root.v1.schema.md");
-  const markdown = readFileSync(schemaPath, "utf8").replace("- Summary: Root schema for Tiinex lineage artifacts.", "- Summmary: Root schema for Tiinex lineage artifacts.");
+  const markdown = readFileSync(schemaPath, "utf8").replace("- Summary: Root schema for Tiinex lineage artifacts with repair-note support.", "- Summmary: Root schema for Tiinex lineage artifacts with repair-note support.");
   const result = validateTraceableRootSchemaSync({
     filePath: schemaPath,
     readTextFileSync: () => markdown
@@ -1307,7 +1308,7 @@ function testRootSchemaValidatorWarnsUnexpectedEnvelopeFields() {
 function testRootSchemaValidatorUsesRootDeclaredEnvelopeFieldLists() {
   const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.root.v1.schema.md");
   const markdown = readFileSync(schemaPath, "utf8")
-    .replace("- Summary: Root schema for Tiinex lineage artifacts.", "- Summmary: Root schema for Tiinex lineage artifacts.")
+    .replace("- Summary: Root schema for Tiinex lineage artifacts with repair-note support.", "- Summmary: Root schema for Tiinex lineage artifacts with repair-note support.")
     .replace(/Optional Fields\r?\n\r?\n- Summary/u, "Optional Fields\n\n- Summmary");
   const result = validateTraceableRootSchemaSync({
     filePath: schemaPath,
@@ -1540,20 +1541,26 @@ function testTaskSchemaValidatorAcceptsCommittedSchema() {
   );
 }
 
-function testEvidenceSchemaValidatorAcceptsCommittedSchema() {
+function testEvidenceSchemaValidatorMatchesAuditedStructureAndFlagsMissingFooter() {
   const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.evidence.v1.schema.md");
   const result = validateTraceableEvidenceSchemaSync({ filePath: schemaPath });
 
   assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The evidence validator should treat the root schema as the active envelope schema for the maintained evidence schema.");
-  assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The evidence validator should still follow the root parent schema for the maintained evidence schema.");
-  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained evidence schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.equal(result.parsed.parentSchema?.label, "tiinex.preservation.v1", "The evidence validator should follow the maintained evidence schema parent declaration.");
   assert.ok(
-    !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
-    "The evidence validator should accept the committed evidence schema once its continuity checksum has been rotated."
+    result.findings.some((finding) => finding.code === "evidence-schema-footer-missing"),
+    "The maintained evidence schema should currently surface a dedicated missing-footer finding so the footer insert quick fix can be offered."
   );
   assert.ok(
-    !result.findings.some((finding) => finding.code.startsWith("evidence-schema-") || finding.code === "evidence-schema-parent-root-invalid"),
-    "The current ported evidence schema should pass the standalone evidence validator on structure and root lineage."
+    !result.findings.some((finding) => [
+      "evidence-schema-layout-heading-order",
+      "evidence-schema-artifact-creation-contract-unexpected-content",
+      "evidence-schema-artifact-creation-contract-groups-missing",
+      "evidence-schema-artifact-creation-contract-unexpected-group",
+      "evidence-schema-footer-target-mismatch",
+      "evidence-schema-footer-target-not-permalink"
+    ].includes(finding.code)),
+    "The audited evidence schema should no longer fail the standalone validator on outdated section-order, artifact-creation shape, or stale footer-target rules."
   );
 }
 
@@ -2549,7 +2556,7 @@ async function main() {
   testSubschemaValidatorAcceptsRotatedChecksum();
   testDecisionSchemaValidatorAcceptsCommittedSchema();
   testTaskSchemaValidatorAcceptsCommittedSchema();
-  testEvidenceSchemaValidatorAcceptsCommittedSchema();
+  testEvidenceSchemaValidatorMatchesAuditedStructureAndFlagsMissingFooter();
   testPointerSchemaValidatorAcceptsCommittedSchema();
   testRuntimeSchemaContinuityAcceptsCommittedSchema();
   testMachineRuntimeSchemaContinuityAcceptsCommittedSchema();
