@@ -1,6 +1,6 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { promises as fs, readFileSync } from "node:fs";
+import { existsSync, promises as fs, readFileSync } from "node:fs";
 import { get as httpsGet } from "node:https";
 import * as vscode from "vscode";
 import {
@@ -3778,6 +3778,161 @@ function replaceFirstMarkdownLinkTarget(lineText: string, nextTarget: string): s
 const traceableBranchCommitCache = new Map<string, string | undefined>();
 const traceableGitRootRepoSlugCache = new Map<string, string | undefined>();
 const traceableRepoSlugGitRootCache = new Map<string, string | undefined>();
+type TraceableSchemaCatalogEntry = {
+  schemaIdentity: string;
+  filePath: string;
+  gitRoot?: string;
+  workspaceFolderPath?: string;
+};
+
+const traceableSchemaCatalogByIdentity = new Map<string, TraceableSchemaCatalogEntry[]>();
+const traceableSchemaCatalogByFileName = new Map<string, TraceableSchemaCatalogEntry[]>();
+let traceableSchemaCatalogRefreshPromise: Promise<void> | undefined;
+let traceableSchemaCatalogRefreshTimer: NodeJS.Timeout | undefined;
+
+function normalizeTraceableSchemaCatalogKey(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLowerCase() : undefined;
+}
+
+function clearTraceableSchemaCatalog(): void {
+  traceableSchemaCatalogByIdentity.clear();
+  traceableSchemaCatalogByFileName.clear();
+}
+
+function indexTraceableSchemaCatalogEntry(entry: TraceableSchemaCatalogEntry): void {
+  const identityKey = normalizeTraceableSchemaCatalogKey(entry.schemaIdentity);
+  const fileNameKey = normalizeTraceableSchemaCatalogKey(path.basename(entry.filePath));
+  if (identityKey) {
+    const existingEntries = traceableSchemaCatalogByIdentity.get(identityKey) ?? [];
+    existingEntries.push(entry);
+    traceableSchemaCatalogByIdentity.set(identityKey, existingEntries);
+  }
+  if (fileNameKey) {
+    const existingEntries = traceableSchemaCatalogByFileName.get(fileNameKey) ?? [];
+    existingEntries.push(entry);
+    traceableSchemaCatalogByFileName.set(fileNameKey, existingEntries);
+  }
+}
+
+function buildTraceableSchemaCatalogEntry(filePath: string): TraceableSchemaCatalogEntry | undefined {
+  try {
+    const markdown = readFileSync(filePath, "utf8");
+    const parsed = parseTraceableContinuityMarkdown(markdown);
+    const schemaIdentity = parsed.currentSchema?.label?.trim()
+      || parsed.currentSchema?.target?.trim()
+      || path.basename(filePath).replace(/\.schema\.md$/iu, "");
+    if (!schemaIdentity) {
+      return undefined;
+    }
+    return {
+      schemaIdentity,
+      filePath,
+      gitRoot: resolveTraceableGitRoot(filePath),
+      workspaceFolderPath: vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath))?.uri.fsPath
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function rebuildTraceableSchemaCatalog(): Promise<void> {
+  const matches = await vscode.workspace.findFiles("**/*.schema.md", undefined, 4000);
+  clearTraceableSchemaCatalog();
+  const seenPaths = new Set<string>();
+  for (const match of matches) {
+    if (match.scheme !== "file") {
+      continue;
+    }
+    const normalizedPath = path.resolve(match.fsPath).toLowerCase();
+    if (seenPaths.has(normalizedPath)) {
+      continue;
+    }
+    seenPaths.add(normalizedPath);
+    const entry = buildTraceableSchemaCatalogEntry(match.fsPath);
+    if (entry) {
+      indexTraceableSchemaCatalogEntry(entry);
+    }
+  }
+}
+
+function scheduleTraceableSchemaCatalogRefresh(delayMs = 100): void {
+  if (traceableSchemaCatalogRefreshTimer) {
+    clearTimeout(traceableSchemaCatalogRefreshTimer);
+  }
+  traceableSchemaCatalogRefreshTimer = setTimeout(() => {
+    traceableSchemaCatalogRefreshTimer = undefined;
+    traceableSchemaCatalogRefreshPromise = rebuildTraceableSchemaCatalog()
+      .catch(() => undefined)
+      .finally(() => {
+        traceableSchemaCatalogRefreshPromise = undefined;
+      });
+  }, delayMs);
+}
+
+async function ensureTraceableSchemaCatalogReady(): Promise<void> {
+  if (traceableSchemaCatalogByIdentity.size > 0 || traceableSchemaCatalogByFileName.size > 0) {
+    return;
+  }
+  if (traceableSchemaCatalogRefreshPromise) {
+    await traceableSchemaCatalogRefreshPromise;
+    return;
+  }
+  traceableSchemaCatalogRefreshPromise = rebuildTraceableSchemaCatalog()
+    .catch(() => undefined)
+    .finally(() => {
+      traceableSchemaCatalogRefreshPromise = undefined;
+    });
+  await traceableSchemaCatalogRefreshPromise;
+}
+
+function getBestTraceableSchemaCatalogEntryForIdentity(currentFilePath: string, identity: string | undefined): TraceableSchemaCatalogEntry | undefined {
+  const identityKey = normalizeTraceableSchemaCatalogKey(identity);
+  if (!identityKey) {
+    return undefined;
+  }
+  const entries = traceableSchemaCatalogByIdentity.get(identityKey) ?? [];
+  if (entries.length === 1) {
+    return entries[0];
+  }
+  if (entries.length === 0) {
+    return undefined;
+  }
+  const currentGitRoot = resolveTraceableGitRoot(currentFilePath);
+  const sameGitRootEntries = currentGitRoot
+    ? entries.filter((entry) => entry.gitRoot && path.resolve(entry.gitRoot).toLowerCase() === path.resolve(currentGitRoot).toLowerCase())
+    : [];
+  if (sameGitRootEntries.length === 1) {
+    return sameGitRootEntries[0];
+  }
+  if (sameGitRootEntries.length > 1) {
+    return undefined;
+  }
+  const currentWorkspaceFolderPath = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(currentFilePath))?.uri.fsPath;
+  const sameWorkspaceEntries = currentWorkspaceFolderPath
+    ? entries.filter((entry) => entry.workspaceFolderPath && path.resolve(entry.workspaceFolderPath).toLowerCase() === path.resolve(currentWorkspaceFolderPath).toLowerCase())
+    : [];
+  if (sameWorkspaceEntries.length === 1) {
+    return sameWorkspaceEntries[0];
+  }
+  return undefined;
+}
+
+function tryResolveReadableLocalTraceableReference(currentFilePath: string, referencePath: string | undefined): string | undefined {
+  const trimmed = referencePath?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (/^https?:\/\//iu.test(trimmed)) {
+    return undefined;
+  }
+  const resolvedPath = trimmed.startsWith("file:///")
+    ? path.resolve(decodeURIComponent(trimmed.slice("file:///".length)).replace(/^\/+/, ""))
+    : path.isAbsolute(trimmed)
+      ? path.resolve(trimmed)
+      : path.resolve(path.dirname(currentFilePath), trimmed);
+  return existsSync(resolvedPath) ? resolvedPath : undefined;
+}
 
 function clearTraceableLatestPermalinkCaches(): void {
   traceableGitRootRepoSlugCache.clear();
@@ -3937,6 +4092,11 @@ async function findLikelyLocalSchemaTargetForIdentity(document: vscode.TextDocum
   if (!trimmed) {
     return undefined;
   }
+  await ensureTraceableSchemaCatalogReady();
+  const indexedEntry = getBestTraceableSchemaCatalogEntryForIdentity(document.uri.fsPath, trimmed);
+  if (indexedEntry?.filePath) {
+    return indexedEntry.filePath;
+  }
   for (const candidateName of buildSchemaIdentityFileNameCandidates(trimmed)) {
     const matches = await vscode.workspace.findFiles(`**/${candidateName}`, undefined, 5);
     if (matches.length > 0) {
@@ -3967,28 +4127,28 @@ async function resolveTraceableRefreshSeedTarget(document: vscode.TextDocument, 
   const parsed = parseTraceableContinuityMarkdown(document.getText());
   switch (fieldKey) {
     case "envelope-schema":
-      return parsed.envelopeSchema?.target
+      return tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.envelopeSchema?.target)
         || await findLikelyLocalSchemaTargetForIdentity(document, parsed.envelopeSchema?.label);
     case "parent-schema":
-      return parsed.parentSchema?.target
-        || parsed.parentOrigin?.relative
-        || parsed.parentOrigin?.absolute
+      return tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentSchema?.target)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentOrigin?.relative)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentOrigin?.absolute)
         || await findLikelyLocalSchemaTargetForIdentity(document, parsed.parentSchema?.label);
     case "current-schema":
-      return parsed.currentSchema?.target
-        || parsed.currentOrigin?.relative
-        || parsed.currentOrigin?.absolute
+      return tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.currentSchema?.target)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.currentOrigin?.relative)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.currentOrigin?.absolute)
         || await findLikelyLocalSchemaTargetForIdentity(document, parsed.currentSchema?.label);
     case "parent-origin-browse-git":
-      return parsed.parentOrigin?.relative
-        || parsed.parentOrigin?.absolute
-        || parsed.parentTrace?.target
-        || parsed.parentSchema?.target
+      return tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentOrigin?.relative)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentOrigin?.absolute)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentTrace?.target)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentSchema?.target)
         || await findLikelyLocalSchemaTargetForIdentity(document, parsed.parentSchema?.label);
     case "current-origin-browse-git":
-      return parsed.currentOrigin?.relative
-        || parsed.currentOrigin?.absolute
-        || parsed.currentSchema?.target
+      return tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.currentOrigin?.relative)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.currentOrigin?.absolute)
+        || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.currentSchema?.target)
         || await findLikelyLocalSchemaTargetForIdentity(document, parsed.currentSchema?.label);
     case "footer-towards":
       return parsed.footerIntegrity?.towardsTarget;
@@ -4191,16 +4351,15 @@ async function refreshTraceablePermalinkFromLatest(output: vscode.OutputChannel,
 
 async function createRepairTraceableParentTraceTargetEdit(document: vscode.TextDocument): Promise<vscode.WorkspaceEdit | undefined> {
   const parsed = parseTraceableContinuityMarkdown(document.getText());
-  const repairTarget = parsed.parentOrigin?.relative
-    || parsed.parentOrigin?.absolute
-    || parsed.parentSchema?.target
-    || await findLikelyLocalSchemaTargetForIdentity(document, parsed.parentSchema?.label);
+  const repairTarget = tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentTrace?.target)
+    || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentOrigin?.relative)
+    || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentOrigin?.absolute)
+    || tryResolveReadableLocalTraceableReference(document.uri.fsPath, parsed.parentSchema?.target)
+    || await findLikelyLocalSchemaTargetForIdentity(document, parsed.parentSchema?.label ?? parsed.parentSchema?.target);
   if (!repairTarget) {
     return undefined;
   }
-  const resolvedRepairPath = path.isAbsolute(repairTarget)
-    ? repairTarget
-    : path.resolve(path.dirname(document.uri.fsPath), repairTarget);
+  const resolvedRepairPath = path.resolve(repairTarget);
   let relativeTarget = path.relative(path.dirname(document.uri.fsPath), resolvedRepairPath).replace(/\\+/gu, "/");
   if (!relativeTarget || relativeTarget.startsWith("../") || relativeTarget.startsWith("./")) {
     // keep as-is
@@ -8086,6 +8245,19 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   refreshTraceableContinuityDiagnosticsForOpenDocuments();
 
+  scheduleTraceableSchemaCatalogRefresh(0);
+  const traceableSchemaWatcher = vscode.workspace.createFileSystemWatcher("**/*.schema.md");
+  context.subscriptions.push(traceableSchemaWatcher);
+  context.subscriptions.push(traceableSchemaWatcher.onDidChange(() => {
+    scheduleTraceableSchemaCatalogRefresh();
+  }));
+  context.subscriptions.push(traceableSchemaWatcher.onDidCreate(() => {
+    scheduleTraceableSchemaCatalogRefresh();
+  }));
+  context.subscriptions.push(traceableSchemaWatcher.onDidDelete(() => {
+    scheduleTraceableSchemaCatalogRefresh();
+  }));
+
   const returnToParentTraceWatcher = vscode.workspace.createFileSystemWatcher("**/*.trace.md");
   context.subscriptions.push(returnToParentTraceWatcher);
   context.subscriptions.push(returnToParentTraceWatcher.onDidChange(() => {
@@ -8098,16 +8270,21 @@ export function activate(context: vscode.ExtensionContext): void {
     scheduleReturnToParentTraceContextRefresh();
   }));
   context.subscriptions.push(vscode.workspace.onDidRenameFiles(() => {
+    scheduleTraceableSchemaCatalogRefresh();
     scheduleReturnToParentTraceContextRefresh();
   }));
   context.subscriptions.push(vscode.workspace.onDidSaveTextDocument((document) => {
     if (document.uri.scheme === "file" && document.uri.fsPath.toLowerCase().endsWith(".trace.md")) {
       scheduleReturnToParentTraceContextRefresh();
     }
+    if (document.uri.scheme === "file" && document.uri.fsPath.toLowerCase().endsWith(".schema.md")) {
+      scheduleTraceableSchemaCatalogRefresh();
+    }
     clearTraceableLatestPermalinkCaches();
     scheduleTraceableContinuityDiagnosticsRefresh(document, 0);
   }));
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    scheduleTraceableSchemaCatalogRefresh();
     scheduleReturnToParentTraceContextRefresh();
     refreshTraceableContinuityDiagnosticsForOpenDocuments();
   }));
