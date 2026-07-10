@@ -1,3 +1,17 @@
+> **Current status: partially current.**
+>
+> This repository contains provenance-related work, but only the validator, linting, and provenance pieces that are still actively used should be treated as current without fresh validation.
+>
+> Treat VS Code extension, TRACEABLE runtime, Marketplace, LM tool, and workflow claims as historical or requiring revalidation unless a current validation note explicitly confirms them.
+>
+> Current Tiinex grounding surfaces:
+>
+> - `Tiinex/docs` — schemas, artifacts, policies, topics, and semantics
+> - `Tiinex/site` — current public viewer / reference implementation
+> - `Tiinex/ai-provenance` — partially current provenance validation/linting surface only
+>
+> Do not infer current Tiinex architecture or product state from this repo alone.
+
 # Tiinex AI Provenance
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
