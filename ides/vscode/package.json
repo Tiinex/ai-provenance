@@ -2,7 +2,7 @@
   "name": "ai-provenance",
   "displayName": "Tiinex Traceable Provenance",
   "description": "Bounded TRACEABLE provenance runs, .trace.md evidence inspection, and reconstructed evidence viewing for VS Code.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -10,7 +10,7 @@
   },
   "homepage": "https://github.com/Tiinex/ai-provenance",
   "bugs": {
-      "url": "https://github.com/Tiinex/ai-provenance/issues"
+    "url": "https://github.com/Tiinex/ai-provenance/issues"
   },
   "icon": "assets/logo-transparent.png",
   "publisher": "tiinex",
