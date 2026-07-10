@@ -3,13 +3,20 @@
 This repo is partially current.
 
 Read this boundary before summarizing the repo:
+
 - Current without fresh validation: actively used validator, linting, and provenance pieces.
 - Requires fresh validation: VS Code extension claims, TRACEABLE runtime claims, Marketplace claims, LM tool claims, workflow/runtime status claims.
 
 Current Tiinex grounding surfaces:
+
 - Tiinex/docs
 - Tiinex/site
 - Tiinex/ai-provenance, partially
 
 Do not treat this repo as the full Tiinex project.
 Do not treat older detailed status notes as current unless they are explicitly revalidated.
+Do not describe Tiinex as an AI runtime. AI and LLM workflows are use cases and pressure tests, not the identity boundary.
+
+Bounded project identity:
+
+Tiinex keeps provenance readable in Markdown artifacts you own.
