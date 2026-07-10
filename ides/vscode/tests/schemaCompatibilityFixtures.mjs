@@ -38,7 +38,7 @@ function buildFixtureReadTextFileSync(fixture) {
 
 export function runSchemaCompatibilityFixtures(packageRoot) {
   const rootSchemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.root.v1.schema.md");
-  const topicSchemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const topicSchemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "core", "topic", "tiinex.topic.v1.schema.md");
 
   const fixtures = [{
     name: "root undeclared envelope field warns",
@@ -48,8 +48,8 @@ export function runSchemaCompatibilityFixtures(packageRoot) {
     overrides: [{
       filePath: rootSchemaPath,
       replacements: [{
-        from: "- Summary: Root schema for Tiinex lineage artifacts.",
-        to: "- Summmary: Root schema for Tiinex lineage artifacts."
+        from: "- Summary: Root schema for Tiinex lineage artifacts with repair-note support.",
+        to: "- Summmary: Root schema for Tiinex lineage artifacts with repair-note support."
       }]
     }],
     assert(result) {
@@ -72,7 +72,7 @@ export function runSchemaCompatibilityFixtures(packageRoot) {
         from: "Applies To",
         to: "Applies T"
       }, {
-        from: "- Trace: [tiinex.root.v1.schema.md](tiinex.root.v1.schema.md)",
+        from: "- Trace: [tiinex.root.v1.schema.md](../../tiinex.root.v1.schema.md)",
         to: "- Trace: self"
       }]
     }],
@@ -121,7 +121,7 @@ export function runSchemaCompatibilityFixtures(packageRoot) {
         from: "- Summary: Schema for bounded topic-oriented lineage artifacts.",
         to: "- Summmary: Schema for bounded topic-oriented lineage artifacts."
       }, {
-        from: "- Trace: [tiinex.root.v1.schema.md](tiinex.root.v1.schema.md)",
+        from: "- Trace: [tiinex.root.v1.schema.md](../../tiinex.root.v1.schema.md)",
         to: "- Trace: self"
       }]
     }],

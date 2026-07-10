@@ -37,6 +37,23 @@ import { runSchemaCompatibilityFixtures } from "./schemaCompatibilityFixtures.mj
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const packageRoot = path.resolve(__dirname, "..");
+const docsSchemasRoot = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas");
+
+function getDocsSchemaPath(schemaIdentity) {
+  const relativePathBySchemaIdentity = new Map([
+    ["tiinex.root.v1", "tiinex.root.v1.schema.md"],
+    ["tiinex.topic.v1", "core/topic/tiinex.topic.v1.schema.md"],
+    ["tiinex.task.v1", "core/task/tiinex.task.v1.schema.md"],
+    ["tiinex.preservation.v1", "core/preservation/tiinex.preservation.v1.schema.md"],
+    ["tiinex.evidence.v1", "core/evidence/tiinex.evidence.v1.schema.md"],
+    ["tiinex.feedback.v1", "core/feedback/tiinex.feedback.v1.schema.md"],
+    ["tiinex.decision.v1", "core/decision/tiinex.decision.v1.schema.md"],
+    ["tiinex.pointer.v1", "core/pointer/tiinex.pointer.v1.schema.md"],
+    ["tiinex.signal.v1", "core/signal/tiinex.signal.v1.schema.md"]
+  ]);
+  const relativePath = relativePathBySchemaIdentity.get(schemaIdentity) ?? `${schemaIdentity}.schema.md`;
+  return path.join(docsSchemasRoot, ...relativePath.split("/"));
+}
 
 function getContributedConfigurationProperties(packageJson) {
   const configuration = packageJson.contributes?.configuration;
@@ -1063,7 +1080,7 @@ Ordinary trace validation should reject schema permalinks that would 404 at the 
 }
 
 function testTaskSchemaNoteDoesNotTriggerTaskArtifactRule() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.task.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.task.v1");
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: schemaPath,
     maxDepth: 1
@@ -1471,7 +1488,7 @@ Rules
 }
 
 function testPortedTopicSchemaSelfValidatesWhenChecksumIsRefreshed() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = finalizeContinuityIntegrity(readFileSync(schemaPath, "utf8"));
   const result = validateTraceableContinuityArtifactChainSync({
     filePath: schemaPath,
@@ -1491,12 +1508,14 @@ function testPortedTopicSchemaSelfValidatesWhenChecksumIsRefreshed() {
 }
 
 function testSubschemaValidatorAcceptsRotatedChecksum() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const result = validateTraceableTopicSchemaSync({ filePath: schemaPath });
+  const footerComparisonTarget = result.parsed.footerIntegrity?.entries?.map((entry) => entry?.towardsTarget).filter((target) => target && target !== "self").at(-1);
 
   assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The topic validator should now treat the root schema as the active envelope schema for the maintained topic schema.");
   assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The topic validator should still follow the root parent schema for the current topic schema.");
-  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained topic schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, "self", "The maintained topic schema should use self as the active footer entry target.");
+  assert.equal(footerComparisonTarget, result.parsed.parentOrigin?.browseGit, "The maintained topic schema footer should carry the same commit-pinned root-schema permalink as Parent Origin browse + git in its comparison entry.");
   assert.ok(
     !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
     "The topic validator should accept the committed topic schema once its continuity checksum has been rotated."
@@ -1508,12 +1527,14 @@ function testSubschemaValidatorAcceptsRotatedChecksum() {
 }
 
 function testDecisionSchemaValidatorAcceptsCommittedSchema() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.decision.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.decision.v1");
   const result = validateTraceableDecisionSchemaSync({ filePath: schemaPath });
+  const footerComparisonTarget = result.parsed.footerIntegrity?.entries?.map((entry) => entry?.towardsTarget).filter((target) => target && target !== "self").at(-1);
 
   assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The decision validator should treat the root schema as the active envelope schema for the maintained decision schema.");
   assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The decision validator should still follow the root parent schema for the maintained decision schema.");
-  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained decision schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, "self", "The maintained decision schema should use self as the active footer entry target.");
+  assert.equal(footerComparisonTarget, result.parsed.parentOrigin?.browseGit, "The maintained decision schema footer should carry the same commit-pinned root-schema permalink as Parent Origin browse + git in its comparison entry.");
   assert.ok(
     !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
     "The decision validator should accept the committed decision schema once its continuity checksum has been rotated."
@@ -1525,12 +1546,14 @@ function testDecisionSchemaValidatorAcceptsCommittedSchema() {
 }
 
 function testTaskSchemaValidatorAcceptsCommittedSchema() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.task.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.task.v1");
   const result = validateTraceableTaskSchemaSync({ filePath: schemaPath });
+  const footerComparisonTarget = result.parsed.footerIntegrity?.entries?.map((entry) => entry?.towardsTarget).filter((target) => target && target !== "self").at(-1);
 
   assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The task validator should treat the root schema as the active envelope schema for the maintained task schema.");
   assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The task validator should still follow the root parent schema for the maintained task schema.");
-  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained task schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, "self", "The maintained task schema should use self as the active footer entry target.");
+  assert.equal(footerComparisonTarget, result.parsed.parentOrigin?.browseGit, "The maintained task schema footer should carry the same commit-pinned root-schema permalink as Parent Origin browse + git in its comparison entry.");
   assert.ok(
     !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
     "The task validator should accept the committed task schema once its continuity checksum has been rotated."
@@ -1542,17 +1565,17 @@ function testTaskSchemaValidatorAcceptsCommittedSchema() {
 }
 
 function testEvidenceSchemaValidatorMatchesAuditedStructureAndFlagsMissingFooter() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.evidence.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.evidence.v1");
   const result = validateTraceableEvidenceSchemaSync({ filePath: schemaPath });
+  const footerComparisonTarget = result.parsed.footerIntegrity?.entries?.map((entry) => entry?.towardsTarget).filter((target) => target && target !== "self").at(-1);
 
   assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The evidence validator should treat the root schema as the active envelope schema for the maintained evidence schema.");
   assert.equal(result.parsed.parentSchema?.label, "tiinex.preservation.v1", "The evidence validator should follow the maintained evidence schema parent declaration.");
-  assert.ok(
-    result.findings.some((finding) => finding.code === "evidence-schema-footer-missing"),
-    "The maintained evidence schema should currently surface a dedicated missing-footer finding so the footer insert quick fix can be offered."
-  );
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, "self", "The maintained evidence schema should use self as the active footer entry target.");
+  assert.equal(footerComparisonTarget, result.parsed.parentOrigin?.browseGit, "The maintained evidence schema footer should carry the same commit-pinned parent-schema permalink as Parent Origin browse + git in its comparison entry.");
   assert.ok(
     !result.findings.some((finding) => [
+      "evidence-schema-footer-missing",
       "evidence-schema-layout-heading-order",
       "evidence-schema-artifact-creation-contract-unexpected-content",
       "evidence-schema-artifact-creation-contract-groups-missing",
@@ -1565,12 +1588,14 @@ function testEvidenceSchemaValidatorMatchesAuditedStructureAndFlagsMissingFooter
 }
 
 function testPointerSchemaValidatorAcceptsCommittedSchema() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.pointer.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.pointer.v1");
   const result = validateTraceablePointerSchemaSync({ filePath: schemaPath });
+  const footerComparisonTarget = result.parsed.footerIntegrity?.entries?.map((entry) => entry?.towardsTarget).filter((target) => target && target !== "self").at(-1);
 
   assert.equal(result.parsed.envelopeSchema?.label, "tiinex.root.v1", "The pointer validator should treat the root schema as the active envelope schema for the maintained pointer schema.");
   assert.equal(result.parsed.parentSchema?.label, "tiinex.root.v1", "The pointer validator should still follow the root parent schema for the maintained pointer schema.");
-  assert.equal(result.parsed.footerIntegrity?.towardsTarget, result.parsed.parentOrigin?.browseGit, "The maintained pointer schema footer should target the same commit-pinned root-schema permalink as Parent Origin browse + git.");
+  assert.equal(result.parsed.footerIntegrity?.towardsTarget, "self", "The maintained pointer schema should use self as the active footer entry target.");
+  assert.equal(footerComparisonTarget, result.parsed.parentOrigin?.browseGit, "The maintained pointer schema footer should carry the same commit-pinned root-schema permalink as Parent Origin browse + git in its comparison entry.");
   assert.ok(
     !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
     "The pointer validator should accept the committed pointer schema once its continuity checksum has been rotated."
@@ -1582,7 +1607,7 @@ function testPointerSchemaValidatorAcceptsCommittedSchema() {
 }
 
 function testRuntimeSchemaContinuityAcceptsCommittedSchema() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.runtime.v1.schema.md");
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "runtime", "tiinex.runtime.v1.schema.md");
   const result = validateTraceableContinuityArtifactChainSync({ filePath: schemaPath, maxDepth: 1 });
 
   assert.equal(result.nodes[0]?.parsed.currentSchema?.label, "tiinex.runtime.v1", "The continuity validator should recover tiinex.runtime.v1 as the current schema id.");
@@ -1592,7 +1617,7 @@ function testRuntimeSchemaContinuityAcceptsCommittedSchema() {
 }
 
 function testMachineRuntimeSchemaContinuityAcceptsCommittedSchema() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.machine.runtime.v1.schema.md");
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "runtime", "machine", "tiinex.machine.runtime.v1.schema.md");
   const result = validateTraceableContinuityArtifactChainSync({ filePath: schemaPath, maxDepth: 1 });
 
   assert.equal(result.nodes[0]?.parsed.currentSchema?.label, "tiinex.machine.runtime.v1", "The continuity validator should recover tiinex.machine.runtime.v1 as the current schema id.");
@@ -1602,7 +1627,7 @@ function testMachineRuntimeSchemaContinuityAcceptsCommittedSchema() {
 }
 
 function testAiRuntimeSchemaContinuityAcceptsCommittedSchema() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.ai.runtime.v1.schema.md");
+  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "runtime", "ai", "tiinex.ai.runtime.v1.schema.md");
   const result = validateTraceableContinuityArtifactChainSync({ filePath: schemaPath, maxDepth: 1 });
 
   assert.equal(result.nodes[0]?.parsed.currentSchema?.label, "tiinex.ai.runtime.v1", "The continuity validator should recover tiinex.ai.runtime.v1 as the current schema id.");
@@ -1612,9 +1637,9 @@ function testAiRuntimeSchemaContinuityAcceptsCommittedSchema() {
 }
 
 function testTopicSchemaValidatorRequiresRootEnvelopeSchema() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
-    "- Envelope Schema: [tiinex.root.v1](tiinex.root.v1.schema.md)",
+    "- Envelope Schema: [tiinex.root.v1](../../tiinex.root.v1.schema.md)",
     "- Envelope Schema: [tiinex.topic.v1](tiinex.topic.v1.schema.md)"
   );
   const result = validateTraceableTopicSchemaSync({
@@ -1629,9 +1654,9 @@ function testTopicSchemaValidatorRequiresRootEnvelopeSchema() {
 }
 
 function testTopicSchemaValidatorRequiresReadableEnvelopeSchemaTarget() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
-    "- Envelope Schema: [tiinex.root.v1](tiinex.root.v1.schema.md)",
+    "- Envelope Schema: [tiinex.root.v1](../../tiinex.root.v1.schema.md)",
     "- Envelope Schema: [tiinex.root.v1](missing-root-schema.md)"
   );
   const result = validateTraceableTopicSchemaSync({
@@ -1651,9 +1676,9 @@ function testTopicSchemaValidatorRequiresReadableEnvelopeSchemaTarget() {
 }
 
 function testTopicSchemaValidatorRequiresReadableParentSchemaTarget() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
-    "- Parent Schema: [tiinex.root.v1](tiinex.root.v1.schema.md)",
+    "- Parent Schema: [tiinex.root.v1](../../tiinex.root.v1.schema.md)",
     "- Parent Schema: [tiinex.root.v1](missing-root-schema.md)"
   );
   const result = validateTraceableTopicSchemaSync({
@@ -1673,7 +1698,7 @@ function testTopicSchemaValidatorRequiresReadableParentSchemaTarget() {
 }
 
 function testTopicSchemaValidatorRequiresReadableCurrentSchemaTarget() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     "- Current Schema: [tiinex.topic.v1](tiinex.topic.v1.schema.md)",
     "- Current Schema: [tiinex.topic.v1](missing-topic-schema.md)"
@@ -1695,7 +1720,7 @@ function testTopicSchemaValidatorRequiresReadableCurrentSchemaTarget() {
 }
 
 function testTopicSchemaValidatorRejectsUnexpectedSectionHeading() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     "## Interpretation Notes",
     "## Interpretasion Notes\n\nBroken heading.\n\n## Interpretation Notes"
@@ -1712,9 +1737,9 @@ function testTopicSchemaValidatorRejectsUnexpectedSectionHeading() {
 }
 
 function testTopicSchemaValidatorRequiresParentOriginWhenParentExists() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
-    /\r?\n  - Origin:\r?\n    - \[relative\]\(tiinex\.root\.v1\.schema\.md\)\r?\n    - \[browse \+ git\]\([^\r\n]+\)/u,
+    /\r?\n  - Origin:\r?\n    - \[relative\]\(\.\.\/\.\.\/tiinex\.root\.v1\.schema\.md\)\r?\n    - \[browse \+ git\]\([^\r\n]+\)/u,
     ""
   );
   const result = validateTraceableTopicSchemaSync({
@@ -1729,7 +1754,7 @@ function testTopicSchemaValidatorRequiresParentOriginWhenParentExists() {
 }
 
 function testTopicSchemaValidatorRequiresParentOriginBrowseGitPermalink() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     /\r?\n    - \[browse \+ git\]\([^\r\n]+\)/u,
     ""
@@ -1746,7 +1771,7 @@ function testTopicSchemaValidatorRequiresParentOriginBrowseGitPermalink() {
 }
 
 function testTopicSchemaValidatorRequiresCommitPinnedParentOriginBrowseGitPermalink() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     /https:\/\/github\.com\/Tiinex\/docs\/blob\/[0-9a-f]{7,40}\/\.topics\/\.schemas\/tiinex\.root\.v1\.schema\.md/u,
     "https://github.com/Tiinex/docs/blob/master/.topics/.schemas/tiinex.root.v1.schema.md"
@@ -1763,9 +1788,9 @@ function testTopicSchemaValidatorRequiresCommitPinnedParentOriginBrowseGitPermal
 }
 
 function testTopicSchemaValidatorRejectsInvalidParentCreatedAtValue() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
-    /- Created At: 2026-06-04 13:47:57/u,
+    /- Created At: 2026-06-14 00:00:00/u,
     "- Created At: 20X6-05-28 18:11:47XXXXXXXXXXX"
   );
   const result = validateTraceableTopicSchemaSync({
@@ -1780,9 +1805,9 @@ function testTopicSchemaValidatorRejectsInvalidParentCreatedAtValue() {
 }
 
 function testTopicSchemaValidatorRequiresParentCreatedAtWhenParentExists() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
-    /\n  - Created At: 2026-06-04 13:47:57/u,
+    /\n  - Created At: 2026-06-14 00:00:00/u,
     ""
   );
   const result = validateTraceableTopicSchemaSync({
@@ -1797,10 +1822,10 @@ function testTopicSchemaValidatorRequiresParentCreatedAtWhenParentExists() {
 }
 
 function testTopicSchemaValidatorRequiresParentCreatedAtToMatchParentArtifact() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
-    /- Created At: 2026-06-04 13:47:57/u,
-    "- Created At: 2026-06-04 13:47:58"
+    /- Created At: 2026-06-14 00:00:00/u,
+    "- Created At: 2026-06-14 00:00:01"
   );
   const result = validateTraceableTopicSchemaSync({
     filePath: schemaPath,
@@ -1814,7 +1839,7 @@ function testTopicSchemaValidatorRequiresParentCreatedAtToMatchParentArtifact() 
 }
 
 function testTopicSchemaValidatorRequiresFooterTargetPermalink() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     /- Towards: \[tiinex\.root\.v1\.schema\.md\]\(https:\/\/github\.com\/Tiinex\/docs\/blob\/[0-9a-f]{7,40}\/\.topics\/\.schemas\/tiinex\.root\.v1\.schema\.md\)/u,
     "- Towards: [tiinex.root.v1.schema.md](tiinex.root.v1.schema.md)"
@@ -1831,7 +1856,7 @@ function testTopicSchemaValidatorRequiresFooterTargetPermalink() {
 }
 
 function testTopicSchemaValidatorRequiresFooterTargetToMatchParentOriginPermalink() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const currentMarkdown = readFileSync(schemaPath, "utf8");
   const currentCommitHash = currentMarkdown.match(/https:\/\/github\.com\/Tiinex\/docs\/blob\/([0-9a-f]{7,40})\/\.topics\/\.schemas\/tiinex\.root\.v1\.schema\.md/u)?.[1] ?? "HEAD";
   const markdown = currentMarkdown.replace(
@@ -1850,7 +1875,7 @@ function testTopicSchemaValidatorRequiresFooterTargetToMatchParentOriginPermalin
 }
 
 function testTopicSchemaValidatorUsesFooterTargetArtifactForChecksumVerification() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     "This schema defines artifacts whose main job is to carry one bounded working\ntopic forward.",
     "This schema defines artifacts whose main job is to carry one bounded working\ntopic forward while the footer still targets the root schema artifact."
@@ -1866,13 +1891,13 @@ function testTopicSchemaValidatorUsesFooterTargetArtifactForChecksumVerification
   });
 
   assert.ok(
-    !result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
-    "The topic validator should verify the footer checksum against the declared footer target artifact rather than the current topic body when Towards points to the root schema."
+    result.findings.some((finding) => finding.code === "continuity-checksum-mismatch"),
+    "The topic validator should now verify the active self footer entry against the current topic body under the maintained dual-entry footer strategy."
   );
 }
 
 function testTopicSchemaValidatorRejectsUnexpectedContractVocabulary() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8")
     .replace("### Topic Scope", "### Topi Scope")
     .replace("Applies To", "Applies T");
@@ -1892,11 +1917,11 @@ function testTopicSchemaValidatorRejectsUnexpectedContractVocabulary() {
 }
 
 function testTopicSchemaValidatorWarnsUnexpectedVocabularyWhenLineageIsUnavailable() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8")
     .replace("### Topic Scope", "### Topi Scope")
     .replace("Applies To", "Applies T")
-    .replace("- Trace: [tiinex.root.v1.schema.md](tiinex.root.v1.schema.md)", "- Trace: self");
+    .replace("- Trace: [tiinex.root.v1.schema.md](../../tiinex.root.v1.schema.md)", "- Trace: self");
   const result = validateTraceableTopicSchemaSync({
     filePath: schemaPath,
     readTextFileSync: () => markdown
@@ -1917,7 +1942,7 @@ function testTopicSchemaValidatorWarnsUnexpectedVocabularyWhenLineageIsUnavailab
 }
 
 function testTopicSchemaValidatorAllowsDeclaredContractCategoryExtensions() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8")
     .replace(
       "### Topic Scope",
@@ -1949,7 +1974,7 @@ function testTopicSchemaValidatorAllowsDeclaredContractCategoryExtensions() {
 }
 
 function testTopicSchemaValidatorRejectsRedeclaredInheritedContractCategoryExtensions() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8")
     .replace(
       "### Topic Scope",
@@ -1973,7 +1998,7 @@ function testTopicSchemaValidatorRejectsRedeclaredInheritedContractCategoryExten
 }
 
 function testTopicSchemaValidatorAllowsRedeclaredInheritedContractCategoryExtensionsWithExplicitOverride() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8")
     .replace(
       "### Topic Scope",
@@ -2006,10 +2031,10 @@ function testTopicSchemaValidatorAllowsRedeclaredInheritedContractCategoryExtens
 }
 
 function testTopicSchemaValidatorPreservesUnknownEnvelopeFieldsWhenLineageIsUnavailable() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8")
     .replace("- Summary: Schema for bounded topic-oriented lineage artifacts.", "- Summmary: Schema for bounded topic-oriented lineage artifacts.")
-    .replace("- Trace: [tiinex.root.v1.schema.md](tiinex.root.v1.schema.md)", "- Trace: self");
+    .replace("- Trace: [tiinex.root.v1.schema.md](../../tiinex.root.v1.schema.md)", "- Trace: self");
   const result = validateTraceableTopicSchemaSync({
     filePath: schemaPath,
     readTextFileSync: () => markdown
@@ -2026,7 +2051,7 @@ function testTopicSchemaValidatorPreservesUnknownEnvelopeFieldsWhenLineageIsUnav
 }
 
 function testTopicSchemaValidatorWarnsUnexpectedEnvelopeFieldsWhenLineageIsAvailable() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     "- Summary: Schema for bounded topic-oriented lineage artifacts.",
     "- Summmary: Schema for bounded topic-oriented lineage artifacts."
@@ -2043,7 +2068,7 @@ function testTopicSchemaValidatorWarnsUnexpectedEnvelopeFieldsWhenLineageIsAvail
 }
 
 function testTopicSchemaValidatorUsesRootDeclaredEnvelopeFieldLists() {
-  const topicSchemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const topicSchemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const rootSchemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.root.v1.schema.md");
   const topicMarkdown = readFileSync(topicSchemaPath, "utf8").replace(
     "- Summary: Schema for bounded topic-oriented lineage artifacts.",
@@ -2070,7 +2095,7 @@ function testTopicSchemaValidatorUsesRootDeclaredEnvelopeFieldLists() {
 }
 
 function testTopicSchemaValidatorRejectsDuplicateCategoryLabels() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(
     "### Topic Body",
     "Rules\n\n- Duplicate rule marker.\n\n### Topic Body"
@@ -2087,7 +2112,7 @@ function testTopicSchemaValidatorRejectsDuplicateCategoryLabels() {
 }
 
 function testTopicSchemaValidatorRequiresMaintainedValidationGroups() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(/### File Naming[\s\S]*?### Interpretation Boundaries/u, "### Interpretation Boundaries");
   const result = validateTraceableTopicSchemaSync({
     filePath: schemaPath,
@@ -2101,7 +2126,7 @@ function testTopicSchemaValidatorRequiresMaintainedValidationGroups() {
 }
 
 function testTopicSchemaValidatorFlagsOutOfOrderSections() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8")
     .replace("## Validation-Friendly Shape", "## TEMP-ORDER-MARKER")
     .replace("## Interpretation Notes", "## Validation-Friendly Shape")
@@ -2186,7 +2211,7 @@ Rules
 }
 
 function testTopicSchemaValidatorRequiresArtifactCreationGroups() {
-  const schemaPath = path.join(packageRoot, "..", "..", "..", "docs", ".topics", ".schemas", "tiinex.topic.v1.schema.md");
+  const schemaPath = getDocsSchemaPath("tiinex.topic.v1");
   const markdown = readFileSync(schemaPath, "utf8").replace(/### Template Body[\s\S]*?---/u, "---");
   const result = validateTraceableTopicSchemaSync({
     filePath: schemaPath,
@@ -2387,9 +2412,10 @@ function testSchemaNoteCoreContractFindingForSubSchemaNote() {
     readTextFileSync: () => markdown,
     maxDepth: 1
   });
+  const nonLegacyFindings = result.findings.filter((finding) => finding.code !== "continuity-checksum-v1-legacy");
 
   assert.ok(result.findings.some((finding) => finding.code === "schema-note-core-contract-missing"), "Schema-note validation should surface a missing core contract section for a sub-schema note family.");
-  assert.equal(result.findings.length, 1, "Only the core schema-note contract issue should be surfaced for this sub-schema fixture.");
+  assert.equal(nonLegacyFindings.length, 1, "Only the core schema-note contract issue should be surfaced for this sub-schema fixture aside from the generic legacy-v1 footer warning.");
 }
 
 function testValidatorPolicyKeepsLegacyNoChecksumInternal() {
@@ -2931,7 +2957,7 @@ async function main() {
   assert.ok(extensionSource.includes('vscode.workspace.onWillRenameFiles') && extensionSource.includes('vscode.workspace.onDidRenameFiles') && extensionSource.includes('traceableRenameMoveRewriteBehavior') && extensionSource.includes('confirmTraceableRenameMoveRewrite') && extensionSource.includes('performTraceableStagedFileMoveOperation') && extensionSource.includes('runTraceableOwnedMoveOperation') && extensionSource.includes('pendingTraceableRewriteRenames'), "Traceable extension source is missing the trace-aware rename/move wiring across staged lineage moves and host-owned alone rewrites.");
   assert.ok(extensionSource.includes('const RETURN_TO_PARENT_TRACE_ELIGIBLE_CONTEXT = "tiinex.aiProvenance.returnToParentEligibleResources";') && extensionSource.includes('buildTraceableExplorerResourceContextKeys(resource: vscode.Uri)') && extensionSource.includes('const uriPath = resource.path;') && extensionSource.includes('const decodedUriPath = decodeURIComponent(uriPath);') && extensionSource.includes('refreshReturnToParentTraceEligibleContext') && extensionSource.includes('vscode.workspace.findFiles("**/*.trace.md")'), "Traceable extension source should keep the return-to-parent eligibility context computation available for Explorer gating and command-side lineage checks.");
   assert.ok(extensionSource.includes('topic-schema-parent-origin-missing') && extensionSource.includes('topic-schema-parent-origin-browse-git-missing') && extensionSource.includes('topic-schema-parent-origin-unpinned-browse-git') && extensionSource.includes('topic-schema-parent-created-at-missing') && extensionSource.includes('topic-schema-parent-created-at-invalid') && extensionSource.includes('topic-schema-parent-created-at-mismatch') && extensionSource.includes('topic-schema-footer-target-mismatch') && extensionSource.includes('topic-schema-footer-target-not-permalink') && extensionSource.includes('topic-schema-lineage-unexpected-envelope-field') && extensionSource.includes('topic-schema-envelope-schema-mismatch') && extensionSource.includes('topic-schema-envelope-schema-unreadable') && extensionSource.includes('topic-schema-parent-schema-unreadable') && extensionSource.includes('topic-schema-current-schema-unreadable') && extensionSource.includes('root-schema-envelope-schema-mismatch') && extensionSource.includes('root-schema-envelope-schema-unreadable') && extensionSource.includes('root-schema-current-schema-unreadable') && extensionSource.includes('function createInsertTopicSchemaParentOriginEdit(') && extensionSource.includes('function createSetTopicSchemaParentCreatedAtEdit(') && extensionSource.includes('function createSetTopicSchemaFooterTowardsEdit(') && extensionSource.includes('function createInsertContinuityIntegrityFooterEdit(') && extensionSource.includes('function createSetContinuityParentCreatedAtEdit(') && extensionSource.includes('function createRefreshTraceablePermalinkFromLatestEdit(') && extensionSource.includes('REFRESH_TRACEABLE_PERMALINK_FROM_LATEST_COMMAND') && extensionSource.includes('Refresh permalink from latest') && extensionSource.includes('Insert Parent Created At from parent trace') && extensionSource.includes('Replace Parent Created At from parent trace') && extensionSource.includes('Insert Continuity Integrity footer') && extensionSource.includes('Insert Parent Origin scaffold') && extensionSource.includes('Insert browse + git permalink scaffold') && extensionSource.includes('Replace footer Towards permalink'), "Traceable extension source should map schema-envelope, footer-target, parent-created-at, and Parent Origin diagnostics to the right lines, expose scaffold quick fixes for missing or drifted origin metadata across both schema notes and ordinary traces, and offer a latest-origin permalink refresh fix for equivalent permalink diagnostics.");
-  assert.ok(extensionSource.includes('computeTargetedTraceableContinuityChecksumSha256') && extensionSource.includes('parseSchemaNoteMarkdown(markdown).footerIntegrity') && extensionSource.includes('artifactUri.fsPath.endsWith(".schema.md")'), "Traceable extension checksum rotation should use the declared footer target when rotating schema-note checksums.");
+  assert.ok(extensionSource.includes('computeTargetedTraceableContinuityChecksumSha256') && extensionSource.includes('const comparisonTarget = hasParent') && extensionSource.includes('const buildSection = (targetValue: string, selfValue: string) =>') && extensionSource.includes('- sha256-base64url-c14n-v2') && extensionSource.includes('const targetChecksum = comparisonTarget'), "Traceable extension checksum rotation should use the declared comparison target and synthesize the maintained dual-entry footer when rotating schema-note checksums.");
   assert.ok(extensionSource.includes('const returnToParentTraceWatcher = vscode.workspace.createFileSystemWatcher("**/*.trace.md");') && extensionSource.includes('onDidSaveTextDocument((document) => {') && extensionSource.includes('onDidChangeWorkspaceFolders(() => {'), "Traceable extension source should keep the return-to-parent eligibility context refreshed as trace files change.");
   assert.ok(extensionSource.includes('function getConfiguredTraceableDefaultMoveAction(resource?: vscode.Uri): TraceableDefaultFileAction {') && extensionSource.includes('function getConfiguredTraceableMovePromptOutcome(') && extensionSource.includes('pickPreferredTraceableLineageScope'), "Traceable extension source is missing the configurable default move action readers and lineage-scope preference helper.");
   assert.ok(extensionSource.includes('"Alone",') && extensionSource.includes('"Lineage"') && !extensionSource.includes('"Unmodified"') && extensionSource.includes('function confirmTraceableLineageMoveScope(') && extensionSource.includes('getConfiguredTraceableDefaultMultiSelectLineageScope') && extensionSource.includes('scope !== "tree" && scope !== "tree-plus-seeds"') && extensionSource.includes('if (options.length === 1) {') && extensionSource.includes('return { action: "alone" };') && extensionSource.includes('if (selection === "Alone")'), "Traceable extension source should present the Alone/Lineage prompt, auto-select the only valid Alone action when no lineage option exists, support a multi-select lineage default, and restrict multi-select lineage choices to Leaves or Branch.");

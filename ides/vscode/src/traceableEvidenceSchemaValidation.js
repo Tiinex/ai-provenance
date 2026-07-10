@@ -49,8 +49,13 @@ const EVIDENCE_SCHEMA_VALIDATION_CATEGORY_LABELS = [
 ];
 
 const EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS = [
-  "Required Creation Fields",
+  "Creation Fields",
   "Creation Rules"
+];
+
+const EVIDENCE_SCHEMA_ARTIFACT_CREATION_CATEGORY_LABELS = [
+  "Required Fields",
+  "Rules"
 ];
 
 function addMissingGroupFindings(findings, filePath, contract, options) {
@@ -80,15 +85,24 @@ function collectEvidenceArtifactCreationContractFindings(findings, filePath, mar
     return;
   }
 
+  const seenGroupHeadings = [];
   const seenCategoryLabels = [];
   const unexpectedContentLines = [];
   const emptyCategories = [];
+  const emptyGroups = [];
+  let currentGroupHeading;
   let currentCategoryLabel;
   let currentCategoryItemCount = 0;
 
   const finalizeCurrentCategory = () => {
     if (currentCategoryLabel && currentCategoryItemCount === 0) {
       emptyCategories.push(currentCategoryLabel);
+    }
+  };
+
+  const finalizeCurrentGroup = () => {
+    if (currentGroupHeading && !currentCategoryLabel && currentGroupHeading !== "Creation Rules") {
+      emptyGroups.push(currentGroupHeading);
     }
   };
 
@@ -100,7 +114,20 @@ function collectEvidenceArtifactCreationContractFindings(findings, filePath, mar
     if (trimmed === "---" || /^##\s+/u.test(trimmed) || /^#\s+/u.test(trimmed)) {
       break;
     }
-    if (EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS.includes(trimmed)) {
+    if (/^###\s+/u.test(trimmed)) {
+      finalizeCurrentCategory();
+      finalizeCurrentGroup();
+      currentGroupHeading = trimmed.replace(/^###\s+/u, "").trim();
+      currentCategoryLabel = undefined;
+      currentCategoryItemCount = 0;
+      seenGroupHeadings.push(currentGroupHeading);
+      continue;
+    }
+    if (EVIDENCE_SCHEMA_ARTIFACT_CREATION_CATEGORY_LABELS.includes(trimmed)) {
+      if (!currentGroupHeading) {
+        unexpectedContentLines.push(trimmed);
+        continue;
+      }
       finalizeCurrentCategory();
       currentCategoryLabel = trimmed;
       currentCategoryItemCount = 0;
@@ -118,10 +145,14 @@ function collectEvidenceArtifactCreationContractFindings(findings, filePath, mar
     unexpectedContentLines.push(trimmed);
   }
   finalizeCurrentCategory();
+  finalizeCurrentGroup();
 
-  const missingGroups = EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS.filter((heading) => !seenCategoryLabels.includes(heading));
+  const missingGroups = EVIDENCE_SCHEMA_ARTIFACT_CREATION_GROUP_HEADINGS.filter((heading) => !seenGroupHeadings.includes(heading));
   if (missingGroups.length > 0) {
     findings.push({ code: "evidence-schema-artifact-creation-contract-groups-missing", category: "artifact-creation-contract", filePath, message: `The evidence schema artifact creation contract is missing required groups: ${missingGroups.join(", ")}.`, severity: "error" });
+  }
+  if (emptyGroups.length > 0) {
+    findings.push({ code: "evidence-schema-artifact-creation-contract-groups-empty", category: "artifact-creation-contract", filePath, message: `The evidence schema artifact creation contract has empty groups: ${emptyGroups.join(", ")}.`, severity: "error" });
   }
   if (emptyCategories.length > 0) {
     findings.push({ code: "evidence-schema-artifact-creation-contract-category-list-missing", category: "artifact-creation-contract", filePath, message: `The evidence schema artifact creation contract has category labels without a following hyphen list: ${emptyCategories.join(", ")}.`, severity: "error" });
